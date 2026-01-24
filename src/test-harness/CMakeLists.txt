@@ -22,7 +22,7 @@ target_link_libraries(go-mapi-test-harness PRIVATE
 
 # Include directories
 target_include_directories(go-mapi-test-harness PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../interceptor"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../interceptor"
 )
 
 # MSVC specific options
