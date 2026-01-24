@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include "mapi_types.h"
 
 namespace mapi_test {
 
