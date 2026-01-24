@@ -1,8 +1,0 @@
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/CMakeFiles/edit_cache.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/CMakeFiles/rebuild_cache.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/interceptor/CMakeFiles/go-mapi.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/interceptor/CMakeFiles/edit_cache.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/interceptor/CMakeFiles/rebuild_cache.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/test-harness/CMakeFiles/go-mapi-test-harness.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/test-harness/CMakeFiles/edit_cache.dir
-/home/runner/work/go-mapi/go-mapi/_codeql_build_dir/src/test-harness/CMakeFiles/rebuild_cache.dir
