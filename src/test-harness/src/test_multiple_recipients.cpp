@@ -40,14 +40,6 @@ struct MapiMessage {
 
 using namespace mapi_test;
 
-typedef unsigned long (__stdcall *MAPISendMailFunc)(
-    unsigned long lhSession,
-    unsigned long long ulUIParam,
-    MapiMessage* lpMessage,
-    unsigned long flFlags,
-    unsigned long ulReserved
-);
-
 int test_multiple_recipients() {
     std::cout << "\nTest: Multiple Recipients (TO, CC, BCC)" << std::endl;
 

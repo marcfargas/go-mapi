@@ -40,14 +40,6 @@ struct MapiMessage {
 
 using namespace mapi_test;
 
-typedef unsigned long (__stdcall *MAPISendMailFunc)(
-    unsigned long lhSession,
-    unsigned long long ulUIParam,
-    MapiMessage* lpMessage,
-    unsigned long flFlags,
-    unsigned long ulReserved
-);
-
 int test_simple_send() {
     std::cout << "\nTest: Simple Send (basic email)" << std::endl;
 
