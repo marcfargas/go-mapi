@@ -3,7 +3,11 @@
 #include <windows.h>
 #include <string>
 #include <vector>
-#include "mapi_types.h"
+
+// Define LHANDLE type if not already defined
+#ifndef LHANDLE
+typedef ULONG_PTR LHANDLE;
+#endif
 
 namespace mapi_test {
 
