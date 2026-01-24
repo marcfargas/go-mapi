@@ -6,6 +6,16 @@
 // MAPI Types and Structures
 // Reference: https://learn.microsoft.com/en-us/windows/win32/api/mapi/ns-mapi-mapimessage
 
+// Define MAPI types if not already defined
+#ifndef LHANDLE
+typedef ULONG_PTR LHANDLE;
+typedef LHANDLE* LPLHANDLE;
+#endif
+
+#ifndef FLAGS
+typedef ULONG FLAGS;
+#endif
+
 // Recipient types
 #define MAPI_TO       1
 #define MAPI_CC       2

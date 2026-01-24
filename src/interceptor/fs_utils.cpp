@@ -91,7 +91,7 @@ bool FsUtils::WriteFile(const std::wstring& filePath, const std::string& content
     }
 
     DWORD bytesWritten;
-    BOOL result = WriteFile(
+    BOOL result = ::WriteFile(
         hFile,
         content.c_str(),
         (DWORD)content.length(),
