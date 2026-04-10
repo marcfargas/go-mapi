@@ -6,6 +6,11 @@ import {
   type ExtensionMessage,
   type RecentDraft,
 } from '../types/messages';
+import {
+  classifyLastError,
+  classifyReadyMessage,
+  type HostState,
+} from '../lib/hostDetector';
 
 const NATIVE_HOST = 'com.gomapi.host';
 const RECONNECT_ALARM = 'reconnect';
@@ -15,6 +20,15 @@ let nativePort: chrome.runtime.Port | null = null;
 let emails: Map<string, EmailWithId> = new Map();
 let isConnected = false;
 let hostVersion = '';
+
+// EXT-04: host detector state machine. The classifiers in lib/hostDetector own
+// the logic; this service worker owns the variable and the broadcast lifecycle.
+let hostState: HostState = 'UNKNOWN';
+let hostErrorMessage: string | undefined;
+// EXT-06: one-time success toast flag on the MISSING → READY edge. Persisted
+// in chrome.storage.session so it survives service worker sleep/wake but
+// resets cleanly on browser restart (acceptable per D-18).
+let hasShownInstalledToast = false;
 
 // Recent drafts shown in popup
 let recentDrafts: RecentDraft[] = [];
@@ -33,9 +47,20 @@ async function persistDrafts() {
 }
 
 async function loadState() {
-  const result = await chrome.storage.session.get(['emails', 'recentDrafts']);
+  const result = await chrome.storage.session.get([
+    'emails',
+    'recentDrafts',
+    'hasShownInstalledToast',
+  ]);
   if (result.emails) emails = new Map(Object.entries(result.emails as Record<string, EmailWithId>));
   if (result.recentDrafts) recentDrafts = result.recentDrafts as RecentDraft[];
+  if (result.hasShownInstalledToast === true) hasShownInstalledToast = true;
+}
+
+// EXT-06: persist the one-time toast flag so it survives service worker
+// sleep/wake within a browser session.
+async function persistInstalledToastFlag() {
+  await chrome.storage.session.set({ hasShownInstalledToast });
 }
 
 // Badge: red = pending emails, blue = drafts ready, empty = idle
@@ -56,12 +81,44 @@ function broadcastToPopup(message: ExtensionMessage) {
   chrome.runtime.sendMessage(message).catch(() => {});
 }
 
+// EXT-04: transition the host detector state machine and broadcast the new
+// state to the popup. The popup subscribes to HOST_STATE via its existing
+// chrome.runtime.onMessage listener. No-op when the target state and error
+// message are both unchanged.
+//
+// EXT-06: on the MISSING → READY edge, fire a one-time HOST_INSTALLED_TOAST
+// broadcast so the popup (if open) can render a success toast. The flag is
+// persisted via chrome.storage.session so it only fires once per browser
+// session even if the service worker sleeps and wakes between transitions.
+function transitionHostState(
+  next: HostState,
+  opts: { errorMessage?: string } = {}
+) {
+  if (next === hostState && opts.errorMessage === hostErrorMessage) return;
+  const prev = hostState;
+  hostState = next;
+  hostErrorMessage = opts.errorMessage;
+  console.log('[go-mapi] hostState →', next, opts);
+  broadcastToPopup({
+    type: 'HOST_STATE',
+    state: next,
+    hostVersion: hostVersion || undefined,
+    errorMessage: opts.errorMessage,
+  });
+  if (prev === 'MISSING' && next === 'READY' && !hasShownInstalledToast) {
+    hasShownInstalledToast = true;
+    persistInstalledToastFlag();
+    broadcastToPopup({ type: 'HOST_INSTALLED_TOAST' });
+  }
+}
+
 // --- Native host connection ---
 
 function connectToNativeHost() {
   if (nativePort) return;
 
   console.log('[go-mapi] Connecting to native host...');
+  transitionHostState('PROBING');
   try {
     nativePort = chrome.runtime.connectNative(NATIVE_HOST);
 
@@ -71,16 +128,23 @@ function connectToNativeHost() {
     });
 
     nativePort.onDisconnect.addListener(() => {
-      const error = chrome.runtime.lastError?.message || 'Unknown error';
-      console.log('[go-mapi] Disconnected:', error);
+      // EXT-02: log the verbatim lastError message for forward compatibility
+      // with future Chrome phrasing changes, then classify it into a HostState.
+      const lastError = chrome.runtime.lastError?.message || 'Unknown error';
+      console.log('[go-mapi] Disconnected:', lastError);
       nativePort = null;
       isConnected = false;
-      broadcastToPopup({ type: 'CONNECTION_STATUS', connected: false, error });
+      const classified = classifyLastError(lastError);
+      transitionHostState(classified, { errorMessage: lastError });
+      // Legacy CONNECTION_STATUS broadcast preserved so existing popup code
+      // that reads `state.connected` continues to work unchanged.
+      broadcastToPopup({ type: 'CONNECTION_STATUS', connected: false, error: lastError });
       chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: 0.1 });
     });
   } catch (error) {
     console.error('[go-mapi] Failed to connect:', error);
     isConnected = false;
+    transitionHostState('ERROR', { errorMessage: String(error) });
     broadcastToPopup({ type: 'CONNECTION_STATUS', connected: false, error: String(error) });
   }
 }
@@ -102,13 +166,20 @@ function sendToNativeHost(message: NativeOutgoingMessage) {
 
 function handleNativeMessage(message: NativeIncomingMessage) {
   switch (message.type) {
-    case MSG_TYPE.READY:
+    case MSG_TYPE.READY: {
       isConnected = true;
-      hostVersion = message.version;
+      // Prefer the new canonical hostVersion field (FOUND-02) but fall back
+      // to the legacy top-level `version` field per Phase 1 handoff decision #1.
+      hostVersion = message.hostVersion || message.version;
       console.log('[go-mapi] Host ready, version:', hostVersion);
+      // EXT-04 / D-03: only transition to READY on actual NativeReadyMessage
+      // arrival — a successful connectNative call alone is not enough.
+      const readyState = classifyReadyMessage(hostVersion);
+      transitionHostState(readyState, { errorMessage: undefined });
       broadcastToPopup({ type: 'CONNECTION_STATUS', connected: true });
       sendToNativeHost({ type: MSG_TYPE.LIST });
       break;
+    }
 
     case MSG_TYPE.EMAIL: {
       const emailWithId: EmailWithId = { ...message.data, id: message.id };

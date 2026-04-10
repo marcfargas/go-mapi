@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Alert, Spinner } from 'react-bootstrap';
+import { Alert, Spinner, Toast, ToastContainer } from 'react-bootstrap';
 import EmailList from './EmailList';
 import EmailDetail from './EmailDetail';
+import InstallPrompt from './InstallPrompt';
 import type { EmailWithId, ExtensionMessage, RecentDraft } from '../types/messages';
+import type { HostState } from '../lib/hostDetector';
 
 interface AppState {
   emails: EmailWithId[];
@@ -12,6 +14,11 @@ interface AppState {
   loading: boolean;
   error: string | null;
   sending: boolean;
+  // EXT-04: host detector state, broadcast from the service worker.
+  hostState: HostState;
+  hostErrorMessage: string | null;
+  // EXT-06: one-time success toast on MISSING → READY edge.
+  showInstalledToast: boolean;
 }
 
 export default function App() {
@@ -23,6 +30,9 @@ export default function App() {
     loading: true,
     error: null,
     sending: false,
+    hostState: 'UNKNOWN',
+    hostErrorMessage: null,
+    showInstalledToast: false,
   });
 
   // Load initial data
@@ -71,6 +81,16 @@ export default function App() {
           break;
         case 'ERROR':
           setState((s) => ({ ...s, error: message.error || null }));
+          break;
+        case 'HOST_STATE':
+          setState((s) => ({
+            ...s,
+            hostState: message.state,
+            hostErrorMessage: message.errorMessage ?? null,
+          }));
+          break;
+        case 'HOST_INSTALLED_TOAST':
+          setState((s) => ({ ...s, showInstalledToast: true }));
           break;
       }
     };
@@ -129,8 +149,37 @@ export default function App() {
     chrome.tabs.create({ url: gmailUrl });
   }, []);
 
+  // EXT-05: show the install prompt when the host detector reports that the
+  // native host is unreachable. The main queue UI (Pending list, Recent
+  // Drafts, empty state) is suppressed in these states so the banner is the
+  // only thing the user sees.
+  const showInstallPrompt =
+    !state.loading &&
+    (state.hostState === 'MISSING' ||
+      state.hostState === 'ERROR' ||
+      state.hostState === 'OUTDATED');
+
   return (
     <div className="app-container">
+      {/* EXT-06: one-time success toast on the MISSING → READY edge. */}
+      <ToastContainer
+        position="top-center"
+        className="mt-2"
+        style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1080 }}
+      >
+        <Toast
+          show={state.showInstalledToast}
+          onClose={() => setState((s) => ({ ...s, showInstalledToast: false }))}
+          delay={5000}
+          autohide
+          bg="success"
+        >
+          <Toast.Body className="text-white">
+            go-mapi host detected — you&apos;re all set.
+          </Toast.Body>
+        </Toast>
+      </ToastContainer>
+
       <header className="app-header">
         <h1>go-mapi</h1>
         <div className="status">
@@ -156,7 +205,12 @@ export default function App() {
       )}
 
       <div className="content">
-        {state.loading ? (
+        {showInstallPrompt ? (
+          <InstallPrompt
+            state={state.hostState}
+            errorMessage={state.hostErrorMessage ?? undefined}
+          />
+        ) : state.loading ? (
           <div className="loading">
             <Spinner animation="border" variant="primary" />
           </div>
@@ -176,7 +230,7 @@ export default function App() {
         ) : null}
 
         {/* Recent drafts */}
-        {!state.selectedEmail && state.recentDrafts.length > 0 && (
+        {!showInstallPrompt && !state.selectedEmail && state.recentDrafts.length > 0 && (
           <>
             <div className="section-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>Recent Drafts</span>
@@ -215,7 +269,7 @@ export default function App() {
         )}
 
         {/* Empty state */}
-        {!state.selectedEmail && state.emails.length === 0 && state.recentDrafts.length === 0 && (
+        {!showInstallPrompt && !state.selectedEmail && state.emails.length === 0 && state.recentDrafts.length === 0 && (
           <div className="empty-state">
             <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
