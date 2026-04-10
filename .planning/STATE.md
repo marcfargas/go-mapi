@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-01-PLAN.md (FOUND-02)
-last_updated: "2026-04-10T15:38:08.177Z"
+stopped_at: Completed 01-03-PLAN.md (FOUND-03)
+last_updated: "2026-04-10T15:42:05.364Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 8
-  completed_plans: 1
-  percent: 13
+  completed_plans: 2
+  percent: 25
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-10)
 ## Current Position
 
 Phase: 1 (Foundation & SignPath Application) — EXECUTING
-Plan: 2 of 8
+Plan: 3 of 8
 Status: Ready to execute
 Last activity: 2026-04-10
 
@@ -53,6 +53,7 @@ Progress: [░░░░░░░░░░] 0%
 
 *Updated after each plan completion*
 | Phase 01-foundation-signpath-application P01 | 3 min | 3 tasks | 4 files |
+| Phase 01-foundation-signpath-application P03 | 1 min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,7 @@ Recent decisions affecting current work:
 - Init: All TS/extension test work consolidated in Phase 4 (one "test completeness" boundary) rather than scattered across Phases 2 and 4
 - [Phase 01-foundation-signpath-application]: Keep legacy Version field on OutgoingMessage alongside new HostVersion — additive, no protocol version bump — v1 extensions continue to read the legacy version field while Phase 2 EXT-03 consumes the new canonical hostVersion field
 - [Phase 01-foundation-signpath-application]: Centralize host version in src/native-host/version.go, keep -ldflags -X main.Version=... path unchanged — Single source of truth without breaking the existing build pipeline since both files share package main
+- [Phase 01-foundation-signpath-application]: Use dedicated NewGmailClientWithBase constructor instead of variadic options for GmailClient baseURL injection — Variadic signature would silently accept malformed calls like NewGmailClient(token, "a", "b"); dedicated alt constructor keeps the zero-arg default obvious and makes test-only call sites explicit
 
 ### Pending Todos
 
@@ -80,6 +82,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T15:38:08.174Z
-Stopped at: Completed 01-01-PLAN.md (FOUND-02)
+Last session: 2026-04-10T15:42:05.361Z
+Stopped at: Completed 01-03-PLAN.md (FOUND-03)
 Resume file: None
