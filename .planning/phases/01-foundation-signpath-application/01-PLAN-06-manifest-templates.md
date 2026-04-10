@@ -7,8 +7,6 @@ depends_on: []
 files_modified:
   - src/native-host/manifests/com.gomapi.host.chrome.json.tmpl
   - src/native-host/manifests/com.gomapi.host.edge.json.tmpl
-  - src/native-host/manifests/com.gomapi.host.chrome.json
-  - src/native-host/manifests/com.gomapi.host.edge.json
   - scripts/install.ps1
 autonomous: true
 requirements: [FOUND-06]

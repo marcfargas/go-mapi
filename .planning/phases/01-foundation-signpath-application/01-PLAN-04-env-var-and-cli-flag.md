@@ -3,7 +3,7 @@ phase: 01-foundation-signpath-application
 plan: 04
 type: execute
 wave: 2
-depends_on: [03]
+depends_on: [01, 03]
 files_modified:
   - src/native-host/main.go
 autonomous: true
