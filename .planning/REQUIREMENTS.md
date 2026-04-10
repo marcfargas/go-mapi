@@ -26,7 +26,7 @@ These are small, mechanical changes that unblock the parallel work in later phas
 - [ ] **EXT-04**: The service worker broadcasts an internal `HOST_STATE` message whenever the detector's state changes, and the popup renders based on that state (this broadcast is internal to the extension only — the native-messaging wire protocol is not extended)
 - [ ] **EXT-05**: A new `src/extension/src/popup/InstallPrompt.tsx` component renders when the state is `MISSING`, showing a direct download link, short SmartScreen guidance copy, and no GitHub redirect
 - [ ] **EXT-06**: The popup auto-detects when the host appears after install by reusing the existing 6-second reconnect alarm, gated on an actual `READY` message (not just a successful port open), and shows a one-time success toast on the `MISSING → READY` transition
-- [ ] **EXT-07**: When the real installer URL exists at the end of Phase 3, the placeholder download URL in `InstallPrompt.tsx` is swapped for the stable GitHub Releases `latest/download/go-mapi-setup.exe` URL
+- [x] **EXT-07**: When the real installer URL exists at the end of Phase 3, the placeholder download URL in `InstallPrompt.tsx` is swapped for the stable GitHub Releases `latest/download/go-mapi-setup.exe` URL — **CLOSED at Phase 2/3 merge.** Phase 2 used the final URL as its placeholder (matching Phase 3's installer-release.yml output filename), so the swap was a no-op; the TODO comment was removed during the merge close-out.
 
 ### Installer (INST)
 

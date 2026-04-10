@@ -1,9 +1,6 @@
 import { Card, Button, Alert } from 'react-bootstrap';
 import type { HostState } from '../lib/hostDetector';
 
-// EXT-07: swap in Phase 3 when the real installer URL is published to GitHub Releases.
-// Placeholder matches the planned final URL so Phase 3 only changes the value if the
-// URL format changes — no string wrangling elsewhere in the codebase.
 const INSTALLER_DOWNLOAD_URL =
   'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe';
 
