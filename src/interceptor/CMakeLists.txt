@@ -12,12 +12,41 @@ endif()
 # Build options
 option(BUILD_TESTS "Build test harness" ON)
 
+# ============================================================
+# message_converter OBJECT library (FOUND-05)
+# ------------------------------------------------------------
+# Pure MAPI→MailMessage conversion logic extracted from MapiImpl
+# so it can be linked by BOTH the go-mapi DLL AND the future
+# doctest target (CPPTEST-01/02/03 in Phase 4) without recompiling.
+# ============================================================
+add_library(message_converter_obj OBJECT
+    message_converter.cpp
+)
+
+target_include_directories(message_converter_obj PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_compile_definitions(message_converter_obj PRIVATE
+    GO_MAPI_VERSION="${GO_MAPI_VERSION}"
+)
+
+# Propagate the same compiler flags as the DLL target so the object files
+# are ABI-compatible. MSVC /W4 and MinGW -Wall are purely compile-time,
+# object files themselves are compatible either way.
+if(MSVC)
+    target_compile_options(message_converter_obj PRIVATE /W4 /WX-)
+elseif(MINGW)
+    target_compile_options(message_converter_obj PRIVATE -Wall -Wextra -Wno-unused-parameter)
+endif()
+
 # Create the DLL
 add_library(go-mapi SHARED
     main.cpp
     mapi_impl.cpp
     json_writer.cpp
     fs_utils.cpp
+    $<TARGET_OBJECTS:message_converter_obj>
 )
 
 # Set DLL output directory
