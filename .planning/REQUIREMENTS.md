@@ -11,7 +11,7 @@ Requirements for the v2.0.0 release. Grouped by the seven workstreams identified
 
 These are small, mechanical changes that unblock the parallel work in later phases. None are user-visible.
 
-- [ ] **FOUND-01**: The existing `emails` map race condition documented in `.planning/codebase/CONCERNS.md` is fixed and `go test -race ./...` runs clean locally
+- [x] **FOUND-01**: The existing `emails` map race condition documented in `.planning/codebase/CONCERNS.md` is fixed and `go test -race ./...` runs clean locally
 - [x] **FOUND-02**: The native host exports a `Version` constant from `src/native-host/version.go` and the existing `SendReady` message carries this version field to the extension
 - [x] **FOUND-03**: `GmailClient` accepts a `baseURL` field so tests can point it at an `httptest.Server` instead of `https://gmail.googleapis.com`
 - [ ] **FOUND-04**: The native host accepts a `GOMAPI_WATCH_DIR` environment variable and a `--gmail-api-base` CLI flag so integration and E2E tests can run without touching the real `%TEMP%\go-mapi\` or the real Gmail API
