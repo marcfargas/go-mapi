@@ -22,13 +22,28 @@ const (
 type GmailClient struct {
 	httpClient *http.Client
 	token      string
+	baseURL    string // FOUND-03: injection point for tests and FOUND-04 CLI flag; defaults to gmailAPIBase
 }
 
 // NewGmailClient creates a new Gmail API client with the given OAuth token
+// using the default Gmail API base URL. For tests or alternate endpoints,
+// use NewGmailClientWithBase.
 func NewGmailClient(token string) *GmailClient {
+	return NewGmailClientWithBase(token, gmailAPIBase)
+}
+
+// NewGmailClientWithBase creates a Gmail API client with an explicit base URL.
+// Used by tests (httptest.Server) and by the native host when --gmail-api-base
+// is passed on the command line (FOUND-04).
+// If baseURL is empty, the default gmailAPIBase is used.
+func NewGmailClientWithBase(token, baseURL string) *GmailClient {
+	if baseURL == "" {
+		baseURL = gmailAPIBase
+	}
 	return &GmailClient{
 		httpClient: &http.Client{},
 		token:      token,
+		baseURL:    baseURL,
 	}
 }
 
@@ -58,7 +73,7 @@ func (gc *GmailClient) CreateDraft(msg *MailMessage) (string, error) {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/drafts", gmailAPIBase)
+	url := fmt.Sprintf("%s/drafts", gc.baseURL)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
