@@ -27,11 +27,12 @@ const (
 
 // OutgoingMessage is sent from host to extension
 type OutgoingMessage struct {
-	Type    string       `json:"type"`
-	ID      string       `json:"id,omitempty"`
-	Data    *MailMessage `json:"data,omitempty"`
-	Error   string       `json:"error,omitempty"`
-	Version string       `json:"version,omitempty"`
+	Type        string       `json:"type"`
+	ID          string       `json:"id,omitempty"`
+	Data        *MailMessage `json:"data,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	Version     string       `json:"version,omitempty"`     // legacy field — kept for backwards compat, do not remove
+	HostVersion string       `json:"hostVersion,omitempty"` // FOUND-02: new canonical host version field
 
 	// Draft creation response
 	DraftID  string `json:"draftId,omitempty"`
@@ -170,8 +171,9 @@ func (nm *NativeMessaging) SendRemoved(id string) error {
 // SendReady notifies extension that host is ready
 func (nm *NativeMessaging) SendReady(version string) error {
 	return nm.Write(&OutgoingMessage{
-		Type:    MsgTypeReady,
-		Version: version,
+		Type:        MsgTypeReady,
+		Version:     version, // legacy field — kept for backwards compat
+		HostVersion: version, // FOUND-02: new canonical field, consumed by Phase 2 EXT-03
 	})
 }
 
