@@ -130,6 +130,71 @@ function Write-ErrorLog {
     Write-Log $Msg "ERROR"
 }
 
+# --- Manifest template rendering ---
+
+# Render-ManifestTemplate reads a native-messaging manifest .tmpl file and
+# performs literal string substitution of the HOST_PATH and EXTENSION_ID
+# placeholders. Uses the PowerShell String.Replace() method (NOT the -replace
+# regex operator) because:
+#   1. The double-brace placeholder tokens contain regex metacharacters.
+#   2. Windows paths contain backslashes, which regex substitution would try
+#      to interpret as escape sequences.
+# String.Replace() performs literal substring replacement with zero escaping.
+function Render-ManifestTemplate {
+    param(
+        [Parameter(Mandatory = $true)][string]$TemplatePath,
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$ExtensionId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TemplatePath)) {
+        throw "Render-ManifestTemplate: TemplatePath is null or empty"
+    }
+    if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+        throw "Render-ManifestTemplate: InstallDir is null or empty"
+    }
+    if ([string]::IsNullOrWhiteSpace($ExtensionId)) {
+        throw "Render-ManifestTemplate: ExtensionId is null or empty"
+    }
+    if (-not (Test-Path $TemplatePath)) {
+        throw "Render-ManifestTemplate: template not found at $TemplatePath"
+    }
+
+    Write-Log "Rendering manifest template: $TemplatePath" "INFO"
+
+    # Build placeholder tokens programmatically to avoid any PowerShell brace
+    # expansion ambiguity in the script source itself.
+    $openToken = '{' + '{'
+    $closeToken = '}' + '}'
+    $hostPathPlaceholder = $openToken + 'HOST_PATH' + $closeToken
+    $extensionIdPlaceholder = $openToken + 'EXTENSION_ID' + $closeToken
+
+    $hostExePath = (Join-Path $InstallDir "go-mapi-host.exe")
+
+    # JSON escape: backslashes in Windows paths must be doubled so the
+    # rendered file is valid JSON. We do this BEFORE the literal .Replace()
+    # because .Replace() performs raw substring insertion — the template
+    # has no idea whether the substituted value needs escaping. The
+    # equivalent Phase 3 Inno Setup installer will need to apply the same
+    # transformation in its Pascal Script.
+    $hostExePathJson = $hostExePath.Replace('\', '\\').Replace('"', '\"')
+
+    # Get-Content -Raw returns a single string preserving line endings.
+    $template = Get-Content -Raw -Path $TemplatePath
+
+    # Literal substring replacement via String.Replace() — no regex escaping.
+    $rendered = $template.Replace($hostPathPlaceholder, $hostExePathJson).Replace($extensionIdPlaceholder, $ExtensionId)
+
+    # Validate the rendered content is parseable JSON before returning.
+    try {
+        $null = $rendered | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Render-ManifestTemplate: rendered template is not valid JSON. Template: $TemplatePath. Error: $($_.Exception.Message)"
+    }
+
+    return $rendered
+}
+
 $browsers = @(
     @{ Name = "Chrome";   Path = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.gomapi.host" },
     @{ Name = "Chromium"; Path = "HKCU:\Software\Chromium\NativeMessagingHosts\com.gomapi.host" },
@@ -495,6 +560,17 @@ Write-Info "Install dir:  $InstallDir"
 Write-Info "Extension ID: $ExtensionId"
 Write-Log "Extension ID: $ExtensionId" "INFO"
 
+# --- Resolve repo root (used by -Local mode for both artifact discovery and
+#     manifest template rendering). Safe to compute unconditionally; only
+#     consumed when $Local is set.
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($scriptDir) {
+    $repoRoot = Split-Path -Parent $scriptDir
+} else {
+    # Script was loaded from memory (e.g. irm | iex) — no on-disk path.
+    $repoRoot = $null
+}
+
 # --- Acquire artifacts ---
 
 $tempDir = Join-Path $env:TEMP "go-mapi-install-$(Get-Random)"
@@ -506,8 +582,10 @@ try {
         Write-Host ""
         Write-Host "  Step 1: Locate build artifacts" -ForegroundColor White
 
-        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-        $repoRoot = Split-Path -Parent $scriptDir
+        if (-not $repoRoot) {
+            Write-ErrorLog "Local mode requires the installer to be invoked from a file path (not piped from memory)."
+            exit 1
+        }
 
         if ($BuildDir) {
             $searchPaths = @($BuildDir)
@@ -630,17 +708,42 @@ try {
     Write-Host ""
     Write-Host "  Step 4: Register native messaging" -ForegroundColor White
 
-    $manifest = @{
-        name            = "com.gomapi.host"
-        description     = "go-mapi Native Messaging Host"
-        path            = (Join-Path $InstallDir "go-mapi-host.exe")
-        type            = "stdio"
-        allowed_origins = @("chrome-extension://$ExtensionId/")
-    } | ConvertTo-Json -Depth 10
-
     $manifestPath = Join-Path $InstallDir "com.gomapi.host.json"
-    $manifest | Out-File -FilePath $manifestPath -Encoding UTF8
-    Write-Step "Created manifest: $manifestPath"
+
+    if ($Local -and $repoRoot) {
+        # Local mode: render the canonical .tmpl file via literal string
+        # substitution. This is the same template that Phase 3's Inno Setup
+        # installer will consume via Pascal Script StringChange, so the
+        # schema lives in exactly one place.
+        $templatePath = Join-Path $repoRoot 'src\native-host\manifests\com.gomapi.host.chrome.json.tmpl'
+        if (-not (Test-Path $templatePath)) {
+            throw "Manifest template not found: $templatePath"
+        }
+
+        $rendered = Render-ManifestTemplate -TemplatePath $templatePath -InstallDir $InstallDir -ExtensionId $ExtensionId
+        Set-Content -Path $manifestPath -Value $rendered -Encoding UTF8 -NoNewline
+        Write-Step "Rendered manifest from template: $manifestPath"
+    } else {
+        # Download mode (irm | iex): the script is running from memory with
+        # no repo checkout, so we cannot read the .tmpl file. Fall back to
+        # inline hashtable construction.
+        #
+        # CANONICAL SCHEMA: src/native-host/manifests/com.gomapi.host.chrome.json.tmpl
+        # The inline hashtable below MUST stay schema-equivalent to that
+        # template (same keys, same values modulo placeholder substitution).
+        # Any schema change must update BOTH this hashtable AND the .tmpl
+        # file. In Local mode, the template file is consumed directly.
+        $manifest = @{
+            name            = "com.gomapi.host"
+            description     = "go-mapi Native Messaging Host"
+            path            = (Join-Path $InstallDir "go-mapi-host.exe")
+            type            = "stdio"
+            allowed_origins = @("chrome-extension://$ExtensionId/")
+        } | ConvertTo-Json -Depth 10
+
+        $manifest | Out-File -FilePath $manifestPath -Encoding UTF8
+        Write-Step "Created manifest: $manifestPath"
+    }
 
     foreach ($browser in $browsers) {
         $parentPath = Split-Path $browser.Path
