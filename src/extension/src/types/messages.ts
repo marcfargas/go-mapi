@@ -64,7 +64,8 @@ export interface NativeRemovedMessage {
 
 export interface NativeReadyMessage {
   type: typeof MSG_TYPE.READY;
-  version: string;
+  version: string; // legacy field — kept for backwards compat
+  hostVersion?: string; // FOUND-02: new canonical host version field, consumed by EXT-03 in Phase 2
 }
 
 export interface NativeErrorMessage {
