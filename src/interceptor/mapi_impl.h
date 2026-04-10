@@ -53,18 +53,9 @@ public:
     );
 
 private:
-    // Convert ANSI MapiMessage to MailMessage struct
-    static MailMessage ConvertAnsiMessage(const MapiMessage& msg);
-
-    // Convert Unicode (wide) MapiMessageW to MailMessage struct
-    static MailMessage ConvertWideMessage(const MapiMessageW& msg);
-
-    // Convert wide string (UTF-16) to UTF-8
-    static std::string WideToUtf8(const wchar_t* wide);
-    static std::string AnsiToUtf8(const char* ansi);
-    static std::string FilenameFromPath(const std::string& path);
-
-    // Get application name (for originApp field)
+    // Get application name (for originApp field).
+    // Kept in MapiImpl because it queries the live process via Windows APIs
+    // (GetModuleFileNameExW) — not pure conversion, so excluded from message_converter.
     static std::string GetOriginApplicationName();
 };
 
