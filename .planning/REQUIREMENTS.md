@@ -76,6 +76,18 @@ These are small, mechanical changes that unblock the parallel work in later phas
 - [x] **E2E-05**: A reserved spike day investigates Playwright + headed Chromium + native messaging flakiness on `windows-latest` and documents stable wait patterns, retry strategy, and any runner-image workarounds
 - [x] **E2E-06**: Real `chrome.runtime.lastError.message` strings are captured from the E2E runs and committed as fixtures under `src/extension/src/__fixtures__/chrome-errors.ts`, consumed by the TSTEST-02 tests
 
+### Release Cut (REL) — Phase 5
+
+Source-complete is not shipped. Phase 5 exists because the v2.0.0 milestone doesn't close until a real user can download a working installer from GitHub Releases, install it on a fresh Windows box, and successfully create a Gmail draft via a "Send to Mail recipient" action. Ships unsigned per Phase 5 decision; SignPath-signed re-cut lives in v2.0.1.
+
+- [ ] **REL-01**: All three `windows-latest` CI workflows run green at least once — `.github/workflows/installer-smoke.yml` (Pester install → registry → uninstall round-trip), `.github/workflows/e2e.yml` (Playwright happy-path + install-UX specs), and `.github/workflows/go-race-nightly.yml` (`go test -race ./...` on amd64). Any flakes or failures surfaced during the first run are fixed or explicitly documented as pre-existing. Triggered via `gh workflow run` on the `develop` branch.
+- [ ] **REL-02**: The existing `tests/sandbox/` Windows Sandbox harness (`run-sandbox-test.ps1`, `setup.ps1`, `test-dll-registration.ps1`) is hardened to run the full v2.0.0 install → E2E → uninstall flow locally on a Windows 11 24H2+ host with the `wsb` CLI. At minimum: a `.wsb` config committed under `tests/sandbox/`, a documented `pwsh tests/sandbox/run-sandbox-test.ps1 -FullTest` entry point that produces green/red output, and `tests/sandbox/README.md` explaining the prerequisites, expected runtime, and failure modes. Doesn't replace CI — it's the local repro path that doesn't exist today.
+- [ ] **REL-03**: `README.md` install instructions are rewritten for the real v2.0.0 distribution flow: download `go-mapi-setup.exe` from the GitHub Releases page, click through the SmartScreen "Windows protected your PC" dialog via "More info" → "Run anyway" (unsigned fallback), single UAC elevation, and any of the five supported Chromium browsers automatically picks up go-mapi. Includes a short "how to uninstall" pointer and a link to the Chrome Web Store listing (placeholder URL if the listing isn't live yet).
+- [ ] **REL-04**: PHASE-4-FINDING-02 closed: `src/interceptor/json_writer.h:36` trailing backslash in the `// Write a MailMessage to a JSON file in %TEMP%\go-mapi\` comment replaced with a backtick-wrapped path or forward slash, so GCC stops emitting the `-Wcomment` warning during the CPPTEST-02 build. One-line fix, bundled here because Phase 5 is already touching CI output.
+- [ ] **REL-05**: The `v2.0.0` git tag is pushed, which triggers `installer-release.yml` to build, sign (unsigned fallback since SIGN-01 approval has not landed), and publish `go-mapi-setup.exe` to the GitHub Releases page with the release-template.md body. The published `releases/latest/download/go-mapi-setup.exe` URL is reachable and matches the URL `InstallPrompt.tsx` links to. Verified by `curl -IL` returning 200 and a non-empty `Content-Length`.
+- [ ] **REL-06**: Manual end-to-end UAT on a real Windows box (either marcwin with Admin or a Windows Sandbox from REL-02): download the published installer, install, load the unpacked extension in Chrome, observe the `InstallPrompt` → `READY` transition + the success toast, trigger a "Send to Mail recipient" from Notepad (or any Win32 app with the menu), confirm a Gmail draft appears in the target account. Any deviation is either fixed, documented in `05-UAT.md`, or explicitly deferred to v2.0.1 with a reason.
+- [ ] **REL-07**: MILESTONES.md re-archived after Phase 5 ships (re-running `/gsd:complete-milestone v2.0.0` at the end of Phase 5). The existing `v2.0.0-MILESTONE-AUDIT.md` audit is updated (or replaced) to reflect the runtime-verified state, and STATE.md is marked `milestone_complete`.
+
 ## v2 Requirements
 
 Acknowledged but deferred. Not in the v2.0.0 roadmap.
@@ -172,12 +184,19 @@ Explicitly excluded for v2.0.0. Documented to prevent scope creep.
 | E2E-04 | Phase 4 | Complete |
 | E2E-05 | Phase 4 | Complete |
 | E2E-06 | Phase 4 | Complete |
+| REL-01 | Phase 5 | Planned |
+| REL-02 | Phase 5 | Planned |
+| REL-03 | Phase 5 | Planned |
+| REL-04 | Phase 5 | Planned |
+| REL-05 | Phase 5 | Planned |
+| REL-06 | Phase 5 | Planned |
+| REL-07 | Phase 5 | Planned |
 
 **Coverage:**
-- v1 requirements: 43 total
-- Mapped to phases: 43 ✓
+- v1 requirements: 50 total (43 original + 7 REL-* added at Phase 5 insertion)
+- Mapped to phases: 50 ✓
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-10*
-*Last updated: 2026-04-10 after roadmap creation (traceability filled)*
+*Last updated: 2026-04-11 — Phase 5 (Release Cut) inserted; v2.0.0 re-opened per "not shipped until it's on GitHub Releases and UAT-verified"*

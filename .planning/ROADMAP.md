@@ -11,6 +11,7 @@
 - [x] **Phase 2: Extension Install UX** - In-popup install prompt and host-state machine using a placeholder download URL (completed 2026-04-10)
 - [x] **Phase 3: Inno Setup Installer + Signing + Distribution** - Single-click signed Windows installer hosted on GitHub Releases, with the extension wired to the real URL (completed 2026-04-10)
 - [x] **Phase 4: Test-Suite Completeness + E2E** - Risk-based test gap fill across Go, C++, TypeScript, plus a Playwright happy-path E2E (completed 2026-04-10)
+- [ ] **Phase 5: Release Cut** - CI green-light → tag push → GitHub Releases publish → hardened Windows Sandbox local repro → manual UAT → README rewrite. Closes v2.0.0 "source complete → actually shipped". Ships unsigned; SignPath-signed re-cut lives in v2.0.1.
 
 ## Phase Details
 
@@ -77,6 +78,21 @@ Plans:
 **Plans**: TBD
 **Research flag**: Reserved spike day for Playwright + headed Chromium + native messaging flakiness on `windows-latest` (Pitfall #5); confirm exact `chrome.runtime.lastError` substrings across current Chrome and Edge versions before locking in TSTEST-02 fixtures
 
+### Phase 5: Release Cut
+**Goal**: A real user can download `go-mapi-setup.exe` from the v2.0.0 GitHub Releases page, install it on a fresh Windows box, and successfully create a Gmail draft via a "Send to Mail recipient" action. Source-complete → actually shipped.
+**Depends on**: Phases 1-4 (all source artifacts complete and merged into `develop`)
+**Requirements**: REL-01, REL-02, REL-03, REL-04, REL-05, REL-06, REL-07
+**Success Criteria** (what must be TRUE):
+  1. All three `windows-latest` CI workflows have been run at least once and are green: `installer-smoke.yml` (Pester round-trip), `e2e.yml` (Playwright happy path + install UX), `go-race-nightly.yml` (`-race` on amd64). Any first-run flakes or failures are fixed or explicitly documented.
+  2. The existing `tests/sandbox/` Windows Sandbox harness is hardened into a real local repro path — committed `.wsb` config, `pwsh tests/sandbox/run-sandbox-test.ps1 -FullTest` entry point, and `tests/sandbox/README.md` documenting prerequisites (Windows 11 24H2+, `wsb` CLI) and expected runtime. Enables verifying install → E2E locally without touching the host.
+  3. `README.md` install instructions are rewritten for the real v2.0.0 distribution flow: download from GitHub Releases, SmartScreen click-through for the unsigned fallback, single UAC elevation, uninstall pointer.
+  4. PHASE-4-FINDING-02 (pre-existing `-Wcomment` warning in `src/interceptor/json_writer.h:36`) is closed with a one-line fix bundled into whatever Phase 5 commit touches the interceptor build output.
+  5. The `v2.0.0` git tag is pushed, `installer-release.yml` runs to completion, and `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe` returns 200 with a non-empty `Content-Length` that matches what `InstallPrompt.tsx` links to.
+  6. Manual end-to-end UAT passes on a real Windows box (marcwin or a Windows Sandbox from REL-02): download the published installer, install via UAC, load the unpacked extension, observe `MISSING → READY` + success toast, trigger a "Send to Mail recipient" from a Win32 app, confirm a Gmail draft appears. Results captured in `05-UAT.md`.
+  7. After UAT passes, the v2.0.0 milestone is re-archived via `/gsd:complete-milestone v2.0.0` — MILESTONES.md entry reflects the runtime-verified state (not just source-complete), the tag already exists on `develop`, and STATE.md transitions to `milestone_complete`.
+**Plans**: TBD
+**Notes**: Phase 5 is mostly Marc-owned manual work (CI triggering needs `gh` auth + approval, UAT needs a real Windows box). Scaffolded during the interim milestone audit when it became clear "source complete" ≠ "shipped".
+
 ## Phase Ordering Rationale
 
 - **Phase 1 is the unblocker.** Every parallelism opportunity in Phases 2-4 depends on small pre-work landing first: race fix (unblocks GOTEST-03), version constant (unblocks EXT host-state probing), `baseURL` injection (unblocks GOTEST-01), env/flag injection (unblocks E2E-02/03), `message_converter` extract (unblocks CPPTEST-02), manifest templates (unblocks INST-03), and the SignPath application (unblocks SIGN-02 weeks later).
@@ -93,11 +109,12 @@ Plans:
 | 2. Extension Install UX | 4/4 | Complete   | 2026-04-10 |
 | 3. Inno Setup Installer + Signing + Distribution | 4/4 | Complete   | 2026-04-10 |
 | 4. Test-Suite Completeness + E2E | 4/4 | Complete   | 2026-04-10 |
+| 5. Release Cut | 0/? | Not started | - |
 
 ## Coverage
 
-- v1 requirements: 43 total
-- Mapped to phases: 43 ✓
+- v1 requirements: 50 total (43 original + 7 REL-* added at Phase 5 insertion)
+- Mapped to phases: 50 ✓
 - Unmapped: 0
 - Duplicates: 0
 
