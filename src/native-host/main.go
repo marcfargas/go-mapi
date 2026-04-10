@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// Version is set at build time via -ldflags "-X main.Version=..."
-// Falls back to "0.0.0-dev" for development builds
-var Version = "0.0.0-dev"
-
 const (
 	HostName = "com.gomapi.host"
 )
