@@ -16,6 +16,12 @@ export const createMockPort = () => ({
 });
 
 // Mock Chrome APIs
+//
+// TSTEST-01 / Phase 4: extended with storage.session, alarms, and
+// notifications so the service-worker module under test can be loaded
+// without runtime errors. The pre-existing runtime / identity / action /
+// tabs / storage.{local,sync} stubs are unchanged to keep
+// protocol.integration.test.ts passing.
 export const chromeMock = {
   runtime: {
     connectNative: vi.fn(() => createMockPort()),
@@ -52,6 +58,30 @@ export const chromeMock = {
       get: vi.fn(() => Promise.resolve({})),
       set: vi.fn(() => Promise.resolve()),
     },
+    session: {
+      get: vi.fn(() => Promise.resolve({})),
+      set: vi.fn(() => Promise.resolve()),
+      remove: vi.fn(() => Promise.resolve()),
+      clear: vi.fn(() => Promise.resolve()),
+    },
+  },
+  alarms: {
+    create: vi.fn(),
+    clear: vi.fn(() => Promise.resolve(true)),
+    onAlarm: {
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      hasListener: vi.fn(() => false),
+    },
+  },
+  notifications: {
+    create: vi.fn(),
+    clear: vi.fn(),
+    onClicked: {
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      hasListener: vi.fn(() => false),
+    },
   },
 };
 
@@ -65,6 +95,18 @@ export const resetChromeMocks = () => {
   chromeMock.action.setBadgeText.mockClear();
   chromeMock.action.setBadgeBackgroundColor.mockClear();
   chromeMock.tabs.create.mockClear();
+  // TSTEST-01 extended surface — clear call history so tests starting
+  // from a known state do not see leftover calls from prior tests.
+  chromeMock.storage.session.get.mockClear();
+  chromeMock.storage.session.set.mockClear();
+  chromeMock.storage.session.remove.mockClear();
+  chromeMock.storage.session.clear.mockClear();
+  chromeMock.alarms.create.mockClear();
+  chromeMock.alarms.clear.mockClear();
+  chromeMock.alarms.onAlarm.addListener.mockClear();
+  chromeMock.notifications.create.mockClear();
+  chromeMock.notifications.clear.mockClear();
+  chromeMock.notifications.onClicked.addListener.mockClear();
 };
 
 // Helper to simulate auth token error
