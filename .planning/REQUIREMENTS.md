@@ -127,59 +127,57 @@ Explicitly excluded for v2.0.0. Documented to prevent scope creep.
 
 ## Traceability
 
-Populated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | TBD | Pending |
-| FOUND-02 | TBD | Pending |
-| FOUND-03 | TBD | Pending |
-| FOUND-04 | TBD | Pending |
-| FOUND-05 | TBD | Pending |
-| FOUND-06 | TBD | Pending |
-| EXT-01 | TBD | Pending |
-| EXT-02 | TBD | Pending |
-| EXT-03 | TBD | Pending |
-| EXT-04 | TBD | Pending |
-| EXT-05 | TBD | Pending |
-| EXT-06 | TBD | Pending |
-| EXT-07 | TBD | Pending |
-| INST-01 | TBD | Pending |
-| INST-02 | TBD | Pending |
-| INST-03 | TBD | Pending |
-| INST-04 | TBD | Pending |
-| INST-05 | TBD | Pending |
-| INST-06 | TBD | Pending |
-| INST-07 | TBD | Pending |
-| SIGN-01 | TBD | Pending |
-| SIGN-02 | TBD | Pending |
-| SIGN-03 | TBD | Pending |
-| SIGN-04 | TBD | Pending |
-| SIGN-05 | TBD | Pending |
-| GOTEST-01 | TBD | Pending |
-| GOTEST-02 | TBD | Pending |
-| GOTEST-03 | TBD | Pending |
-| GOTEST-04 | TBD | Pending |
-| CPPTEST-01 | TBD | Pending |
-| CPPTEST-02 | TBD | Pending |
-| CPPTEST-03 | TBD | Pending |
-| TSTEST-01 | TBD | Pending |
-| TSTEST-02 | TBD | Pending |
-| TSTEST-03 | TBD | Pending |
-| TSTEST-04 | TBD | Pending |
-| TSTEST-05 | TBD | Pending |
-| E2E-01 | TBD | Pending |
-| E2E-02 | TBD | Pending |
-| E2E-03 | TBD | Pending |
-| E2E-04 | TBD | Pending |
-| E2E-05 | TBD | Pending |
-| E2E-06 | TBD | Pending |
+| FOUND-01 | Phase 1 | Planned |
+| FOUND-02 | Phase 1 | Planned |
+| FOUND-03 | Phase 1 | Planned |
+| FOUND-04 | Phase 1 | Planned |
+| FOUND-05 | Phase 1 | Planned |
+| FOUND-06 | Phase 1 | Planned |
+| EXT-01 | Phase 2 | Planned |
+| EXT-02 | Phase 2 | Planned |
+| EXT-03 | Phase 2 | Planned |
+| EXT-04 | Phase 2 | Planned |
+| EXT-05 | Phase 2 | Planned |
+| EXT-06 | Phase 2 | Planned |
+| EXT-07 | Phase 3 | Planned |
+| INST-01 | Phase 3 | Planned |
+| INST-02 | Phase 3 | Planned |
+| INST-03 | Phase 3 | Planned |
+| INST-04 | Phase 3 | Planned |
+| INST-05 | Phase 3 | Planned |
+| INST-06 | Phase 3 | Planned |
+| INST-07 | Phase 3 | Planned |
+| SIGN-01 | Phase 1 | Planned |
+| SIGN-02 | Phase 3 | Planned |
+| SIGN-03 | Phase 3 | Planned |
+| SIGN-04 | Phase 3 | Planned |
+| SIGN-05 | Phase 3 | Planned |
+| GOTEST-01 | Phase 4 | Planned |
+| GOTEST-02 | Phase 4 | Planned |
+| GOTEST-03 | Phase 4 | Planned |
+| GOTEST-04 | Phase 4 | Planned |
+| CPPTEST-01 | Phase 4 | Planned |
+| CPPTEST-02 | Phase 4 | Planned |
+| CPPTEST-03 | Phase 4 | Planned |
+| TSTEST-01 | Phase 4 | Planned |
+| TSTEST-02 | Phase 4 | Planned |
+| TSTEST-03 | Phase 4 | Planned |
+| TSTEST-04 | Phase 4 | Planned |
+| TSTEST-05 | Phase 4 | Planned |
+| E2E-01 | Phase 4 | Planned |
+| E2E-02 | Phase 4 | Planned |
+| E2E-03 | Phase 4 | Planned |
+| E2E-04 | Phase 4 | Planned |
+| E2E-05 | Phase 4 | Planned |
+| E2E-06 | Phase 4 | Planned |
 
 **Coverage:**
 - v1 requirements: 43 total
-- Mapped to phases: 0 (filled by roadmapper)
-- Unmapped: 43 ⚠️ (expected pre-roadmap)
+- Mapped to phases: 43 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-10*
-*Last updated: 2026-04-10 after initial definition*
+*Last updated: 2026-04-10 after roadmap creation (traceability filled)*
