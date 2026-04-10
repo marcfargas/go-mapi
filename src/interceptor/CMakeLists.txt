@@ -12,6 +12,10 @@ endif()
 # Build options
 option(BUILD_TESTS "Build test harness" ON)
 
+# CPPTEST-01: enable CTest so add_subdirectory(tests) can register the
+# doctest message_converter_tests target with `ctest --output-on-failure`.
+enable_testing()
+
 # ============================================================
 # message_converter OBJECT library (FOUND-05)
 # ------------------------------------------------------------
@@ -85,9 +89,10 @@ elseif(MINGW)
     target_sources(go-mapi PRIVATE mapi_exports.def)
 endif()
 
-# Add the test harness
+# Add the test harness and the doctest-based unit tests (CPPTEST-01).
 if(BUILD_TESTS)
     add_subdirectory(test-harness)
+    add_subdirectory(tests)
 endif()
 
 # Summary

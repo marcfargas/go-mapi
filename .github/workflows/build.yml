@@ -33,6 +33,10 @@ jobs:
         run: .\build\bin\go-mapi-test-harness.exe .\build\bin\go-mapi.dll
         continue-on-error: true
 
+      - name: Run C++ Unit Tests (doctest via ctest)
+        working-directory: src/interceptor/build
+        run: ctest --output-on-failure --build-config ${{ matrix.config }}
+
       - name: Upload DLL Artifact
         uses: actions/upload-artifact@v4
         with:
