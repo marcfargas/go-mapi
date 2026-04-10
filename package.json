@@ -42,7 +42,7 @@
     "google-workspace"
   ],
   "author": "",
-  "license": "GPL-3.0-only",
+  "license": "LGPL-3.0-or-later",
   "engines": {
     "node": ">=18.0.0"
   },

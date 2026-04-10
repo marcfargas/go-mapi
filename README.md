@@ -170,9 +170,12 @@ We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines 
 
 ## License
 
-License TBD.
+go-mapi is Free Software licensed under the **GNU Lesser General Public License, version 3.0 or any later version** (`LGPL-3.0-or-later`).
 
-> **Note:** Until a license is explicitly added to this project, it shall not be considered license-free, copyleft, or public domain. The absence of a license means all rights are reserved - the code is provided for viewing only.
+- `LICENSE` — the full LGPL-3.0 text (additional permissions)
+- `COPYING` — the full GPL-3.0 text (LGPL-3.0 is built on top of GPL-3.0)
+
+See https://www.gnu.org/licenses/lgpl-3.0.html for the canonical license text and https://www.gnu.org/licenses/gpl-3.0.html for the underlying GPL-3.0.
 
 ## References
 
