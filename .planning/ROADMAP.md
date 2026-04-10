@@ -27,14 +27,14 @@
   6. The SignPath Foundation OSS application is filed with a written explanation of the MAPI-interception behavior and a link to the public Chrome Web Store listing
 **Plans**: 8 plans
 Plans:
-- [ ] 01-PLAN-01-version-constant-and-ready-message.md — Extract Version into version.go and add additive hostVersion field to READY message (FOUND-02)
-- [ ] 01-PLAN-02-watcher-race-fix.md — Surgical fix for emails map race so go test -race runs clean (FOUND-01)
-- [ ] 01-PLAN-03-gmail-client-baseurl-injection.md — Add baseURL field to GmailClient with NewGmailClientWithBase constructor (FOUND-03)
-- [ ] 01-PLAN-04-env-var-and-cli-flag.md — GOMAPI_WATCH_DIR env var and --gmail-api-base / --watch-dir CLI flags with CLI > env > default precedence (FOUND-04)
-- [ ] 01-PLAN-05-cpp-message-converter-extract.md — Extract pure conversion logic into message_converter.{h,cpp} as an OBJECT library (FOUND-05)
-- [ ] 01-PLAN-06-manifest-templates.md — Chrome/Edge manifest .tmpl files + install.ps1 template rendering (FOUND-06)
-- [ ] 01-PLAN-07-signpath-application-draft.md — Draft SignPath Foundation OSS application text (SIGN-01 half 1)
-- [ ] 01-PLAN-08-signpath-filing-confirmation.md — Human-verify checkpoint for Marc filing the application (SIGN-01 half 2)
+- [ ] 01-PLAN-01-version-constant-and-ready-message.md ï¿½ Extract Version into version.go and add additive hostVersion field to READY message (FOUND-02)
+- [ ] 01-PLAN-02-watcher-race-fix.md ï¿½ Surgical fix for emails map race so go test -race runs clean (FOUND-01)
+- [ ] 01-PLAN-03-gmail-client-baseurl-injection.md ï¿½ Add baseURL field to GmailClient with NewGmailClientWithBase constructor (FOUND-03)
+- [ ] 01-PLAN-04-env-var-and-cli-flag.md ï¿½ GOMAPI_WATCH_DIR env var and --gmail-api-base / --watch-dir CLI flags with CLI > env > default precedence (FOUND-04)
+- [ ] 01-PLAN-05-cpp-message-converter-extract.md ï¿½ Extract pure conversion logic into message_converter.{h,cpp} as an OBJECT library (FOUND-05)
+- [ ] 01-PLAN-06-manifest-templates.md ï¿½ Chrome/Edge manifest .tmpl files + install.ps1 template rendering (FOUND-06)
+- [ ] 01-PLAN-07-signpath-application-draft.md ï¿½ Draft SignPath Foundation OSS application text (SIGN-01 half 1)
+- [ ] 01-PLAN-08-signpath-filing-confirmation.md ï¿½ Human-verify checkpoint for Marc filing the application (SIGN-01 half 2)
 
 ### Phase 2: Extension Install UX
 **Goal**: A user opening the extension popup on a machine without the host sees a clear in-popup install banner with a direct download link, and the popup auto-detects the host appearing afterwards
