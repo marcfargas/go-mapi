@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v2.0.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-06-PLAN.md
-last_updated: "2026-04-10T16:00:28.576Z"
+stopped_at: Completed 01-07-PLAN.md
+last_updated: "2026-04-10T16:05:49.768Z"
 last_activity: 2026-04-10
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 8
-  completed_plans: 4
-  percent: 50
+  completed_plans: 5
+  percent: 63
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-10)
 ## Current Position
 
 Phase: 1 (Foundation & SignPath Application) — EXECUTING
-Plan: 5 of 8
+Plan: 6 of 8
 Status: Ready to execute
 Last activity: 2026-04-10
 
@@ -56,6 +56,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01-foundation-signpath-application P03 | 1 min | 1 tasks | 1 files |
 | Phase 01-foundation-signpath-application P05 | 5 min | 3 tasks | 5 files |
 | Phase 01-foundation-signpath-application P06 | 5min | 2 tasks | 3 files |
+| Phase 01-foundation-signpath-application P07 | 6 min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,8 @@ Recent decisions affecting current work:
 - [Phase 01-foundation-signpath-application]: Use CMake OBJECT library for message_converter.cpp so DLL and future doctest target share the same compiled object file — OBJECT library with TARGET_OBJECTS avoids recompiling message_converter.cpp for the test binary and keeps ABI parity
 - [Phase 01-foundation-signpath-application]: Keep GetOriginApplicationName in MapiImpl and populate msg.originApp in the DLL caller after invoking the pure converter — GetModuleFileNameExW requires a live process — not pure conversion; moving originApp assignment to the caller keeps the pure module testable
 - [Phase 01-foundation-signpath-application]: FOUND-06: dual-path manifest rendering (Local reads .tmpl, Download inline); String.Replace() literal substitution; JSON-escape HOST_PATH backslashes before substitution
+- [Phase 01-foundation-signpath-application]: SIGN-01 draft: defensive reviewer-facing framing with zero uses of 'intercept'; MAPI handler consistently described as standard Windows Mail client registration
+- [Phase 01-foundation-signpath-application]: SIGN-01 draft: Chrome Web Store URL left as explicit PLACEHOLDER with forced filing decision for Marc; draft lives at .planning/phases/01-foundation-signpath-application/SIGNPATH-APPLICATION.md (out of repo tree so it does not ship in installer)
 
 ### Pending Todos
 
@@ -88,6 +91,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-10T16:00:28.571Z
-Stopped at: Completed 01-06-PLAN.md
+Last session: 2026-04-10T16:05:49.764Z
+Stopped at: Completed 01-07-PLAN.md
 Resume file: None
