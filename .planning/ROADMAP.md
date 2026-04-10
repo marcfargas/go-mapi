@@ -89,7 +89,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & SignPath Application | 0/? | Not started | - |
+| 1. Foundation & SignPath Application | 7/8 | In Progress|  |
 | 2. Extension Install UX | 0/? | Not started | - |
 | 3. Inno Setup Installer + Signing + Distribution | 0/? | Not started | - |
 | 4. Test-Suite Completeness + E2E | 0/? | Not started | - |
