@@ -16,7 +16,14 @@ Enable "Send to Mail" on Windows for Gmail & Google Workspace. Open-source MAPI 
 
 **go-mapi brings "Send to → Mail recipient" to Gmail and Google Workspace users on Windows.**
 
-Right-click any file in Windows Explorer, click "Send to → Mail recipient", and the email appears ready to send in Gmail - no configuration needed, no subscription fees, completely open source.
+Right-click any file in Windows Explorer, click "Send to → Mail recipient", and the email appears ready to send in Gmail - no subscription fees, completely open source.
+
+> ⚠️ **Additional Software Required**
+> This extension requires two free, open-source companion programs installed on your Windows computer:
+> 1. **MAPI Interceptor DLL** — captures email requests from Windows applications
+> 2. **Native Messaging Host** — relays those requests to this browser extension
+>
+> Both are installed via a single PowerShell command (see Setup Instructions below). They are small, open-source programs that run entirely on your local machine. No third-party servers or background services are involved. Source code: [GitHub](https://github.com/marcfargas/go-mapi)
 
 ### The Problem
 
@@ -37,7 +44,7 @@ Third-party tools like Affixa filled this gap for years, but Affixa shut down in
 
 ✅ **Free & Open Source** - No subscription fees, no paid tiers, no feature locks  
 ✅ **Privacy-First** - Data stays on your computer until you send; no third-party servers  
-✅ **Simple Setup** - Install extension + run one PowerShell command; works immediately  
+✅ **Simple Setup** - Install extension + run one PowerShell command to install local components; works immediately  
 ✅ **Enterprise-Ready** - Deployable via Group Policy and Chrome Enterprise Policy  
 ✅ **Active Development** - Open source on GitHub with regular updates  
 
@@ -212,7 +219,6 @@ See [ROADMAP.md](https://github.com/marcfargas/go-mapi/blob/main/ROADMAP.md) for
 
 **Need help?**  
 - GitHub Issues: https://github.com/marcfargas/go-mapi/issues  
-- Discussions: https://github.com/marcfargas/go-mapi/discussions  
 - Documentation: https://github.com/marcfargas/go-mapi  
 
 **Want to contribute?**  
