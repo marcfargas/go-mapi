@@ -16,7 +16,7 @@ These are small, mechanical changes that unblock the parallel work in later phas
 - [x] **FOUND-03**: `GmailClient` accepts a `baseURL` field so tests can point it at an `httptest.Server` instead of `https://gmail.googleapis.com`
 - [ ] **FOUND-04**: The native host accepts a `GOMAPI_WATCH_DIR` environment variable and a `--gmail-api-base` CLI flag so integration and E2E tests can run without touching the real `%TEMP%\go-mapi\` or the real Gmail API
 - [x] **FOUND-05**: Pure message-conversion logic is extracted from `src/interceptor/main.cpp` into `src/interceptor/message_converter.{h,cpp}` (DLL glue stays in `main.cpp` and remains untested)
-- [ ] **FOUND-06**: The Chrome and Edge native-messaging manifests in `src/native-host/manifests/` are converted to `.tmpl` files with placeholders for the host executable path and extension IDs, and `scripts/install.ps1` is refactored to consume the same templates as the future installer
+- [x] **FOUND-06**: The Chrome and Edge native-messaging manifests in `src/native-host/manifests/` are converted to `.tmpl` files with placeholders for the host executable path and extension IDs, and `scripts/install.ps1` is refactored to consume the same templates as the future installer
 
 ### Extension Install UX (EXT)
 
