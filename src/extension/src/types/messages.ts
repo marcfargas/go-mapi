@@ -1,5 +1,7 @@
 // Native Messaging protocol types
 
+import type { HostState } from '../lib/hostDetector';
+
 export const MSG_TYPE = {
   // Host → Extension
   EMAIL: 'email',
@@ -136,13 +138,49 @@ export interface RecentDraft {
   gmailUrl: string;
 }
 
-export interface ExtensionMessage {
-  type: 'QUEUE_UPDATE' | 'CONNECTION_STATUS' | 'ERROR' | 'DRAFTS_UPDATE';
-  emails?: EmailWithId[];
-  connected?: boolean;
-  error?: string;
-  recentDrafts?: RecentDraft[];
+export interface QueueUpdateMessage {
+  type: 'QUEUE_UPDATE';
+  emails: EmailWithId[];
 }
+
+export interface DraftsUpdateMessage {
+  type: 'DRAFTS_UPDATE';
+  recentDrafts: RecentDraft[];
+}
+
+export interface ConnectionStatusMessage {
+  type: 'CONNECTION_STATUS';
+  connected: boolean;
+  error?: string;
+}
+
+export interface ErrorBroadcastMessage {
+  type: 'ERROR';
+  error: string;
+}
+
+// EXT-04: internal-only extension messages for the host detector state machine.
+// These are NOT added to the native-messaging wire protocol (protocol.go is
+// untouched) — they travel only between the service worker and the popup
+// via chrome.runtime.sendMessage.
+export interface HostStateMessage {
+  type: 'HOST_STATE';
+  state: HostState;
+  hostVersion?: string;
+  errorMessage?: string;
+}
+
+export interface HostInstalledToastMessage {
+  type: 'HOST_INSTALLED_TOAST';
+}
+
+export type ExtensionMessage =
+  | QueueUpdateMessage
+  | DraftsUpdateMessage
+  | ConnectionStatusMessage
+  | ErrorBroadcastMessage
+  | HostStateMessage
+  | HostInstalledToastMessage;
 
 // User settings
 export interface Settings {
