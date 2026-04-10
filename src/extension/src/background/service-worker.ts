@@ -25,6 +25,10 @@ let hostVersion = '';
 // the logic; this service worker owns the variable and the broadcast lifecycle.
 let hostState: HostState = 'UNKNOWN';
 let hostErrorMessage: string | undefined;
+// EXT-06: one-time success toast flag on the MISSING → READY edge. Persisted
+// in chrome.storage.session so it survives service worker sleep/wake but
+// resets cleanly on browser restart (acceptable per D-18).
+let hasShownInstalledToast = false;
 
 // Recent drafts shown in popup
 let recentDrafts: RecentDraft[] = [];
@@ -43,9 +47,20 @@ async function persistDrafts() {
 }
 
 async function loadState() {
-  const result = await chrome.storage.session.get(['emails', 'recentDrafts']);
+  const result = await chrome.storage.session.get([
+    'emails',
+    'recentDrafts',
+    'hasShownInstalledToast',
+  ]);
   if (result.emails) emails = new Map(Object.entries(result.emails as Record<string, EmailWithId>));
   if (result.recentDrafts) recentDrafts = result.recentDrafts as RecentDraft[];
+  if (result.hasShownInstalledToast === true) hasShownInstalledToast = true;
+}
+
+// EXT-06: persist the one-time toast flag so it survives service worker
+// sleep/wake within a browser session.
+async function persistInstalledToastFlag() {
+  await chrome.storage.session.set({ hasShownInstalledToast });
 }
 
 // Badge: red = pending emails, blue = drafts ready, empty = idle
@@ -70,11 +85,17 @@ function broadcastToPopup(message: ExtensionMessage) {
 // state to the popup. The popup subscribes to HOST_STATE via its existing
 // chrome.runtime.onMessage listener. No-op when the target state and error
 // message are both unchanged.
+//
+// EXT-06: on the MISSING → READY edge, fire a one-time HOST_INSTALLED_TOAST
+// broadcast so the popup (if open) can render a success toast. The flag is
+// persisted via chrome.storage.session so it only fires once per browser
+// session even if the service worker sleeps and wakes between transitions.
 function transitionHostState(
   next: HostState,
   opts: { errorMessage?: string } = {}
 ) {
   if (next === hostState && opts.errorMessage === hostErrorMessage) return;
+  const prev = hostState;
   hostState = next;
   hostErrorMessage = opts.errorMessage;
   console.log('[go-mapi] hostState →', next, opts);
@@ -84,6 +105,11 @@ function transitionHostState(
     hostVersion: hostVersion || undefined,
     errorMessage: opts.errorMessage,
   });
+  if (prev === 'MISSING' && next === 'READY' && !hasShownInstalledToast) {
+    hasShownInstalledToast = true;
+    persistInstalledToastFlag();
+    broadcastToPopup({ type: 'HOST_INSTALLED_TOAST' });
+  }
 }
 
 // --- Native host connection ---

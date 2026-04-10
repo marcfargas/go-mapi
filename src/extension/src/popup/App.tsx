@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Alert, Spinner } from 'react-bootstrap';
+import { Alert, Spinner, Toast, ToastContainer } from 'react-bootstrap';
 import EmailList from './EmailList';
 import EmailDetail from './EmailDetail';
 import InstallPrompt from './InstallPrompt';
@@ -17,6 +17,8 @@ interface AppState {
   // EXT-04: host detector state, broadcast from the service worker.
   hostState: HostState;
   hostErrorMessage: string | null;
+  // EXT-06: one-time success toast on MISSING → READY edge.
+  showInstalledToast: boolean;
 }
 
 export default function App() {
@@ -30,6 +32,7 @@ export default function App() {
     sending: false,
     hostState: 'UNKNOWN',
     hostErrorMessage: null,
+    showInstalledToast: false,
   });
 
   // Load initial data
@@ -85,6 +88,9 @@ export default function App() {
             hostState: message.state,
             hostErrorMessage: message.errorMessage ?? null,
           }));
+          break;
+        case 'HOST_INSTALLED_TOAST':
+          setState((s) => ({ ...s, showInstalledToast: true }));
           break;
       }
     };
@@ -155,6 +161,25 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* EXT-06: one-time success toast on the MISSING → READY edge. */}
+      <ToastContainer
+        position="top-center"
+        className="mt-2"
+        style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1080 }}
+      >
+        <Toast
+          show={state.showInstalledToast}
+          onClose={() => setState((s) => ({ ...s, showInstalledToast: false }))}
+          delay={5000}
+          autohide
+          bg="success"
+        >
+          <Toast.Body className="text-white">
+            go-mapi host detected — you&apos;re all set.
+          </Toast.Body>
+        </Toast>
+      </ToastContainer>
+
       <header className="app-header">
         <h1>go-mapi</h1>
         <div className="status">
