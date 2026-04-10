@@ -1,0 +1,5 @@
+To: void@example.com
+Subject: Empty body
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: base64
+
