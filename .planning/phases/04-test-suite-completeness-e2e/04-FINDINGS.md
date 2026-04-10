@@ -6,9 +6,11 @@ findings are documented here and flagged for the milestone reviewer.
 
 ---
 
-## PHASE-4-FINDING-01 — HOST_INSTALLED_TOAST (EXT-06) never fires in practice
+## PHASE-4-FINDING-01 — HOST_INSTALLED_TOAST (EXT-06) never fires in practice — RESOLVED
 
-**Severity:** high (the EXT-06 success-toast feature is silently broken).
+**Status:** ✅ Fixed at merge-time close-out (commit on develop after Phase 4 merge) using approach (1) from the suggested fixes below. A sticky `wasMissingThisSession` flag latches on entering MISSING and is checked at the READY edge instead of `prev === 'MISSING'`. The two Phase 4 tests that locked the buggy behavior were flipped to assert `toHaveLength(1)` and renamed.
+
+**Severity:** high (the EXT-06 success-toast feature was silently broken before the fix).
 
 **Files:** `src/extension/src/background/service-worker.ts` lines 93–113,
 with the toast guard at line 108.

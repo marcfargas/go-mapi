@@ -158,18 +158,12 @@ describe('service-worker HOST_STATE broadcast', () => {
     expect(missingStates[0].errorMessage).toBe(MISSING_HOST_CHROMIUM);
   });
 
-  // PHASE-4-FINDING-01: HOST_INSTALLED_TOAST cannot fire on a real
-  // reconnect because connectToNativeHost always transitions the state to
-  // PROBING before the new port can receive a READY message. The toast
-  // guard in service-worker.ts:108 requires a direct MISSING → READY
-  // edge, but the reachable sequence is MISSING → PROBING → READY. The
-  // toast therefore NEVER fires in production. Captured in 04-FINDINGS.md
-  // as a bug in Phase 2 EXT-06 NOT to be fixed in Phase 4 (per the
-  // no-source-modifications scope rule).
-  //
-  // These tests lock the current (buggy) behavior so any future fix is
-  // forced to come with updated tests.
-  it('does NOT fire HOST_INSTALLED_TOAST on a standard MISSING → PROBING → READY reconnect (PHASE-4-FINDING-01)', async () => {
+  // PHASE-4-FINDING-01 resolved: the MISSING → PROBING → READY reconnect
+  // path used to skip the toast because the guard checked `prev === 'MISSING'`
+  // directly, but the reachable sequence is always MISSING → PROBING → READY.
+  // Fix: latch a sticky `wasMissingThisSession` flag on entering MISSING and
+  // check that at the READY edge instead of `prev`.
+  it('fires HOST_INSTALLED_TOAST on a standard MISSING → PROBING → READY reconnect', async () => {
     const h = await importServiceWorker();
 
     // Drive into MISSING.
@@ -186,25 +180,19 @@ describe('service-worker HOST_STATE broadcast', () => {
     h.fireReady('2.0.0');
     await h.flushMicrotasks();
 
-    // READY was broadcast — the happy-path state transition works.
+    // READY was broadcast.
     const readyStates = hostStateBroadcasts(h.broadcasts()).filter(
       (m) => m.state === 'READY',
     );
     expect(readyStates.length).toBeGreaterThan(0);
 
-    // ...but the toast did NOT fire, because the transition was
-    // MISSING → PROBING → READY, not the direct MISSING → READY edge the
-    // guard requires. When the bug is fixed, this assertion will flip to
-    // `.toHaveLength(1)` and this test should be renamed.
-    expect(installedToastBroadcasts(h.broadcasts())).toHaveLength(0);
+    // And the one-time success toast fired.
+    expect(installedToastBroadcasts(h.broadcasts())).toHaveLength(1);
   });
 
-  it('HOST_INSTALLED_TOAST flag stays false across repeat MISSING → READY cycles', async () => {
-    // Even though the toast does not fire (PHASE-4-FINDING-01), this
-    // test locks the sticky-once-per-session invariant — if the bug is
-    // fixed, a second cycle must NOT re-fire. Asserting the count stays
-    // at zero here is both the bug-frozen state AND the future
-    // upper-bound invariant.
+  it('HOST_INSTALLED_TOAST fires only once across repeat MISSING → READY cycles', async () => {
+    // Sticky-once-per-session invariant: first cycle fires, subsequent
+    // cycles do not re-fire per the hasShownInstalledToast flag.
     const h = await importServiceWorker();
 
     for (let i = 0; i < 2; i++) {
@@ -216,10 +204,7 @@ describe('service-worker HOST_STATE broadcast', () => {
       await h.flushMicrotasks();
     }
 
-    // Current buggy behavior: zero toasts across both cycles. Once the
-    // bug is fixed, this should assert exactly 1 (first cycle fires,
-    // second cycle does not re-fire per the hasShownInstalledToast flag).
-    expect(installedToastBroadcasts(h.broadcasts())).toHaveLength(0);
+    expect(installedToastBroadcasts(h.broadcasts())).toHaveLength(1);
   });
 
   it('broadcasts ERROR (not MISSING) when disconnect carries an unknown message', async () => {

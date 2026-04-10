@@ -29,6 +29,11 @@ let hostErrorMessage: string | undefined;
 // in chrome.storage.session so it survives service worker sleep/wake but
 // resets cleanly on browser restart (acceptable per D-18).
 let hasShownInstalledToast = false;
+// EXT-06: sticky "was ever MISSING in this session" flag. The reconnect path
+// transits MISSING → PROBING → READY, so a direct prev==='MISSING' guard
+// never fires (PHASE-4-FINDING-01). This flag latches on entering MISSING
+// and is checked instead of prev at the READY edge.
+let wasMissingThisSession = false;
 
 // Recent drafts shown in popup
 let recentDrafts: RecentDraft[] = [];
@@ -95,9 +100,9 @@ function transitionHostState(
   opts: { errorMessage?: string } = {}
 ) {
   if (next === hostState && opts.errorMessage === hostErrorMessage) return;
-  const prev = hostState;
   hostState = next;
   hostErrorMessage = opts.errorMessage;
+  if (next === 'MISSING') wasMissingThisSession = true;
   console.log('[go-mapi] hostState →', next, opts);
   broadcastToPopup({
     type: 'HOST_STATE',
@@ -105,7 +110,10 @@ function transitionHostState(
     hostVersion: hostVersion || undefined,
     errorMessage: opts.errorMessage,
   });
-  if (prev === 'MISSING' && next === 'READY' && !hasShownInstalledToast) {
+  // EXT-06: fire the one-time success toast on the first READY after any
+  // MISSING this session. Checks the sticky wasMissingThisSession flag
+  // instead of `prev === 'MISSING'` because reconnect goes through PROBING.
+  if (next === 'READY' && wasMissingThisSession && !hasShownInstalledToast) {
     hasShownInstalledToast = true;
     persistInstalledToastFlag();
     broadcastToPopup({ type: 'HOST_INSTALLED_TOAST' });
