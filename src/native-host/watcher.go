@@ -266,14 +266,17 @@ func (ew *EmailWatcher) processFile(filename string) {
 	// Generate unique ID from content
 	id := generateID(data, filename)
 
+	// Stamp host version on the local mail before publishing the pointer into
+	// the map. FOUND-01: if we stamp after the unlock, concurrent readers
+	// holding the RLock via GetEmails receive the same *MailMessage and race
+	// with this write. Mutate before publish to keep the fix surgical.
+	mail.HostVersion = Version
+
 	// Store email
 	ew.mu.Lock()
 	ew.emails[id] = &mail
 	ew.fileToID[filename] = id
 	ew.mu.Unlock()
-
-	// Stamp host version so the extension knows which versions produced this
-	mail.HostVersion = Version
 
 	// Notify extension
 	if err := ew.messaging.SendEmail(id, &mail); err != nil {
