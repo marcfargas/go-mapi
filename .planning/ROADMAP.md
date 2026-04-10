@@ -7,7 +7,7 @@
 
 ## Phases
 
-- [ ] **Phase 1: Foundation & SignPath Application** - Mechanical refactors that unblock all parallel work, plus filing the SignPath OSS application early
+- [x] **Phase 1: Foundation & SignPath Application** - Mechanical refactors that unblock all parallel work, plus filing the SignPath OSS application early (completed 2026-04-10)
 - [ ] **Phase 2: Extension Install UX** - In-popup install prompt and host-state machine using a placeholder download URL
 - [ ] **Phase 3: Inno Setup Installer + Signing + Distribution** - Single-click signed Windows installer hosted on GitHub Releases, with the extension wired to the real URL
 - [ ] **Phase 4: Test-Suite Completeness + E2E** - Risk-based test gap fill across Go, C++, TypeScript, plus a Playwright happy-path E2E
@@ -89,7 +89,7 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation & SignPath Application | 7/8 | In Progress|  |
+| 1. Foundation & SignPath Application | 8/8 | Complete   | 2026-04-10 |
 | 2. Extension Install UX | 0/? | Not started | - |
 | 3. Inno Setup Installer + Signing + Distribution | 0/? | Not started | - |
 | 4. Test-Suite Completeness + E2E | 0/? | Not started | - |

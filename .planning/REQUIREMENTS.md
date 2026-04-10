@@ -40,7 +40,7 @@ These are small, mechanical changes that unblock the parallel work in later phas
 
 ### Signing + Distribution (SIGN)
 
-- [ ] **SIGN-01**: An application to the SignPath Foundation OSS program is filed with a short explanation of the MAPI-interception behavior and a link to the public Chrome Web Store listing (application is filed in Phase 1 because approval takes weeks)
+- [~] **SIGN-01**: An application to the SignPath Foundation OSS program is filed with a short explanation of the MAPI-interception behavior and a link to the public Chrome Web Store listing (application is filed in Phase 1 because approval takes weeks) — **DRAFT READY, FILING DEFERRED.** Full submission text in `.planning/phases/01-foundation-signpath-application/SIGNPATH-APPLICATION.md`. Marc to file on his own schedule; see `01-08-SUMMARY.md` for the pre-filing checklist.
 - [ ] **SIGN-02**: The CI pipeline invokes `SignPath/github-action-submit-signing-request@v1` to sign the DLL and native host executable BEFORE running `iscc.exe`, and signs the installer `.exe` as a final post-build step
 - [ ] **SIGN-03**: A fallback unsigned build path remains working so the installer can ship even if SignPath approval lags the code work
 - [ ] **SIGN-04**: The installer is published to GitHub Releases with a stable `https://github.com/<owner>/<repo>/releases/latest/download/go-mapi-setup.exe` URL that the extension's `InstallPrompt` links to
