@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,22 +17,82 @@ var (
 	logFile *os.File
 )
 
+// hostConfig holds the resolved startup configuration for the native host.
+// Populated once in main() from CLI flags + env vars + defaults, then read by
+// goroutines like handleCreateDraft. Do not mutate after main() has set it.
+var hostConfig struct {
+	watchDir     string
+	gmailAPIBase string
+}
+
+// parseFlags resolves startup configuration from CLI flags, environment variables,
+// and defaults, populating the package-level hostConfig.
+//
+// Precedence (highest wins): CLI flag > env var > default.
+//
+// Flags:
+//
+//	--watch-dir DIR        Override the default watch directory (%TEMP%\go-mapi\).
+//	                       Also respects GOMAPI_WATCH_DIR env var; the flag takes precedence.
+//	--gmail-api-base URL   Override the default Gmail API base URL. Flag-only, no env var
+//	                       fallback — scope-limited to what FOUND-04 requires.
+//
+// Unknown arguments (e.g. Chrome's extension origin URL passed as argv[1] by the
+// Native Messaging host invocation) are tolerated: flag.ContinueOnError + an
+// io.Discard error sink keep the host alive. Any parse warning is silently
+// dropped because logging is not yet initialized when parseFlags runs; the
+// resolved values are logged from main() once logging is up.
+func parseFlags() {
+	fs := flag.NewFlagSet("go-mapi-host", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // suppress default error output — Chrome passes unknown args
+
+	watchDirFlag := fs.String("watch-dir", "",
+		"Watch directory override. Precedence: --watch-dir flag > GOMAPI_WATCH_DIR env var > default (%TEMP%\\go-mapi\\)")
+	gmailBaseFlag := fs.String("gmail-api-base", "",
+		"Gmail API base URL override (for tests and E2E). Precedence: --gmail-api-base flag > default (https://www.googleapis.com/gmail/v1/users/me)")
+
+	// Parse — tolerate unknown args. Chrome invokes the host with the extension
+	// origin as argv[1]; a parse error here must NOT kill the host. Logging is
+	// not yet initialized so any warning silently drops via io.Discard.
+	_ = fs.Parse(os.Args[1:])
+
+	// Resolve watch dir: flag > env > default
+	switch {
+	case *watchDirFlag != "":
+		hostConfig.watchDir = *watchDirFlag
+	case os.Getenv("GOMAPI_WATCH_DIR") != "":
+		hostConfig.watchDir = os.Getenv("GOMAPI_WATCH_DIR")
+	default:
+		hostConfig.watchDir = defaultWatchDir()
+	}
+
+	// Resolve gmail base: flag > default. No env var per FOUND-04 scope.
+	if *gmailBaseFlag != "" {
+		hostConfig.gmailAPIBase = *gmailBaseFlag
+	} else {
+		hostConfig.gmailAPIBase = gmailAPIBase
+	}
+}
+
 func main() {
-	// Initialize logging
+	// Resolve config from CLI flags + env vars + defaults FIRST, so logging
+	// writes into the resolved watch directory (not the default) when
+	// --watch-dir or GOMAPI_WATCH_DIR is set.
+	parseFlags()
+
+	// Initialize logging (writes to hostConfig.watchDir/native-host.log)
 	initLogging()
 	defer closeLogging()
 
 	logInfo("go-mapi native host starting (version %s)", Version)
-
-	// Get watch directory
-	watchDir := getWatchDir()
-	logInfo("watching directory: %s", watchDir)
+	logInfo("resolved watch dir: %s", hostConfig.watchDir)
+	logInfo("resolved gmail api base: %s", hostConfig.gmailAPIBase)
 
 	// Create native messaging handler
 	messaging := NewNativeMessaging()
 
-	// Create email watcher
-	watcher, err := NewEmailWatcher(watchDir, messaging)
+	// Create email watcher using resolved watch dir
+	watcher, err := NewEmailWatcher(hostConfig.watchDir, messaging)
 	if err != nil {
 		logError("failed to create watcher: %v", err)
 		messaging.SendError(fmt.Sprintf("failed to create watcher: %v", err))
@@ -120,7 +181,7 @@ func handleCreateDraft(messaging *NativeMessaging, msg *IncomingMessage) {
 		return
 	}
 
-	client := NewGmailClient(msg.Token)
+	client := NewGmailClientWithBase(msg.Token, hostConfig.gmailAPIBase)
 
 	logInfo("creating draft with %d attachments", len(msg.Email.Attachments))
 	draftID, err := client.CreateDraft(msg.Email)
@@ -135,7 +196,10 @@ func handleCreateDraft(messaging *NativeMessaging, msg *IncomingMessage) {
 	messaging.SendDraftCreated(msg.ID, draftID, gmailURL)
 }
 
-func getWatchDir() string {
+// defaultWatchDir returns the default watch directory (%TEMP%\go-mapi\).
+// Used as a fallback when neither the --watch-dir flag nor the
+// GOMAPI_WATCH_DIR env var is set. See parseFlags for the full precedence.
+func defaultWatchDir() string {
 	// Use TEMP environment variable
 	tempDir := os.Getenv("TEMP")
 	if tempDir == "" {
@@ -148,8 +212,13 @@ func getWatchDir() string {
 }
 
 func initLogging() {
-	// Log to file in watch directory for debugging
-	logDir := getWatchDir()
+	// Log to file in the resolved watch directory for debugging.
+	// parseFlags() must run before initLogging() so hostConfig.watchDir is set;
+	// the fallback exists as a safety net in case that ordering ever breaks.
+	logDir := hostConfig.watchDir
+	if logDir == "" {
+		logDir = defaultWatchDir()
+	}
 	os.MkdirAll(logDir, 0755)
 
 	logPath := filepath.Join(logDir, "native-host.log")
