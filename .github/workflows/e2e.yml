@@ -37,6 +37,15 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Install MinGW and Ninja (for interceptor + test harness)
+        run: |
+          choco install mingw ninja cmake --no-progress -y
+          echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Build interceptor and test harness
+        working-directory: src/interceptor
+        run: .\build.ps1 -Config Release -Tests -Clean
+
       - name: Build native host
         working-directory: src/native-host
         run: go build -ldflags "-s -w -X main.Version=2.0.0" -o build/go-mapi-host.exe .
