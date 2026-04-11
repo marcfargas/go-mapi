@@ -128,19 +128,19 @@ test.describe('happy path (E2E-03)', () => {
     // rendered popup to find and click it.
 
     // Navigate into the email detail view by clicking the first email.
-    const emailRow = popupPage.locator('[class*="list-group-item"]').first();
-    if (await emailRow.isVisible().catch(() => false)) {
-      await emailRow.click();
-    }
+    // EmailList renders <li className="email-item">, not react-bootstrap
+    // ListGroup — match the actual class, not a guessed one.
+    const emailRow = popupPage.locator('li.email-item').first();
+    await expect(emailRow).toBeVisible({ timeout: 10_000 });
+    await emailRow.click();
 
-    // Click "Save as Draft" if visible — the label may be different,
-    // tolerate either text match.
-    const draftButton = popupPage
-      .getByRole('button', { name: /Save as Draft|Create Draft|Draft/i })
-      .first();
-    if (await draftButton.isVisible().catch(() => false)) {
-      await draftButton.click();
-    }
+    // EmailDetail renders a primary "Save as Draft" button from
+    // react-bootstrap <Button>. Wait for it to appear after the row click
+    // before asserting, so the test fails loudly if navigation broke
+    // instead of silently skipping the click.
+    const draftButton = popupPage.getByRole('button', { name: 'Save as Draft' });
+    await expect(draftButton).toBeVisible({ timeout: 10_000 });
+    await draftButton.click();
 
     // Pattern C: poll the mock Gmail counter until the draft POST is
     // observed, or until we hit the overall test timeout.
