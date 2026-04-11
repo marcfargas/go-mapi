@@ -12,177 +12,101 @@ files_reviewed_list:
   - tests/sandbox/sandbox.wsb
 findings:
   critical: 0
-  warning: 2
+  warning: 0
   info: 6
-  total: 8
+  total: 6
 status: issues_found
 ---
 
-# Phase 05: Code Review Report
+# Phase 05: Code Review Report (re-review)
 
 **Reviewed:** 2026-04-11
 **Depth:** standard
 **Files Reviewed:** 6
-**Status:** issues_found
+**Status:** issues_found (info only — no bugs, no security issues)
 
 ## Summary
 
-Phase 5 is a release-cut phase: a one-character C++ comment fix, a README
-rewrite for the v2.0.0 end-user install flow, and a Windows Sandbox harness
-(REL-02) for local install -> verify -> uninstall reproduction. The core
-changes are sound — the `-Wcomment` fix is correct, the installer-smoke
-registry assertions mirror `src/installer/go-mapi.iss`, the five native-
-messaging host registry keys listed in README match the `.iss` `[Registry]`
-section, and the documented direct-download URL pattern is valid.
+Re-review of Phase 5 after commits `17003a6` (WR-02) and `a523bda` (WR-01)
+on `tests/sandbox/run-sandbox-test.ps1`. Both warnings from the previous
+REVIEW.md are **resolved** and no new bugs were introduced. The six info
+items from the previous review remain — they are pre-existing polish
+items unrelated to the two fixes — so the status drops from `issues_found
+(2W/6I)` to `issues_found (0W/6I)`.
 
-Two **warnings** concern the `run-sandbox-test.ps1` orchestrator: (1) a
-documentation/code mismatch where `-FullTest` unconditionally runs
-`setup.ps1` (WinAppDriver install) even though `tests/sandbox/README.md`'s
-"Full path" narrative describes the flow without that step, and (2) a
-fragile `ConvertFrom-Json` on the `wsb list --raw` output with merged
-stderr that can throw under `$ErrorActionPreference = "Stop"` when the CLI
-emits a non-JSON diagnostic on first run. Neither blocks the release but
-both will bite a contributor reproducing a CI failure locally — the core
-use case of this harness.
+### Fix verification
 
-The remaining six findings are informational: minor documentation drift,
-one missing post-uninstall verification (the `previous-mail-client.json`
-backup isn't checked for deletion), step-counter drift in
-`run-sandbox-test.ps1` (`[1/4]..[4/4]` then `[5/5]`), and a couple of
-cross-reference polish items.
+**WR-01 (a523bda) — decouple `setup.ps1` from `-FullTest`: RESOLVED.**
+- Line 144 now reads `if ($SetupOnly)` — the previous `$SetupOnly -or
+  $FullTest` guard was replaced, so the WinAppDriver setup step runs only
+  when explicitly requested. Lines 139-143 document the rationale with an
+  explicit WR-01 back-reference.
+- The `-FullTest` code path now skips the setup step entirely and goes
+  directly from `[3/4]` (DLL registration) to `[5/5]` (install-and-verify),
+  matching the 8-step flow documented in `tests/sandbox/README.md:61-74`.
+- The dead-branch bug (setup failure not aborting the run) is also gone:
+  the `if (-not $setupSuccess)` check at line 160 is now inside the
+  `$SetupOnly` block and correctly exits with code 1 on failure.
+- No new issues: the two consecutive `if ($SetupOnly)` blocks
+  (lines 144-165 setup, 167-176 "SETUP COMPLETE" + exit) are stylistically
+  awkward but semantically correct — both execute only under `-SetupOnly`,
+  in order, and the second one short-circuits the fall-through into the
+  `-FullTest` block below.
 
-No security issues, no hardcoded secrets, no injection vectors. The
-sandbox harness is read-only by design (host-side) and writes only to a
-dedicated per-run output folder under `$env:TEMP`.
+**WR-02 (17003a6) — defensive `wsb --raw` JSON parse: RESOLVED.**
+- Lines 28-39: `wsb list --raw` now uses `2>$null` (separating stderr),
+  guards on `$LASTEXITCODE` and `IsNullOrWhiteSpace`, wraps the
+  `ConvertFrom-Json` in a `try`/`catch`, and continues with a warning on
+  parse failure. Correct semantics for the pre-flight "is there an
+  existing sandbox?" check — a parse failure should not abort the run.
+- Lines 52-63: the same pattern is applied to `wsb start --raw`, with the
+  correct difference that a parse failure here is fatal (`exit 1`) because
+  the sandbox ID is required for everything downstream. The error path
+  dumps the raw output for debugging.
+- `-ErrorAction Stop` on `ConvertFrom-Json` is redundant under
+  `$ErrorActionPreference = "Stop"` but harmless — it makes the intent
+  explicit and is defensive against future preference-scope changes.
+- No new issues: `$startRaw` is referenced inside the `catch` at line 61,
+  but it's assigned on line 53 before any parse can fail, so it is always
+  defined by the time the `catch` runs.
+- Out of scope by design: `Invoke-SandboxCommand` at line 95 still uses
+  the old `2>&1 | ConvertFrom-Json` pattern. This was previously flagged
+  as IN-05 (info) and is preserved below — the WR-02 fix scope was
+  explicitly the two host-side `--raw` calls, not the in-sandbox exec
+  wrapper.
 
-## Warnings
+### Remaining findings
 
-### WR-01: `-FullTest` runs `setup.ps1` but `tests/sandbox/README.md` does not document this
-
-**File:** `tests/sandbox/run-sandbox-test.ps1:113`
-**Issue:** The orchestrator unconditionally runs WinAppDriver setup when
-`$FullTest` is set:
-
-```powershell
-if ($SetupOnly -or $FullTest) {
-    Write-Host "`n[4/4] Running setup (WinAppDriver)..."
-    $setupSuccess = Invoke-SandboxCommand `
-        -Command "powershell -ExecutionPolicy Bypass -File C:\go-mapi\tests\sandbox\setup.ps1" `
-        ...
-}
-```
-
-However, `tests/sandbox/README.md:62-74` describes the `-FullTest` flow as
-a clean 8-step list that starts with "Stops any existing sandbox", runs
-`test-dll-registration.ps1`, then `install-and-verify.ps1`, and stops the
-sandbox. WinAppDriver setup is never mentioned. This creates three issues:
-
-1. Contributors expecting a ~5 min flow hit an unexplained WinAppDriver
-   install step that can fail on sandbox network hiccups and abort the
-   whole run.
-2. The REL-02 scope (install -> verify -> uninstall) does not need
-   WinAppDriver — the `install-and-verify.ps1` runner has no UI
-   automation dependency.
-3. If `setup.ps1` fails, `$setupSuccess` is captured but never checked
-   (the `if ($SetupOnly)` branch exits early, but the `-FullTest` path
-   falls through to `[5/5]` regardless of setup success).
-
-**Fix:** Decouple setup from `-FullTest`. Only run `setup.ps1` when
-`$SetupOnly` is explicitly set, OR introduce a new `-WithUIAutomation`
-switch for the legacy path. Recommended minimal fix:
-
-```powershell
-# Run setup (WinAppDriver install) — only when explicitly requested
-if ($SetupOnly) {
-    Write-Host "`n[4/5] Running setup (WinAppDriver)..."
-    $setupSuccess = Invoke-SandboxCommand `
-        -Command "powershell -ExecutionPolicy Bypass -File C:\go-mapi\tests\sandbox\setup.ps1" `
-        -Description "WinAppDriver setup"
-
-    if (-not $setupSuccess) {
-        Write-Host "=== SETUP FAILED ===" -ForegroundColor Red
-        if (-not $KeepRunning) { wsb stop --id $sandboxId 2>&1 | Out-Null }
-        exit 1
-    }
-    # ... existing early-exit block
-}
-```
-
-Drop the `-or $FullTest` from the guard. The REL-02 full flow has no
-UI-automation dependency and runs strictly faster without it.
-
----
-
-### WR-02: `wsb list --raw` output piped to `ConvertFrom-Json` with merged stderr can throw under `Stop` preference
-
-**File:** `tests/sandbox/run-sandbox-test.ps1:25`
-**Issue:**
-
-```powershell
-$existing = wsb list --raw 2>&1 | ConvertFrom-Json
-```
-
-With `$ErrorActionPreference = "Stop"` (line 11), any non-JSON line on
-stderr — a warning, a deprecation notice, a first-run "Telemetry is
-enabled" banner, a `wsb` update nag — gets merged into stdout via `2>&1`
-and fed to `ConvertFrom-Json`, which throws `Conversion from JSON failed`.
-The orchestrator then dies at the pre-flight check, before even trying
-to start the sandbox, with a cryptic error that looks unrelated to `wsb`.
-
-This is the exact kind of failure a contributor running the harness for
-the first time on a fresh marcwin clone will hit, and it defeats the
-"fast local feedback loop" goal the README advertises.
-
-**Fix:** Separate stdout and stderr, and guard the JSON parse:
-
-```powershell
-# Check for existing sandbox
-try {
-    $listOutput = wsb list --raw 2>$null
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($listOutput)) {
-        $existing = $null
-    } else {
-        $existing = $listOutput | ConvertFrom-Json -ErrorAction Stop
-    }
-} catch {
-    Write-Host "WARNING: Could not parse 'wsb list --raw' output: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "Continuing — assuming no existing sandbox." -ForegroundColor Yellow
-    $existing = $null
-}
-
-if ($existing -and $existing.WindowsSandboxEnvironments.Count -gt 0) {
-    Write-Host "WARNING: Existing sandbox found. Stopping it..." -ForegroundColor Yellow
-    foreach ($sb in $existing.WindowsSandboxEnvironments) {
-        wsb stop --id $sb.Id 2>&1 | Out-Null
-    }
-    Start-Sleep -Seconds 2
-}
-```
-
-Apply the same pattern to the `wsb start --raw` parse on line 36 — it
-has the identical failure shape.
-
----
+Six info items carry over unchanged from the previous review. None of the
+files they reference were modified by the two fix commits, so every
+citation still resolves to the same line. No bugs, no security issues, no
+hardcoded secrets, no injection vectors.
 
 ## Info
 
 ### IN-01: Step counter drift in `run-sandbox-test.ps1`
 
-**File:** `tests/sandbox/run-sandbox-test.ps1:35, 46, 78, 114, 143`
+**File:** `tests/sandbox/run-sandbox-test.ps1:50, 73, 105, 145, 180`
 **Issue:** The script prints step banners `[1/4]` (start), `[2/4]`
-(share), `[3/4]` (DLL test), `[4/4]` (setup), then jumps to `[5/5]`
-(install-and-verify). The "N of 4" denominator is wrong for any path
-that reaches step `[5/5]`. A contributor reading the output sees the
-counter reset and assumes something is re-running.
+(share), `[3/4]` (DLL test), `[4/4]` (setup, only under `-SetupOnly`),
+then `[5/5]` (install-and-verify, only under `-FullTest`). The "N of 4"
+denominator is wrong for any path that reaches step `[5/5]`, and under
+`-FullTest` the `[4/4]` step is skipped entirely — so the user sees
+`[1/4] → [2/4] → [3/4] → [5/5]`, which is jarring.
+
+The WR-01 fix actually made this slightly more visible: under
+`-FullTest`, `[4/4]` no longer prints at all, so the counter jumps
+from 3 to 5.
 
 **Fix:** Pick a single denominator (or compute it from the switches).
-Simplest: change all banners to use a consistent `[N/5]` pattern, or
-drop the "of N" and just number sequentially:
+Simplest: drop the "of N" and just number sequentially:
 
 ```powershell
 Write-Host "`n[1] Starting Windows Sandbox..."
 Write-Host "`n[2] Sharing project folder..."
-# ...
+Write-Host "`n[3] Testing DLL registration..."
+Write-Host "`n[4] Running setup (WinAppDriver)..."   # only under -SetupOnly
+Write-Host "`n[5] Running REL-02 install -> verify -> uninstall flow..."
 ```
 
 ---
@@ -198,13 +122,13 @@ foreach ($f in @("$env:ProgramFiles\go-mapi\go-mapi.dll",
                  "$env:ProgramData\go-mapi\com.gomapi.host.json")) {
 ```
 
-The post-install check (line 69-74) verifies four files, including
-`$env:ProgramData\go-mapi\uninst\previous-mail-client.json`. The
-backup file is intentionally preserved during a normal uninstall so
-users can roll back — the `.iss` script restores the previous default
-mail client from it. That's legitimate, but the current code silently
-drops the file from the check list with no comment, so a reviewer has
-to dig into `go-mapi.iss` to figure out the asymmetry.
+The post-install check (lines 69-74) verifies four files, including
+`$env:ProgramData\go-mapi\uninst\previous-mail-client.json`. The backup
+file is intentionally preserved during a normal uninstall so the
+uninstaller can restore the previous default mail client from it. That's
+legitimate, but the current code silently drops the file from the check
+list with no comment, so a reviewer has to dig into `go-mapi.iss` to
+figure out the asymmetry.
 
 **Fix:** Add an explicit comment (and ideally an assertion that the
 backup file either (a) is gone because the uninstaller restored and
@@ -221,8 +145,8 @@ foreach ($f in @("$env:ProgramFiles\go-mapi\go-mapi.dll",
                  "$env:ProgramData\go-mapi\com.gomapi.host.json")) {
 ```
 
-If the release contract is "delete after restore", add the file back
-to the assertion list.
+If the release contract is "delete after restore", add the file back to
+the assertion list.
 
 ---
 
@@ -230,14 +154,13 @@ to the assertion list.
 
 **File:** `tests/sandbox/sandbox.wsb:1`
 **Issue:** The file opens with `<Configuration>` and ends with
-`</Configuration>` on line 17 with no trailing newline. Windows Sandbox
-accepts this, but:
+`</Configuration>` on line 17. Windows Sandbox accepts this, but:
 
-1. Some editors (and `git diff`) mark the missing final newline
+1. Some editors (and `git diff`) flag the missing final newline
    (`\ No newline at end of file`) on every future edit.
 2. A leading `<?xml version="1.0" encoding="UTF-8"?>` declaration is the
-   Windows Sandbox convention shown in Microsoft's own docs and will
-   help XML-aware tooling (linters, IDEs) validate the file.
+   Windows Sandbox convention shown in Microsoft's own docs and helps
+   XML-aware tooling (linters, IDEs) validate the file.
 
 **Fix:**
 
@@ -258,9 +181,9 @@ Also ensure the file ends with a single LF after `</Configuration>`.
 **File:** `README.md:237`
 **Issue:** The troubleshooting bullet shows
 `taskkill /im explorer.exe /f && start explorer.exe`. `&&` is a
-`cmd.exe`/pwsh-7+ operator — Windows PowerShell 5.1 (which ships with
-Windows 10/11 by default and is what non-technical users will have
-open) does not support it and will error with
+`cmd.exe` / pwsh-7+ operator — Windows PowerShell 5.1 (which ships with
+Windows 10/11 by default and is what non-technical users will have open)
+does not support it and will error with
 `The token '&&' is not a valid statement separator in this version`.
 Since the README's audience for this section is end users troubleshooting
 a failed install, they're most likely in the default `powershell.exe`.
@@ -277,25 +200,29 @@ a failed install, they're most likely in the default `powershell.exe`.
 
 ---
 
-### IN-05: `Invoke-SandboxCommand` parameter splatting is brittle for commands with spaces
+### IN-05: `Invoke-SandboxCommand` JSON parse is brittle (same failure mode as the fixed WR-02)
 
-**File:** `tests/sandbox/run-sandbox-test.ps1:68`
+**File:** `tests/sandbox/run-sandbox-test.ps1:95`
 **Issue:**
 
 ```powershell
 $result = wsb exec --id $sandboxId --command $Command --run-as System --raw 2>&1 | ConvertFrom-Json
 ```
 
-`$Command` is a single string passed to `--command`. All current
-callers use paths without spaces (`C:\go-mapi\tests\sandbox\*.ps1`),
-so this works, but it sets a trap: the day someone adds a test script
-under a path with spaces or needs to pass arguments with spaces,
-quoting will silently break. Same `ConvertFrom-Json`-on-merged-stderr
-failure mode as WR-02 applies here.
+This is the one remaining `2>&1 | ConvertFrom-Json` pattern in the
+orchestrator after the WR-02 fix. It has the same failure mode: any
+non-JSON line on stderr (a deprecation notice, an update nag, a
+first-run diagnostic from `wsb exec`) will merge into stdout via `2>&1`
+and feed `ConvertFrom-Json` garbage, which throws under
+`$ErrorActionPreference = "Stop"` and aborts the run mid-test.
 
-**Fix:** Wrap the command value in explicit quotes inside the string,
-or switch to `--command-file` (if the `wsb` CLI supports it), and
-apply the defensive JSON parse from WR-02:
+This was deliberately left out of the WR-02 fix scope — the two host-side
+pre-flight calls (`wsb list`, `wsb start`) are the ones that break
+first-run contributors, and they're now robust. But the `exec` wrapper
+runs dozens of times per test and will eventually trip on a `wsb`
+diagnostic.
+
+**Fix:** Apply the same defensive pattern from the WR-02 fix:
 
 ```powershell
 function Invoke-SandboxCommand {
@@ -321,11 +248,16 @@ function Invoke-SandboxCommand {
 }
 ```
 
+Bonus: the `$Command` parameter is passed to `wsb exec --command` as a
+single string. All current callers use paths without spaces
+(`C:\go-mapi\tests\sandbox\*.ps1`), so this works, but it sets a quoting
+trap for the day someone adds a test script under a path with spaces.
+
 ---
 
-### IN-06: `tests/sandbox/README.md` prerequisite claims pwsh 7+ but invoked scripts run under `powershell.exe`
+### IN-06: `tests/sandbox/README.md` prerequisite claims pwsh 7+ but in-sandbox runners use `powershell.exe`
 
-**File:** `tests/sandbox/README.md:19-21`
+**File:** `tests/sandbox/README.md:18-20`
 **Issue:** The README lists
 
 > **PowerShell 7+** (`pwsh`) — used by `run-sandbox-test.ps1`. Windows
@@ -334,7 +266,7 @@ function Invoke-SandboxCommand {
 
 This is partly accurate (host-side `run-sandbox-test.ps1` is cleaner in
 pwsh 7) but the *in-sandbox* runners are invoked via
-`powershell -ExecutionPolicy Bypass -File ...` (lines 80, 116, 157 of
+`powershell -ExecutionPolicy Bypass -File ...` (lines 107, 147, 194 of
 `run-sandbox-test.ps1`), i.e. Windows PowerShell 5.1. A reader of the
 README might install pwsh 7 inside the sandbox thinking it's required,
 which is unnecessary work (and pwsh isn't in a vanilla sandbox image).
