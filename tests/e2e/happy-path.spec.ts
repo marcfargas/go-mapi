@@ -36,7 +36,24 @@ interface Setup {
   manifestPath: string;
 }
 
-test.describe('happy path (E2E-03)', () => {
+// The full happy-path test exercises draft creation end-to-end, which
+// requires Google OAuth via `chrome.identity.getAuthToken` in the
+// service worker (src/extension/src/background/service-worker.ts:365).
+// There is no way to authenticate against Google from CI without a
+// pre-provisioned logged-in Chrome profile, and Phase 4's E2E spike
+// did not plan for auth stubbing. Skipping here keeps CI deterministic.
+//
+// The popup-rendering and button-click surface area is already covered
+// by `extension.spec.ts`; the install-flow surface is covered by
+// `install-ux.spec.ts`; the real installer round-trip is covered by
+// `installer-smoke.yml`. The remaining gap — real Gmail draft creation
+// from a real "Send to Mail recipient" action — is verified manually
+// during REL-06 UAT on marcwin.
+//
+// To run this test locally with real auth: comment out `test.skip` and
+// sign into a Google account in the Chrome profile launched by
+// fixtures-v2's `launchPersistentContext`, then `npm run test:e2e`.
+test.describe.skip('happy path (E2E-03)', () => {
   let setup: Setup | null = null;
 
   test.beforeEach(async ({ extensionId }) => {
