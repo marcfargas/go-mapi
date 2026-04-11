@@ -93,10 +93,10 @@ Plans:
   7. After UAT passes, the v2.0.0 milestone is re-archived via `/gsd:complete-milestone v2.0.0` — MILESTONES.md entry reflects the runtime-verified state (not just source-complete), the tag already exists on `develop`, and STATE.md transitions to `milestone_complete`.
 **Plans**: 4 plans
 Plans:
-- [ ] 05-01-ci-trigger-docs-and-json-writer-fix-PLAN.md — json_writer.h -Wcomment fix + MANUAL-STEPS.md REL-01 CI trigger runbook (REL-01, REL-04)
-- [ ] 05-02-sandbox-harness-hardening-PLAN.md — tests/sandbox .wsb + install-and-verify.ps1 + FullTest + README (REL-02)
-- [ ] 05-03-readme-rewrite-PLAN.md — README.md end-user install flow rewrite (REL-03)
-- [ ] 05-04-release-uat-and-milestone-rearchive-PLAN.md — REL-05/06/07 runbook sections + 05-UAT.md checklist (REL-05, REL-06, REL-07)
+- [x] 05-01-ci-trigger-docs-and-json-writer-fix-PLAN.md — json_writer.h -Wcomment fix + MANUAL-STEPS.md REL-01 CI trigger runbook (REL-01, REL-04)
+- [x] 05-02-sandbox-harness-hardening-PLAN.md — tests/sandbox .wsb + install-and-verify.ps1 + FullTest + README (REL-02)
+- [x] 05-03-readme-rewrite-PLAN.md — README.md end-user install flow rewrite (REL-03)
+- [x] 05-04-release-uat-and-milestone-rearchive-PLAN.md — REL-05/06/07 runbook sections + 05-UAT.md checklist (REL-05, REL-06, REL-07)
 **Notes**: Phase 5 is mostly Marc-owned manual work (CI triggering needs `gh` auth + approval, UAT needs a real Windows box). Scaffolded during the interim milestone audit when it became clear "source complete" ≠ "shipped".
 
 ## Phase Ordering Rationale
