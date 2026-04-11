@@ -138,10 +138,41 @@ if ($SetupOnly) {
     exit 0
 }
 
-# Full test with UI automation
+# Full test: install -> verify -> uninstall round-trip (REL-02)
 if ($FullTest) {
-    Write-Host "`n=== FULL TEST (WinAppDriver) ===" -ForegroundColor Yellow
-    Write-Host "TODO: Implement WinAppDriver-based UI automation"
+    Write-Host "`n[5/5] Running REL-02 install -> verify -> uninstall flow..." -ForegroundColor Cyan
+
+    # Sanity check: the host-side Inno Setup compile must have happened already
+    $hostInstaller = Join-Path $ProjectRoot 'src\installer\dist\go-mapi-setup.exe'
+    if (-not (Test-Path $hostInstaller)) {
+        Write-Host "ERROR: $hostInstaller not found." -ForegroundColor Red
+        Write-Host "Compile it on the host first:" -ForegroundColor Yellow
+        Write-Host '  & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DGOMAPIVersion=2.0.0-local src\installer\go-mapi.iss' -ForegroundColor Yellow
+        if (-not $KeepRunning) { wsb stop --id $sandboxId 2>&1 | Out-Null }
+        exit 1
+    }
+    Write-Host "OK: Found $hostInstaller ($((Get-Item $hostInstaller).Length) bytes)" -ForegroundColor Green
+
+    $fullSuccess = Invoke-SandboxCommand `
+        -Command "powershell -ExecutionPolicy Bypass -File C:\go-mapi\tests\sandbox\install-and-verify.ps1" `
+        -Description "Install-and-verify round-trip"
+
+    # Retrieve the script log
+    $fullLog = Join-Path $OutputFolder "install-and-verify.log"
+    Write-Host "`n--- Install+Verify Output ---"
+    if (Test-Path $fullLog) {
+        Get-Content $fullLog
+    } else {
+        Write-Host "(No install-and-verify.log found at $fullLog)"
+    }
+    Write-Host "--- End Output ---"
+
+    if (-not $fullSuccess) {
+        Write-Host "`n=== REL-02 FULL TEST FAILED ===" -ForegroundColor Red
+        if (-not $KeepRunning) { wsb stop --id $sandboxId 2>&1 | Out-Null }
+        exit 1
+    }
+    Write-Host "`n=== REL-02 FULL TEST PASSED ===" -ForegroundColor Green
 }
 
 # Cleanup
