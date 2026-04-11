@@ -33,7 +33,7 @@ public:
     // Serialize a MailMessage to JSON string
     static std::string MessageToJson(const MailMessage& msg);
 
-    // Write a MailMessage to a JSON file in %TEMP%\go-mapi\
+    // Write a MailMessage to a JSON file in %TEMP%/go-mapi/
     // Returns the full path to the created file, empty string on failure
     static std::wstring WriteMailToFile(const MailMessage& msg);
 
