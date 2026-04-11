@@ -7,7 +7,8 @@
 
 ## Phases
 
-- [x] **Phase 1: Foundation & SignPath Application** - Mechanical refactors that unblock all parallel work, plus filing the SignPath OSS application early (completed 2026-04-10)
+- [x] **Phase 1: Foundation & SignPath Application** - Mechanical refactors that unblock all parallel work, plus filing the SignPath OSS application early
+ (completed 2026-04-10)
 - [x] **Phase 2: Extension Install UX** - In-popup install prompt and host-state machine using a placeholder download URL (completed 2026-04-10)
 - [x] **Phase 3: Inno Setup Installer + Signing + Distribution** - Single-click signed Windows installer hosted on GitHub Releases, with the extension wired to the real URL (completed 2026-04-10)
 - [x] **Phase 4: Test-Suite Completeness + E2E** - Risk-based test gap fill across Go, C++, TypeScript, plus a Playwright happy-path E2E (completed 2026-04-10)
@@ -90,7 +91,12 @@ Plans:
   5. The `v2.0.0` git tag is pushed, `installer-release.yml` runs to completion, and `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe` returns 200 with a non-empty `Content-Length` that matches what `InstallPrompt.tsx` links to.
   6. Manual end-to-end UAT passes on a real Windows box (marcwin or a Windows Sandbox from REL-02): download the published installer, install via UAC, load the unpacked extension, observe `MISSING → READY` + success toast, trigger a "Send to Mail recipient" from a Win32 app, confirm a Gmail draft appears. Results captured in `05-UAT.md`.
   7. After UAT passes, the v2.0.0 milestone is re-archived via `/gsd:complete-milestone v2.0.0` — MILESTONES.md entry reflects the runtime-verified state (not just source-complete), the tag already exists on `develop`, and STATE.md transitions to `milestone_complete`.
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 05-01-ci-trigger-docs-and-json-writer-fix-PLAN.md — json_writer.h -Wcomment fix + MANUAL-STEPS.md REL-01 CI trigger runbook (REL-01, REL-04)
+- [ ] 05-02-sandbox-harness-hardening-PLAN.md — tests/sandbox .wsb + install-and-verify.ps1 + FullTest + README (REL-02)
+- [ ] 05-03-readme-rewrite-PLAN.md — README.md end-user install flow rewrite (REL-03)
+- [ ] 05-04-release-uat-and-milestone-rearchive-PLAN.md — REL-05/06/07 runbook sections + 05-UAT.md checklist (REL-05, REL-06, REL-07)
 **Notes**: Phase 5 is mostly Marc-owned manual work (CI triggering needs `gh` auth + approval, UAT needs a real Windows box). Scaffolded during the interim milestone audit when it became clear "source complete" ≠ "shipped".
 
 ## Phase Ordering Rationale
@@ -109,7 +115,7 @@ Plans:
 | 2. Extension Install UX | 4/4 | Complete   | 2026-04-10 |
 | 3. Inno Setup Installer + Signing + Distribution | 4/4 | Complete   | 2026-04-10 |
 | 4. Test-Suite Completeness + E2E | 4/4 | Complete   | 2026-04-10 |
-| 5. Release Cut | 0/? | Not started | - |
+| 5. Release Cut | 0/4 | Not started | - |
 
 ## Coverage
 
