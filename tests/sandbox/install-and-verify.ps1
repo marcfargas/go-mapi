@@ -66,11 +66,14 @@ Log "OK: all 6 registry keys present"
 # Step 4: Verify files on disk
 Log ""
 Log "[4/6] Verifying installed files..."
+# previous-mail-client.json is only created by the installer's [Code]
+# section when a prior default mail client exists on the machine. Clean
+# sandbox runs have none, so we don't assert its presence here. The
+# post-uninstall check at step 6 already excludes it for the same reason.
 $expectedFiles = @(
     "$env:ProgramFiles\go-mapi\go-mapi.dll",
     "$env:ProgramFiles\go-mapi\go-mapi-host.exe",
-    "$env:ProgramData\go-mapi\com.gomapi.host.json",
-    "$env:ProgramData\go-mapi\uninst\previous-mail-client.json"
+    "$env:ProgramData\go-mapi\com.gomapi.host.json"
 )
 $fileFail = $false
 foreach ($f in $expectedFiles) {
@@ -82,7 +85,7 @@ foreach ($f in $expectedFiles) {
     }
 }
 if ($fileFail) { Log "FAILED: one or more files missing"; exit 1 }
-Log "OK: all 4 files present"
+Log "OK: all 3 files present"
 
 # Step 5: Silent uninstall
 Log ""
