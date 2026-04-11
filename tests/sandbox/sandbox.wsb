@@ -1,0 +1,17 @@
+<Configuration>
+    <VGpu>Disable</VGpu>
+    <Networking>Default</Networking>
+    <MemoryInMB>8192</MemoryInMB>
+    <AudioInput>Disable</AudioInput>
+    <VideoInput>Disable</VideoInput>
+    <ProtectedClient>Enable</ProtectedClient>
+    <PrinterRedirection>Disable</PrinterRedirection>
+    <ClipboardRedirection>Disable</ClipboardRedirection>
+    <MappedFolders>
+        <MappedFolder>
+            <HostFolder>C:\dev\go-mapi</HostFolder>
+            <SandboxFolder>C:\go-mapi</SandboxFolder>
+            <ReadOnly>true</ReadOnly>
+        </MappedFolder>
+    </MappedFolders>
+</Configuration>
