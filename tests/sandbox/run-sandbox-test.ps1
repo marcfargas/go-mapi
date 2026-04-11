@@ -136,8 +136,12 @@ if ($RegistrationOnly) {
     exit 0
 }
 
-# Run setup (WinAppDriver install)
-if ($SetupOnly -or $FullTest) {
+# Run setup (WinAppDriver install) -- only when explicitly requested via -SetupOnly.
+# WR-01: -FullTest does NOT run this step. The REL-02 install -> verify -> uninstall
+# flow has no UI-automation dependency; tests/sandbox/README.md describes the
+# -FullTest path without a WinAppDriver install step, and coupling the two
+# made full runs fragile on sandbox network hiccups.
+if ($SetupOnly) {
     Write-Host "`n[4/4] Running setup (WinAppDriver)..."
     $setupSuccess = Invoke-SandboxCommand `
         -Command "powershell -ExecutionPolicy Bypass -File C:\go-mapi\tests\sandbox\setup.ps1" `
@@ -152,6 +156,12 @@ if ($SetupOnly -or $FullTest) {
         Write-Host "(No setup log found)"
     }
     Write-Host "--- End Output ---"
+
+    if (-not $setupSuccess) {
+        Write-Host "`n=== SETUP FAILED ===" -ForegroundColor Red
+        if (-not $KeepRunning) { wsb stop --id $sandboxId 2>&1 | Out-Null }
+        exit 1
+    }
 }
 
 if ($SetupOnly) {
