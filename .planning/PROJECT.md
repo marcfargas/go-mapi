@@ -2,7 +2,7 @@
 
 ## What This Is
 
-go-mapi is a three-tier bridge (C++ MAPI DLL → Go native host → Chrome/Edge extension) that intercepts Windows "Send to Mail recipient" calls and routes them to Gmail as drafts. It's for Windows users who want their legacy desktop apps to compose email through Gmail without installing Outlook.
+go-mapi intercepts Windows "Send to Mail recipient" calls from legacy desktop apps and routes them to Gmail as drafts (or sent mail). Starting in v3.0, it ships as a standalone Wails (Go + WebView2) desktop app with a system tray UI — the C++ MAPI DLL writes email JSON to a temp directory, and the app watches, previews, and (optionally) auto-processes them. For Windows users who want their legacy apps to compose email through Gmail without installing Outlook.
 
 ## Core Value
 
@@ -10,26 +10,33 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 
 ## Requirements
 
-## Current Milestone: v3.0 Wails Pivot (scoping)
+## Current Milestone: v3.0 Wails Pivot
 
-**Goal:** Replace the browser extension + Chrome native-host architecture with a standalone Wails (Go + WebView2) desktop app. Remove dependence on CWS/Edge review cycles, unlock features the extension sandbox blocks (automode, composer, enterprise management), and open a Firefox-compatible path.
+**Goal:** Replace the Chrome/Edge extension + native-host split with a standalone Wails (Go + WebView2) desktop app that owns the UI, OAuth, notifications, and update loop. Retire the browser extension from CWS/Edge on ship. MAPI DLL, filesystem IPC, and privacy model are preserved unchanged.
 
-**Preserved from v2.0/v2.1:**
-- C++ MAPI interceptor DLL — unchanged
-- Filesystem-based IPC (`%TEMP%\go-mapi\`) — unchanged
-- Privacy-first delete-on-process model — unchanged
-- Go as primary language — unchanged
+**Target features:**
+- Wails shell with system tray icon and native window (replaces extension popup)
+- Queue viewer with per-action mode toggle: **Auto-draft / Auto-send / Manual**
+- Google OAuth desktop app flow (loopback redirect) replacing `chrome.identity.getAuthToken()`
+- Toast notifications when new emails arrive in the queue
+- Opt-out autoupdate (Wails/WebView2 mechanism, verified during research)
+- New signed installer + stable download URL; clean uninstall parity with v2.0 installer
+- Retire Chrome/Edge extension from stores when v3.0 ships (clean break, users uninstall v2.x + install v3.0 fresh)
 
-**Changes:**
-- UI: Chrome extension popup → system tray icon + native window
-- OAuth: `chrome.identity.getAuthToken()` → Google desktop app OAuth (loopback redirect)
-- New: toast notifications for queued emails, opt-out automode (auto-draft or auto-send)
-- New: opt-out autoupdate (Wails / WebView2 built-in if available)
-- Future: in-app composer (SMTP prep), enterprise control plane
+**Preserved from v2.x:**
+- C++ MAPI interceptor DLL (unchanged)
+- Filesystem-based IPC at `%TEMP%\go-mapi\` (unchanged)
+- Privacy-first delete-on-process model (unchanged)
+- Go as primary language (Wails uses Go backend + webview frontend)
+- RFC 2822 MIME building + Gmail API draft/send flow (Go side)
 
-**Key constraint:** RDS deployments host ~30 concurrent users on one server. Per-instance RAM must stay 10-30 MB (WebView2 shares the Edge runtime process; needs verification).
+**Key constraints:**
+- **RAM in RDS**: Primary deployment target includes RDS environments with ~30 concurrent users on one server. Per-instance RAM budget is 10-30 MB (WebView2 shares the Edge runtime process — needs measurement during research)
+- **Clean break migration**: Users uninstall v2.x, install v3.0 — no in-place upgrade path
+- **Browser-independent**: Wails app must not depend on Chrome/Edge being installed (WebView2 runtime is separate)
+- **Deferred to later milestones**: In-app composer (SMTP support prep), enterprise control plane for managed deployments
 
-See `.planning/notes/2026-04-12-architecture-reeval-wails.md`. Run `/gsd-new-milestone` to scope into phases.
+Seed: `.planning/notes/2026-04-12-architecture-reeval-wails.md`
 
 ### Validated
 
@@ -59,16 +66,32 @@ See `.planning/notes/2026-04-12-architecture-reeval-wails.md`. Run `/gsd-new-mil
 
 ### Active
 
-<!-- v3.0 Wails pivot — to be scoped via /gsd-new-milestone. -->
+<!-- v3.0 Wails pivot. All hypotheses until shipped. -->
 
-**Wails desktop app (scoping):**
-- [ ] Replace Chrome extension UI with Wails system tray + native window
-- [ ] Migrate OAuth from `chrome.identity` to Google desktop app flow (loopback redirect)
-- [ ] Toast notifications for queued emails
-- [ ] Automode (opt-out): auto-draft or auto-send without user interaction
-- [ ] Opt-out autoupdate mechanism
-- [ ] RAM profile verification — 10-30 MB per instance in RDS deployments (30 concurrent users)
-- [ ] New distribution model replacing CWS/Edge review cycle
+**Wails shell:**
+- [ ] Standalone Wails (Go + WebView2) desktop app replaces the extension popup
+- [ ] System tray icon with queue-count badge + context menu
+- [ ] Native window for queue viewing and per-email actions
+- [ ] WebView2 runtime dependency handled at install time (not bundled; use Evergreen runtime)
+
+**Queue & actions:**
+- [ ] Queue viewer lists pending emails from `%TEMP%\go-mapi\` (parity with current popup)
+- [ ] Per-action mode toggle: Auto-draft / Auto-send / Manual (default Manual)
+- [ ] Toast notification when a new email arrives in the queue
+
+**OAuth:**
+- [ ] Google desktop app OAuth flow (loopback redirect) replaces `chrome.identity`
+- [ ] Secure token storage (OS credential vault, not disk)
+
+**Distribution:**
+- [ ] Signed installer (SignPath) with stable download URL
+- [ ] Opt-out autoupdate — Wails/WebView2 mechanism verified during research
+- [ ] Clean uninstall (parity with v2.0 installer — registry, MAPI handler, temp dir)
+- [ ] Chrome/Edge extension unpublished from CWS and Edge stores on v3.0 ship
+
+**Non-functional:**
+- [ ] Per-instance RAM ≤ 30 MB measured under RDS-like conditions (30 concurrent users on one server)
+- [ ] Browser-independent: Wails app functions without Chrome/Edge installed
 
 ### Out of Scope
 
