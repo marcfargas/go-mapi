@@ -10,10 +10,27 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 
 ## Requirements
 
+## Current Milestone: v2.1.0 Release Pipeline
+
+**Goal:** Decouple extension and host release tracks with automated publishing via changesets.
+
+**Target features:**
+- Changesets monorepo setup with two packages (extension + host), separate version tracks
+- Automated extension publishing to Chrome Web Store and Edge Add-ons on Version Packages PR merge
+- Automated host/installer release via same changesets flow (separate version track, infrequent)
+- GitHub Releases with changelog and installer artifacts for host releases
+- Proper tagging, changelogs, and release notes generated from changesets
+
 ### Validated
 
-<!-- Inferred from existing code at v1.0.0. Shipped and in use. -->
+<!-- Shipped and confirmed valuable. -->
 
+- ✓ One-click Windows installer (`.exe`) with DLL copy, registry keys, native host binary, native messaging manifests — v2.0.0
+- ✓ Extension install prompt with direct download link + auto-detect success toast — v2.0.0
+- ✓ Clean uninstall path (DLL, registry, manifests, temp files) — v2.0.0
+- ✓ Test gap audit + high-risk gap filling (Go, TS, C++ message converter) — v2.0.0
+- ✓ Playwright E2E happy-path test + `go test -race` in CI — v2.0.0
+- ✓ SignPath Foundation application for code signing — v2.0.0
 - ✓ C++ DLL intercepts `MAPISendMail()` / `MAPISendMailW()` and writes email JSON to `%TEMP%\go-mapi\` — existing
 - ✓ Windows registry integration under `HKLM:\SOFTWARE\Clients\Mail\go-mapi` for MAPI handler registration — existing
 - ✓ Go native host watches `%TEMP%\go-mapi\`, debounces file writes, validates JSON, maintains in-memory queue — existing
@@ -29,24 +46,14 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 
 ### Active
 
-<!-- v2.0.0 milestone scope. All hypotheses until shipped. -->
+<!-- v2.1.0 milestone scope. All hypotheses until shipped. -->
 
-**One-click install for end users:**
-- [ ] Pre-built Windows installer (single `.exe` or `.msi`) that handles DLL copy, registry keys, native host binary, and native messaging manifest in one run
-- [ ] Extension detects when host is missing and shows an in-popup "Install" prompt with a direct download link (not a GitHub redirect)
-- [ ] Installer is hosted at a stable direct-download URL so the extension can link to it without GitHub release UI
-- [ ] Extension auto-detects when the host becomes available after install and shows a success toast (no manual reload)
-- [ ] Code-sign the installer via a free OSS signing service (SignPath.io or equivalent); ship unsigned with clear SmartScreen guidance if no option lands
-- [ ] Clean uninstall path that removes DLL, registry keys, native messaging manifest, and leftover temp files
-
-**Test suite completeness:**
-- [ ] Audit untested areas of the codebase (Go: `buildFullMIME`, Gmail HTTP client, logging; TypeScript: service worker, popup components; C++: DLL message conversion) and produce a gap list
-- [ ] Fill the high-risk gaps identified in the audit (prioritized by blast radius, not coverage %)
-- [ ] Add a Playwright (or equivalent) E2E test exercising the happy path: MAPI call → JSON file → queue → Gmail draft
-- [ ] Run `go test -race` in CI to catch concurrency bugs in the watcher
-
-**Polish:**
-- [ ] Capture and fix rough edges discovered during daily use (to be logged as they arise, not pre-listed)
+**Release pipeline — decoupled tracks:**
+- [ ] Changesets monorepo setup with two packages (extension + host), each on its own version track
+- [ ] Automated extension publishing to Chrome Web Store and Edge Add-ons on Version Packages PR merge
+- [ ] Automated host/installer release via same changesets flow (separate version track, infrequent)
+- [ ] GitHub Releases with changelog and installer artifacts for host releases
+- [ ] Proper tagging, changelogs, and release notes generated from changesets
 
 ### Out of Scope
 
@@ -56,10 +63,10 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 - Multi-account support (picking which Gmail account to draft in) — deferred to a future milestone
 - SMTP / non-Gmail provider support — deferred to a future milestone
 - Queue management features (bulk actions, filtering, search) — deferred to a future milestone
-- Host self-update (auto-download + replace) — not a priority for v2.0.0; users re-run the installer for updates
-- 80% line-coverage target or similar numeric gate — rejected in favor of risk-based gap filling
+- Host self-update (auto-download + replace) — not a priority; users re-run the installer for updates
 - macOS / Linux support — MAPI is Windows-only; cross-platform is not on the roadmap
 - Mobile apps — web/desktop only
+- Release announcements (social, blog, etc.) — out of scope; pipeline only
 
 ## Context
 
@@ -109,6 +116,9 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 | E2E test covers happy path only, not exhaustive scenarios | Regression safety on the main flow is the priority; edge cases stay in unit/integration tests | — Pending |
 | Code signing via free OSS service if available (SignPath.io), unsigned otherwise | Solo FOSS project budget; paid EV certs are out of scope | — Pending |
 | Outlook / multi-account / SMTP / queue mgmt deferred to future milestones | Keep v2.0.0 scope tight; install UX + reliability first, then expand | — Pending |
+| Decoupled release tracks (extension vs host) | Host is lean/stable, extension iterates frequently — separate version tracks prevent unnecessary host releases | — Pending |
+| Changesets for versioning + changelogs | Explicit changeset files per change, Version Packages PR flow, works with monorepo dual-package setup | — Pending |
+| Publish to both Chrome Web Store and Edge Add-ons | Extension already supports Edge; users on both browsers deserve auto-updates | — Pending |
 
 ## Evolution
 
@@ -128,4 +138,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-10 after initialization (v2.0.0 milestone kickoff)*
+*Last updated: 2026-04-12 after v2.1.0 milestone kickoff (Release Pipeline)*
