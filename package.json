@@ -1,10 +1,10 @@
 {
   "name": "go-mapi",
-  "version": "2.0.1",
   "description": "MAPI to Gmail bridge for Windows - send emails via Gmail from any Windows application",
   "private": true,
   "workspaces": [
-    "src/extension"
+    "src/extension",
+    "src/native-host"
   ],
   "scripts": {
     "build": "npm run build:interceptor && npm run build:native-host && npm run build:extension",
