@@ -97,7 +97,7 @@ Write-Host "Configuring CMake..."
 
 # Read version from package.json
 $repoRoot = Split-Path -Parent (Split-Path -Parent $interceptorRoot)
-$packageJson = Join-Path $repoRoot "package.json"
+$packageJson = Join-Path $repoRoot "src\native-host\package.json"
 $goMapiVersion = "0.0.0-dev"
 if (Test-Path $packageJson) {
     $pkg = Get-Content $packageJson -Raw | ConvertFrom-Json

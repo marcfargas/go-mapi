@@ -48,7 +48,9 @@ jobs:
 
       - name: Build native host
         working-directory: src/native-host
-        run: go build -ldflags "-s -w -X main.Version=2.0.0" -o build/go-mapi-host.exe .
+        run: |
+          V=$(jq -r '.version' package.json)
+          go build -ldflags "-s -w -X main.Version=$V" -o build/go-mapi-host.exe .
 
       - name: Build extension
         run: npm run build:extension
