@@ -120,9 +120,9 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — Install changesets, create native-host stub, configure workspaces
-- [ ] 06-02-PLAN.md — Migrate version sources in build scripts and Vite plugin
-- [ ] 06-03-PLAN.md — Create Version Packages CI workflow + CHANGESET_TOKEN setup
+- [x] 06-01-PLAN.md — Install changesets, create native-host stub, configure workspaces
+- [x] 06-02-PLAN.md — Migrate version sources in build scripts and Vite plugin
+- [x] 06-03-PLAN.md — Create Version Packages CI workflow + CHANGESET_TOKEN setup
 
 ### Phase 7: Extension Publishing Pipeline
 **Goal**: Merging a Version Packages PR that bumps the extension version automatically publishes the updated extension ZIP to Chrome Web Store and Edge Add-ons without manual steps
