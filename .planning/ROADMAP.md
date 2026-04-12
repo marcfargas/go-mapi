@@ -117,7 +117,12 @@ Plans:
   3. The Go host binary reports the version string from `src/native-host/package.json` (verified via `--version` flag or READY message)
   4. The Vite extension build embeds the version from `src/extension/package.json` (verified in built manifest.json)
   5. The Inno Setup installer embeds the version from `src/native-host/package.json` (verified in installer file properties)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Install changesets, create native-host stub, configure workspaces
+- [ ] 06-02-PLAN.md — Migrate version sources in build scripts and Vite plugin
+- [ ] 06-03-PLAN.md — Create Version Packages CI workflow + CHANGESET_TOKEN setup
 
 ### Phase 7: Extension Publishing Pipeline
 **Goal**: Merging a Version Packages PR that bumps the extension version automatically publishes the updated extension ZIP to Chrome Web Store and Edge Add-ons without manual steps
@@ -160,7 +165,7 @@ Plans:
 | 3. Inno Setup Installer + Signing + Distribution | v2.0.0 | 4/4 | Complete | 2026-04-10 |
 | 4. Test-Suite Completeness + E2E | v2.0.0 | 4/4 | Complete | 2026-04-10 |
 | 5. Release Cut | v2.0.0 | 4/4 | Complete | 2026-04-12 |
-| 6. Changesets Monorepo Scaffold | v2.1.0 | 0/? | Not started | - |
+| 6. Changesets Monorepo Scaffold | v2.1.0 | 0/3 | In progress | - |
 | 7. Extension Publishing Pipeline | v2.1.0 | 0/? | Not started | - |
 | 8. Host Release Pipeline | v2.1.0 | 0/? | Not started | - |
 | 9. Pipeline Integration and Legacy Retirement | v2.1.0 | 0/? | Not started | - |
@@ -195,4 +200,4 @@ Plans:
 | PIPE-03 | Phase 9 |
 
 ---
-*Roadmap updated: 2026-04-12 — v2.1.0 Release Pipeline phases added (6-9)*
+*Roadmap updated: 2026-04-12 — Phase 6 plans created (3 plans in 2 waves)*
