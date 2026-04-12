@@ -3,7 +3,7 @@ phase: 06-changesets-monorepo-scaffold
 plan: 03
 subsystem: ci
 tags: [changesets, github-actions, version-packages, ci, release-pipeline]
-status: awaiting-human-action
+status: complete
 dependency_graph:
   requires: [06-01]
   provides: [version-packages-workflow]
@@ -24,7 +24,7 @@ metrics:
   duration: ~5min
   completed_date: "2026-04-12"
   tasks_total: 2
-  tasks_completed: 1
+  tasks_completed: 2
   files_created: 1
   files_modified: 0
 requirements: [CS-04, CS-05, CS-06]
@@ -34,21 +34,16 @@ requirements: [CS-04, CS-05, CS-06]
 
 **One-liner:** GitHub Actions workflow for changesets Version Packages PR automation, using fine-grained PAT to bypass GITHUB_TOKEN CI trigger limitation.
 
-## Status: Awaiting Human Action (Task 2)
+## Status: Complete
 
-Plan paused at checkpoint:human-action — CHANGESET_TOKEN PAT must be created by Marc via GitHub web UI before the workflow can run.
+Both tasks completed. CHANGESET_TOKEN PAT created and added as repo secret by Marc (confirmed 2026-04-12). Workflow is ready to run on next main push containing changeset files.
 
 ## Completed Tasks
 
 | Task | Description | Commit | Files |
 |------|-------------|--------|-------|
 | 1 | Create version-packages.yml workflow | d802e31 | `.github/workflows/version-packages.yml` |
-
-## Pending Tasks
-
-| Task | Type | Description |
-|------|------|-------------|
-| 2 | human-action | Create CHANGESET_TOKEN Fine-Grained PAT in GitHub Settings + add as repo secret |
+| 2 | Create CHANGESET_TOKEN Fine-Grained PAT | (human action) | GitHub repo secret: CHANGESET_TOKEN |
 
 ## What Was Built
 
@@ -76,22 +71,15 @@ The `publish` step in changesets/action would attempt to run npm publish. Phase 
 
 Tag format `go-mapi-extension@X.Y.Z` and `go-mapi-host@X.Y.Z` is already configured in `.changeset/config.json` via `privatePackages.tag: true` (completed in Plan 01). The actual tag creation happens when the Version Packages PR is merged and the action runs its publish step. Phases 7/8 add the `publish` input that triggers tag creation.
 
-## Human Action Required (Task 2)
+## Task 2: CHANGESET_TOKEN PAT (Complete)
 
-Marc must create the CHANGESET_TOKEN Fine-Grained PAT:
+CHANGESET_TOKEN Fine-Grained PAT was created by Marc and added as a repository secret on 2026-04-12. Confirmed via user response "PAT created and saved".
 
-1. Go to https://github.com/settings/personal-access-tokens/new
-2. Token name: `go-mapi-changeset-token`
-3. Expiration: 90 days (or custom)
-4. Repository access: Only select repositories -> `go-mapi`
-5. Permissions: Contents (Read and write), Pull requests (Read and write)
-6. Generate token and copy it
-7. Go to https://github.com/marcfargas/go-mapi/settings/secrets/actions/new
-8. Name: `CHANGESET_TOKEN`
-9. Secret: paste the generated token
-10. Add secret
-
-Verification: CHANGESET_TOKEN must appear at https://github.com/marcfargas/go-mapi/settings/secrets/actions
+PAT configuration:
+- Token name: `go-mapi-changeset-token`
+- Repository access: go-mapi only
+- Permissions: Contents (Read and write), Pull requests (Read and write)
+- Secret name in repo: `CHANGESET_TOKEN`
 
 ## Deviations from Plan
 
