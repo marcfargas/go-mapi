@@ -1,202 +1,95 @@
-# Requirements: go-mapi v2.0.0
+# Requirements: go-mapi
 
-**Defined:** 2026-04-10
+**Defined:** 2026-04-12
 **Core Value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
 
-## v1 Requirements
+## v2.1.0 Requirements
 
-Requirements for the v2.0.0 release. Grouped by the seven workstreams identified in research. Each maps to exactly one roadmap phase.
+Requirements for v2.1.0 Release Pipeline milestone. Each maps to roadmap phases.
 
-### Foundation (pre-requisite refactors)
+### Changesets Foundation
 
-These are small, mechanical changes that unblock the parallel work in later phases. None are user-visible.
+- [ ] **CS-01**: Changesets monorepo workspace configured with `.changeset/config.json` and `privatePackages: { version: true, tag: true }`
+- [ ] **CS-02**: `src/native-host/package.json` stub created as private workspace package for host version tracking
+- [ ] **CS-03**: Root `package.json` `workspaces` field includes both `src/extension` and `src/native-host`
+- [ ] **CS-04**: Extension and host each have independent semver tracks with per-package git tags (`go-mapi-extension@X.Y.Z`, `go-mapi-host@X.Y.Z`)
+- [ ] **CS-05**: Fine-Grained PAT (`CHANGESET_TOKEN`) configured as repo secret with `contents: write` and `pull-requests: write` scopes
+- [ ] **CS-06**: Version Packages PR auto-created by `changesets/action@v1.7.0` on push to `main` when changesets exist
 
-- [x] **FOUND-01**: The existing `emails` map race condition documented in `.planning/codebase/CONCERNS.md` is fixed and `go test -race ./...` runs clean locally
-- [x] **FOUND-02**: The native host exports a `Version` constant from `src/native-host/version.go` and the existing `SendReady` message carries this version field to the extension
-- [x] **FOUND-03**: `GmailClient` accepts a `baseURL` field so tests can point it at an `httptest.Server` instead of `https://gmail.googleapis.com`
-- [x] **FOUND-04**: The native host accepts a `GOMAPI_WATCH_DIR` environment variable and a `--gmail-api-base` CLI flag so integration and E2E tests can run without touching the real `%TEMP%\go-mapi\` or the real Gmail API
-- [x] **FOUND-05**: Pure message-conversion logic is extracted from `src/interceptor/main.cpp` into `src/interceptor/message_converter.{h,cpp}` (DLL glue stays in `main.cpp` and remains untested)
-- [x] **FOUND-06**: The Chrome and Edge native-messaging manifests in `src/native-host/manifests/` are converted to `.tmpl` files with placeholders for the host executable path and extension IDs, and `scripts/install.ps1` is refactored to consume the same templates as the future installer
+### Version Source Migration
 
-### Extension Install UX (EXT)
+- [ ] **VER-01**: Extension build reads version from `src/extension/package.json` instead of root `package.json`
+- [ ] **VER-02**: Go host build reads version from `src/native-host/package.json` via ldflags
+- [ ] **VER-03**: Installer build reads version from `src/native-host/package.json`
+- [ ] **VER-04**: `manifest.json` version auto-synced via lifecycle script on changeset version bump (strips prerelease suffixes for CWS integer-only format)
 
-- [x] **EXT-01**: A new `src/extension/src/lib/hostDetector.ts` module implements a state machine `UNKNOWN → PROBING → {READY | MISSING | OUTDATED | ERROR}` driven by `chrome.runtime.connectNative` results and `chrome.runtime.lastError`
-- [x] **EXT-02**: The detector classifies the `"Specified native messaging host not found"` substring as the `MISSING` state and logs the full error message for forward compatibility
-- [x] **EXT-03**: A new `src/extension/src/lib/hostVersion.ts` module defines a `MIN_SUPPORTED_HOST_VERSION` constant and a version comparison helper; the current v2.0.0 host version is set to equal the minimum so the `OUTDATED` branch ships as a dead branch ready for v3.0.0 activation
-- [x] **EXT-04**: The service worker broadcasts an internal `HOST_STATE` message whenever the detector's state changes, and the popup renders based on that state (this broadcast is internal to the extension only — the native-messaging wire protocol is not extended)
-- [x] **EXT-05**: A new `src/extension/src/popup/InstallPrompt.tsx` component renders when the state is `MISSING`, showing a direct download link, short SmartScreen guidance copy, and no GitHub redirect
-- [x] **EXT-06**: The popup auto-detects when the host appears after install by reusing the existing 6-second reconnect alarm, gated on an actual `READY` message (not just a successful port open), and shows a one-time success toast on the `MISSING → READY` transition
-- [x] **EXT-07**: When the real installer URL exists at the end of Phase 3, the placeholder download URL in `InstallPrompt.tsx` is swapped for the stable GitHub Releases `latest/download/go-mapi-setup.exe` URL — **CLOSED at Phase 2/3 merge.** Phase 2 used the final URL as its placeholder (matching Phase 3's installer-release.yml output filename), so the swap was a no-op; the TODO comment was removed during the merge close-out.
+### Extension Publishing
 
-### Installer (INST)
+- [ ] **PUB-01**: `publish-extension.yml` workflow auto-publishes extension ZIP to Chrome Web Store on extension version bump
+- [ ] **PUB-02**: Same workflow auto-publishes to Edge Add-ons via `birchill/edge-addon-upload@v1.1.0` (API v1.1 credentials)
+- [ ] **PUB-03**: CWS OAuth credentials stored as repo secrets (`CWS_EXTENSION_ID`, `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`)
+- [ ] **PUB-04**: Edge Add-ons credentials stored as repo secrets (`EDGE_API_KEY`, `EDGE_CLIENT_ID`, `EDGE_PRODUCT_ID`)
 
-- [x] **INST-01**: A first-class `src/installer/` directory contains an Inno Setup 6 script (`go-mapi.iss`) that builds a single Windows installer executable
-- [x] **INST-02**: The installer copies binaries to `%ProgramFiles%\go-mapi\` and registers the MAPI handler at `HKLM:\SOFTWARE\Clients\Mail\go-mapi`
-- [x] **INST-03**: The installer writes native-messaging manifest registry entries for all five Chromium-family browsers: Chrome, Edge, Chromium, Brave, and Vivaldi (one shared manifest file, five registry trees)
-- [x] **INST-04**: The installer runs with a single UAC elevation prompt and writes no per-user state (all state under HKLM and `%ProgramData%\go-mapi\`)
-- [x] **INST-05**: Before overwriting the default Mail client registration, the installer backs up the prior handler identity to `%ProgramData%\go-mapi\uninst\previous-mail-client.json`
-- [x] **INST-06**: The installer's uninstall flow removes the DLL, native host binary, all five browser registry trees, the MAPI handler registration, and any leftover files in `%TEMP%\go-mapi\`, and restores the previous default Mail client from the backup file
-- [x] **INST-07**: A Pester 5 smoke test runs on a fresh `windows-latest` GitHub Actions runner: silent install → verify registry state → verify files present → silent uninstall → verify all state removed
+### Host Release
 
-### Signing + Distribution (SIGN)
+- [ ] **REL-01**: `installer-release.yml` converted from tag trigger to `workflow_dispatch` with version input
+- [ ] **REL-02**: GitHub Release auto-created on host version bump with installer `.exe` and `.sha256` sidecar
+- [ ] **REL-03**: Stable download URL `releases/latest/download/go-mapi-setup.exe` verified working
 
-- [~] **SIGN-01**: An application to the SignPath Foundation OSS program is filed with a short explanation of the MAPI-interception behavior and a link to the public Chrome Web Store listing (application is filed in Phase 1 because approval takes weeks) — **DRAFT READY, FILING DEFERRED.** Full submission text in `.planning/phases/01-foundation-signpath-application/SIGNPATH-APPLICATION.md`. Marc to file on his own schedule; see `01-08-SUMMARY.md` for the pre-filing checklist.
-- [x] **SIGN-02**: The CI pipeline invokes `SignPath/github-action-submit-signing-request@v1` to sign the DLL and native host executable BEFORE running `iscc.exe`, and signs the installer `.exe` as a final post-build step
-- [x] **SIGN-03**: A fallback unsigned build path remains working so the installer can ship even if SignPath approval lags the code work
-- [x] **SIGN-04**: The installer is published to GitHub Releases with a stable `https://github.com/<owner>/<repo>/releases/latest/download/go-mapi-setup.exe` URL that the extension's `InstallPrompt` links to
-- [x] **SIGN-05**: The GitHub Releases page for v2.0.0 includes SmartScreen guidance in the release notes (steps to click through "More info" → "Run anyway" in the unsigned fallback case)
+### Pipeline Integration
 
-### Go Test Completeness (GOTEST)
+- [ ] **PIPE-01**: `release-pipeline.yml` orchestrates changesets action, detects which packages bumped, dispatches appropriate publish workflows
+- [ ] **PIPE-02**: Legacy `release.yml` retired after at least one successful end-to-end release via new pipeline
+- [ ] **PIPE-03**: Extension-only changeset fires only extension publish; host changeset fires only host release; combined changeset fires both
 
-- [x] **GOTEST-01**: The Gmail HTTP client in `src/native-host/gmail.go` has tests that use `httptest.Server` via the `GmailClient.baseURL` injection point, covering success, 4xx auth errors, 5xx retries (if any), and network failure paths
-- [x] **GOTEST-02**: The `buildFullMIME()` function has golden-file tests that cover RFC 2822 encoding edge cases: UTF-8 subjects, attachment filenames with spaces and non-ASCII characters, multipart boundary collision resistance, long bodies, and empty bodies
-- [x] **GOTEST-03**: The GitHub Actions workflow runs `go test -race ./...` as a dedicated Windows nightly job (not per-PR) with `CGO_ENABLED=1`; the per-PR job continues running without `-race` to keep the PR feedback loop fast
-- [x] **GOTEST-04**: A risk-based test audit produces a short punch list of remaining untested code (logging helpers, validator edge cases, watcher retry paths) and any entries judged load-bearing are filled; low-risk gaps are explicitly deferred with reasoning
+## Future Requirements
 
-### C++ Test Completeness (CPPTEST)
+### Operational
 
-- [x] **CPPTEST-01**: The doctest header-only test framework is added to the interceptor build under `src/interceptor/tests/` and wired into CMake as an optional `BUILD_TESTS=ON` target
-- [x] **CPPTEST-02**: The extracted `message_converter` from FOUND-05 has doctest tests covering ANSI and Wide conversion paths, recipient address normalization (SMTP: / smtp: / MAILTO: / mailto: / plain), null/empty field handling, and UTF-8 body content
-- [x] **CPPTEST-03**: CI builds and runs the C++ tests on `windows-latest` as part of the existing `build-interceptor` job
-
-### TypeScript / Extension Test Completeness (TSTEST)
-
-- [x] **TSTEST-01**: `vitest-chrome` is added to the extension as a devDependency and configured in `vitest.config.ts` so tests can mock `chrome.*` APIs and the native-messaging port
-- [x] **TSTEST-02**: `hostDetector.ts` has unit tests covering every state transition, including the exact substring matches from EXT-02 against real fixture strings captured during E2E runs
-- [x] **TSTEST-03**: `hostVersion.ts` has unit tests for the comparison helper, including the dead-branch case (current version equals minimum)
-- [x] **TSTEST-04**: `InstallPrompt.tsx` has component tests via `@testing-library/react` covering the MISSING state render, the download link click handler, and the SmartScreen guidance copy
-- [x] **TSTEST-05**: The service worker's `HOST_STATE` broadcast logic has tests covering the `MISSING → READY` success-toast path and the reconnect-alarm gating logic from EXT-06
-
-### End-to-End Tests (E2E)
-
-- [x] **E2E-01**: Playwright is configured with `launchPersistentContext` and headed Chromium, running on `windows-latest` in a dedicated GitHub Actions workflow (`e2e.yml`)
-- [x] **E2E-02**: A mock Gmail server (stdlib Go `httptest.Server`-based) is added under `tests/e2e/mock-gmail/` and the E2E tests inject it via the `--gmail-api-base` flag from FOUND-04
-- [x] **E2E-03**: T1 happy-path test: drop a fixture JSON file into a per-test watch directory (via `GOMAPI_WATCH_DIR`) → real Go native host processes it → extension popup shows the email → click "Save as Draft" → mock Gmail receives the draft request → popup shows success notification
-- [x] **E2E-04**: T2 install-UX test: launch Chromium with no native-messaging manifest registered → assert `InstallPrompt` appears in the popup → programmatically write the manifest pointing at a small `tests/e2e/mock-host/` binary → fire a "Retry" action → assert the state transitions to `READY` and the success toast appears
-- [x] **E2E-05**: A reserved spike day investigates Playwright + headed Chromium + native messaging flakiness on `windows-latest` and documents stable wait patterns, retry strategy, and any runner-image workarounds
-- [x] **E2E-06**: Real `chrome.runtime.lastError.message` strings are captured from the E2E runs and committed as fixtures under `src/extension/src/__fixtures__/chrome-errors.ts`, consumed by the TSTEST-02 tests
-
-### Release Cut (REL) — Phase 5
-
-Source-complete is not shipped. Phase 5 exists because the v2.0.0 milestone doesn't close until a real user can download a working installer from GitHub Releases, install it on a fresh Windows box, and successfully create a Gmail draft via a "Send to Mail recipient" action. Ships unsigned per Phase 5 decision; SignPath-signed re-cut lives in v2.0.1.
-
-- [x] **REL-01**: All three `windows-latest` CI workflows run green at least once — `.github/workflows/installer-smoke.yml` (Pester install → registry → uninstall round-trip), `.github/workflows/e2e.yml` (Playwright happy-path + install-UX specs), and `.github/workflows/go-race-nightly.yml` (`go test -race ./...` on amd64). Any flakes or failures surfaced during the first run are fixed or explicitly documented as pre-existing. Triggered via `gh workflow run` on the `develop` branch.
-- [x] **REL-02**: The existing `tests/sandbox/` Windows Sandbox harness (`run-sandbox-test.ps1`, `setup.ps1`, `test-dll-registration.ps1`) is hardened to run the full v2.0.0 install → E2E → uninstall flow locally on a Windows 11 24H2+ host with the `wsb` CLI. At minimum: a `.wsb` config committed under `tests/sandbox/`, a documented `pwsh tests/sandbox/run-sandbox-test.ps1 -FullTest` entry point that produces green/red output, and `tests/sandbox/README.md` explaining the prerequisites, expected runtime, and failure modes. Doesn't replace CI — it's the local repro path that doesn't exist today.
-- [x] **REL-03**: `README.md` install instructions are rewritten for the real v2.0.0 distribution flow: download `go-mapi-setup.exe` from the GitHub Releases page, click through the SmartScreen "Windows protected your PC" dialog via "More info" → "Run anyway" (unsigned fallback), single UAC elevation, and any of the five supported Chromium browsers automatically picks up go-mapi. Includes a short "how to uninstall" pointer and a link to the Chrome Web Store listing (placeholder URL if the listing isn't live yet).
-- [x] **REL-04**: PHASE-4-FINDING-02 closed: `src/interceptor/json_writer.h:36` trailing backslash in the `// Write a MailMessage to a JSON file in %TEMP%\go-mapi\` comment replaced with a backtick-wrapped path or forward slash, so GCC stops emitting the `-Wcomment` warning during the CPPTEST-02 build. One-line fix, bundled here because Phase 5 is already touching CI output.
-- [x] **REL-05**: The `v2.0.0` git tag is pushed, which triggers `installer-release.yml` to build, sign (unsigned fallback since SIGN-01 approval has not landed), and publish `go-mapi-setup.exe` to the GitHub Releases page with the release-template.md body. The published `releases/latest/download/go-mapi-setup.exe` URL is reachable and matches the URL `InstallPrompt.tsx` links to. Verified by `curl -IL` returning 200 and a non-empty `Content-Length`.
-- [x] **REL-06**: Manual end-to-end UAT on a real Windows box (either marcwin with Admin or a Windows Sandbox from REL-02): download the published installer, install, load the unpacked extension in Chrome, observe the `InstallPrompt` → `READY` transition + the success toast, trigger a "Send to Mail recipient" from Notepad (or any Win32 app with the menu), confirm a Gmail draft appears in the target account. Any deviation is either fixed, documented in `05-UAT.md`, or explicitly deferred to v2.0.1 with a reason.
-- [x] **REL-07**: MILESTONES.md re-archived after Phase 5 ships (re-running `/gsd:complete-milestone v2.0.0` at the end of Phase 5). The existing `v2.0.0-MILESTONE-AUDIT.md` audit is updated (or replaced) to reflect the runtime-verified state, and STATE.md is marked `milestone_complete`.
-
-## v2 Requirements
-
-Acknowledged but deferred. Not in the v2.0.0 roadmap.
-
-### Host Self-Update
-
-- **UPDATE-01**: Host checks for new versions on startup and prompts the user via the extension popup
-- **UPDATE-02**: Host downloads and replaces itself without re-running the installer
-
-### Expanded Distribution
-
-- **DIST-01**: Installer is mirrored at a stable `blegal.dev` redirect URL for cases where GitHub Releases is blocked
-- **DIST-02**: Extension is published to the Edge Add-ons Store (currently Chrome Web Store only)
-
-### Nightly Real-API Smoke Test
-
-- **SMOKE-01**: A nightly CI job runs the E2E happy path against the real Gmail API (gated on a dedicated test Google account's OAuth credentials) as a reality check separate from the per-PR mocked tests
-
-### Handshake Upgrade Activation
-
-- **HAND-01**: Bump `MIN_SUPPORTED_HOST_VERSION` in the extension to activate the `OUTDATED` state dead branch, surfacing an "upgrade the host" prompt when the extension auto-updates ahead of the host
+- **OPS-01**: Automated Edge API key rotation reminder (72-day expiry)
+- **OPS-02**: Monthly CWS credential health-check workflow
+- **OPS-03**: Per-package CHANGELOG.md auto-generated from changeset summaries
 
 ## Out of Scope
 
-Explicitly excluded for v2.0.0. Documented to prevent scope creep.
-
 | Feature | Reason |
 |---------|--------|
-| Outlook / Microsoft 365 support | Deferred to a future milestone; Gmail-first is the current focus |
-| Multi-account Gmail (pick which account to draft in) | Deferred to a future milestone |
-| SMTP / non-Gmail provider support | Deferred to a future milestone |
-| Queue management UI (bulk actions, filtering, search) | Deferred to a future milestone |
-| macOS / Linux support | MAPI is Windows-only |
-| Mobile apps | Web/desktop only |
-| 80% line-coverage gate or similar numeric target | Rejected in favor of risk-based blast-radius gap filling |
-| Mutation testing | Nice signal, out of scope for this milestone |
-| Tray icon / background service / auto-start | Anti-feature — contradicts go-mapi's privacy-first FOSS identity |
-| Telemetry / crash reporting | Anti-feature — privacy-first |
-| Desktop shortcut / Start Menu entry beyond Inno Setup default | Anti-feature — noise |
-| Rating prompts / guided tours / confetti / uninstall survey | Anti-feature — noise |
-| Firewall rule configuration | Not needed; only outbound HTTPS to Gmail API |
-| Self-signed certs or "add to trust store" workflows | Worse than unsigned with SmartScreen guidance |
-| WiX / NSIS / MSIX / InstallShield / Advanced Installer | Inno Setup is the right tool for this stack (see STACK.md rationale) |
-| Jest / jest-chrome / testify / mockgen | Keep the existing Vitest + Go stdlib test style |
-| Real Gmail API in per-PR E2E | Too flaky; mock via `httptest`. Nightly real-API smoke is v2.1.0 |
-| Blegal.dev download redirector | GitHub Releases direct URL is sufficient for v2.0.0 |
-| Edge Add-ons Store publishing | Chrome Web Store only for v2.0.0 |
-| Azure Trusted Signing | EU individuals not eligible; SignPath Foundation is the path |
+| npm registry publishing | Both packages are private — no npm publish step |
+| Auto-publish on every push to develop | CWS rate limits and review queue flooding |
+| Changesets bot PR comments | Overkill for solo maintainer |
+| Host self-update detection | Re-running installer is acceptable |
+| Per-package CHANGELOG.md files | Deferred to OPS-03; changeset summaries in PR are sufficient for now |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Complete |
-| FOUND-02 | Phase 1 | Complete |
-| FOUND-03 | Phase 1 | Complete |
-| FOUND-04 | Phase 1 | Complete |
-| FOUND-05 | Phase 1 | Complete |
-| FOUND-06 | Phase 1 | Complete |
-| EXT-01 | Phase 2 | Complete |
-| EXT-02 | Phase 2 | Complete |
-| EXT-03 | Phase 2 | Complete |
-| EXT-04 | Phase 2 | Complete |
-| EXT-05 | Phase 2 | Complete |
-| EXT-06 | Phase 2 | Complete |
-| EXT-07 | Phase 3 | Complete |
-| INST-01 | Phase 3 | Complete |
-| INST-02 | Phase 3 | Complete |
-| INST-03 | Phase 3 | Complete |
-| INST-04 | Phase 3 | Complete |
-| INST-05 | Phase 3 | Complete |
-| INST-06 | Phase 3 | Complete |
-| INST-07 | Phase 3 | Complete |
-| SIGN-01 | Phase 1 | Draft (filing deferred) |
-| SIGN-02 | Phase 3 | Complete |
-| SIGN-03 | Phase 3 | Complete |
-| SIGN-04 | Phase 3 | Complete |
-| SIGN-05 | Phase 3 | Complete |
-| GOTEST-01 | Phase 4 | Complete |
-| GOTEST-02 | Phase 4 | Complete |
-| GOTEST-03 | Phase 4 | Complete |
-| GOTEST-04 | Phase 4 | Complete |
-| CPPTEST-01 | Phase 4 | Complete |
-| CPPTEST-02 | Phase 4 | Complete |
-| CPPTEST-03 | Phase 4 | Complete |
-| TSTEST-01 | Phase 4 | Complete |
-| TSTEST-02 | Phase 4 | Complete |
-| TSTEST-03 | Phase 4 | Complete |
-| TSTEST-04 | Phase 4 | Complete |
-| TSTEST-05 | Phase 4 | Complete |
-| E2E-01 | Phase 4 | Complete |
-| E2E-02 | Phase 4 | Complete |
-| E2E-03 | Phase 4 | Complete |
-| E2E-04 | Phase 4 | Complete |
-| E2E-05 | Phase 4 | Complete |
-| E2E-06 | Phase 4 | Complete |
-| REL-01 | Phase 5 | Planned |
-| REL-02 | Phase 5 | Planned |
-| REL-03 | Phase 5 | Planned |
-| REL-04 | Phase 5 | Planned |
-| REL-05 | Phase 5 | Planned |
-| REL-06 | Phase 5 | Planned |
-| REL-07 | Phase 5 | Planned |
+| CS-01 | — | Pending |
+| CS-02 | — | Pending |
+| CS-03 | — | Pending |
+| CS-04 | — | Pending |
+| CS-05 | — | Pending |
+| CS-06 | — | Pending |
+| VER-01 | — | Pending |
+| VER-02 | — | Pending |
+| VER-03 | — | Pending |
+| VER-04 | — | Pending |
+| PUB-01 | — | Pending |
+| PUB-02 | — | Pending |
+| PUB-03 | — | Pending |
+| PUB-04 | — | Pending |
+| REL-01 | — | Pending |
+| REL-02 | — | Pending |
+| REL-03 | — | Pending |
+| PIPE-01 | — | Pending |
+| PIPE-02 | — | Pending |
+| PIPE-03 | — | Pending |
 
 **Coverage:**
-- v1 requirements: 50 total (43 original + 7 REL-* added at Phase 5 insertion)
-- Mapped to phases: 50 ✓
-- Unmapped: 0
+- v2.1.0 requirements: 20 total
+- Mapped to phases: 0
+- Unmapped: 20 ⚠️
 
 ---
-*Requirements defined: 2026-04-10*
-*Last updated: 2026-04-11 — Phase 5 (Release Cut) inserted; v2.0.0 re-opened per "not shipped until it's on GitHub Releases and UAT-verified"*
+*Requirements defined: 2026-04-12*
+*Last updated: 2026-04-12 after initial definition*
