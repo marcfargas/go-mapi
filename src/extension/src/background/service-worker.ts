@@ -280,15 +280,17 @@ async function getOAuthToken(interactive = true): Promise<string> {
   } catch (err) {
     if (!interactive) throw err;
 
-    const manifest = chrome.runtime.getManifest();
-    const clientId = manifest.oauth2?.client_id;
-    const scopes = manifest.oauth2?.scopes?.join(' ') ?? '';
-    if (!clientId) throw new Error('No OAuth client_id in manifest');
+    // manifest oauth2.client_id is "Chrome extension" type — Chrome-only.
+    // oauth2_web_client_id is "Web application" type — works everywhere.
+    const manifest = chrome.runtime.getManifest() as Record<string, unknown>;
+    const webClientId = manifest.oauth2_web_client_id as string | undefined;
+    if (!webClientId) throw new Error('No oauth2_web_client_id in manifest');
+    const scopes = ((manifest.oauth2 as Record<string, unknown>)?.scopes as string[] | undefined)?.join(' ') ?? '';
 
     const redirectUrl = chrome.identity.getRedirectURL();
     const authUrl =
       `https://accounts.google.com/o/oauth2/v2/auth?` +
-      `client_id=${encodeURIComponent(clientId)}&` +
+      `client_id=${encodeURIComponent(webClientId)}&` +
       `redirect_uri=${encodeURIComponent(redirectUrl)}&` +
       `response_type=token&` +
       `scope=${encodeURIComponent(scopes)}`;

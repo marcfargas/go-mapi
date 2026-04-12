@@ -1,9 +1,23 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
+import { readFileSync, writeFileSync } from 'fs';
+
+function stampManifestVersion(): Plugin {
+  return {
+    name: 'stamp-manifest-version',
+    writeBundle({ dir }) {
+      const rootPkg = JSON.parse(readFileSync(resolve(__dirname, '../../package.json'), 'utf-8'));
+      const manifestPath = resolve(dir!, 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      manifest.version = rootPkg.version;
+      writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), stampManifestVersion()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,

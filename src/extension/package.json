@@ -1,6 +1,6 @@
 {
   "name": "go-mapi-extension",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "go-mapi Browser Extension - Send emails via Gmail from Windows MAPI applications",
   "type": "module",
   "scripts": {

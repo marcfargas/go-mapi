@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "go-mapi",
-  "version": "1.0.0",
+  "version": "0.0.0-dev",
   "description": "Send emails via Gmail from Windows MAPI applications (right-click → Send to → Mail recipient)",
   "permissions": [
     "nativeMessaging",
@@ -20,6 +20,7 @@
       "https://www.googleapis.com/auth/gmail.send"
     ]
   },
+  "oauth2_web_client_id": "757265040228-rlau98id208j1rg4pvrfl844hhsietgf.apps.googleusercontent.com",
   "background": {
     "service_worker": "service-worker.js",
     "type": "module"

@@ -1,6 +1,6 @@
 {
   "name": "go-mapi",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MAPI to Gmail bridge for Windows - send emails via Gmail from any Windows application",
   "private": true,
   "workspaces": [
