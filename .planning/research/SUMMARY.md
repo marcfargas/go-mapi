@@ -1,157 +1,271 @@
 # Project Research Summary
 
-**Project:** go-mapi v2.1.0 Release Pipeline
-**Domain:** Automated release pipeline — changesets monorepo versioning, dual web store publishing (Chrome + Edge), GitHub Releases
+**Project:** go-mapi v3.0 Wails Pivot
+**Domain:** Windows desktop tray app - MAPI-to-Gmail bridge (Go + WebView2)
 **Researched:** 2026-04-12
-**Confidence:** HIGH (changesets patterns, Chrome Web Store API, critical pitfalls); MEDIUM (Edge Add-ons API operational details, changesets private-package GitHub Release edge cases)
+**Confidence:** MEDIUM-HIGH overall
+
+---
 
 ## Executive Summary
 
-go-mapi v2.1.0 is an infrastructure milestone that automates what Marc currently does manually: bumping versions, packaging extension ZIPs, publishing to Chrome Web Store and Edge Add-ons, and creating GitHub Releases with the installer binary. The core challenge is that go-mapi has two independently-releasable components (the browser extension and the Go/C++ host) that currently share a single version and a single release workflow. The recommended approach is changesets (`@changesets/cli@2.30.0`) configured with two private workspace packages, giving each component its own version track, CHANGELOG, and git tag, while keeping all non-npm artifacts (Go binary, DLL, installer) out of any npm registry.
+go-mapi v3.0 replaces the Chrome extension + native-host architecture with a standalone Wails desktop application (Go backend + WebView2 frontend) that lives in the Windows system tray. The core value proposition is unchanged - Windows Send to Mail recipient calls become Gmail drafts - but the distribution model simplifies dramatically: one installer, no browser extension, no Chrome Web Store dependency, no manifest registration. The MAPI interceptor DLL remains; everything above it is rebuilt.
 
-The stack additions are minimal: changesets CLI added to root devDependencies, `chrome-webstore-upload-cli` run via `npx` in CI only, and the `birchill/edge-addon-upload` GitHub Action for Edge publishing. No new frameworks or languages. The critical architectural change is migrating version authority away from root `package.json` to per-package `package.json` files (`src/extension/package.json` already exists; `src/native-host/package.json` must be created), and converting existing tag-triggered workflows to `workflow_dispatch`-triggered workflows invoked by the new release pipeline.
+The recommended stack is **Wails v2.12.0 stable** (not v3 alpha) combined with **fyne.io/systray v1.12.0 RunWithExternalLoop** for tray integration. Three of four researcher agents converged on this; the lone dissenter (ARCHITECTURE.md) recommended v3 alpha but conflated Wails v2 will not natively add systray (true) with systray is impossible on v2 (false). The RunWithExternalLoop pattern resolves the integration gap without alpha-channel risk. OAuth moves from Chrome Identity API to a PKCE loopback redirect via golang.org/x/oauth2, with tokens persisted in Windows Credential Manager via go-keyring.
 
-The dominant risks are operational rather than technical. Two must be addressed before any pipeline work: (1) `GITHUB_TOKEN` cannot trigger downstream CI workflows — a Fine-Grained PAT must be configured from day one; (2) Edge Add-ons Publish API v1 was deprecated January 10, 2025, meaning any pre-2025 tooling or credential format fails silently. Secondary risks include 72-day Edge API key rotation and Chrome Web Store review delays causing protocol version skew.
+The project faces one unresolved structural constraint: PROJECT.md targets 10-30 MB RAM per instance for RDS viability, but PITFALLS.md measures WebView2 at 80-150 MB in practice. WebView2 process groups cannot be shared across HDESKTOP-isolated RDS user sessions - this is a hard platform boundary, not a tuning parameter. Phase 1 must include a measurement gate before any OAuth or feature work proceeds. If RAM exceeds 80 MB per session in tray-only mode with lazy WebView2 init, the Wails approach requires re-evaluation.
+
+---
 
 ## Key Findings
 
-### Recommended Stack
+### Stack (from STACK.md)
 
-The existing stack requires no changes. v2.1.0 adds exactly three new tools.
+| Technology | Version | Rationale |
+|---|---|---|
+| Wails | v2.12.0 | Stable; v3 is nightly alpha with known tray race bugs |
+| fyne.io/systray | v1.12.0 | RunWithExternalLoop integrates with Wails v2 message loop; getlantern/systray conflicts |
+| golang.org/x/oauth2 | v0.36.0 | PKCE S256ChallengeOption; loopback redirect; no embedded server needed |
+| go-keyring (zalando) | v0.2.8 | DPAPI-backed; Windows Credential Manager; no plaintext storage |
+| go-selfupdate (creativeprojects) | v1.5.2 | Version-detect-and-notify only; no binary replacement (EXE locked in Program Files) |
+| Svelte 5 | latest stable | Compiles to zero-runtime JS; matters at 30 concurrent RDS renderer processes vs React 42 KB |
+| WebView2 | Evergreen Bootstrapper | Pins WebView2 at install time; bootstrapper timing bug on servers - test on clean offline VM |
+| Go | 1.23 | Bump from 1.21; Wails v2 is sensitive to Go version; build 64-bit only |
 
-**Core technologies:**
-- `@changesets/cli@2.30.0`: Monorepo version management with explicit changeset files, "Version Packages" PR automation, independent version tracks per package. `privatePackages: { version: true, tag: true }` enables tagging without npm publishing.
-- `chrome-webstore-upload-cli@3.5.0` (via `npx`): Chrome Web Store publishing CLI. 4 secrets: `CWS_EXTENSION_ID`, `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`.
-- `birchill/edge-addon-upload@v1.1.0` (GitHub Action): Edge Add-ons REST API v1.1 upload/poll/publish. 3 secrets: `EDGE_API_KEY`, `EDGE_CLIENT_ID`, `EDGE_PRODUCT_ID`. API key expires every 72 days.
+**Critical version constraint:** Go must be pinned at 1.23. Wails v2 fails silently on some 1.24 builds.
 
-**Supporting:**
-- `changesets/action@v1.7.0`: Creates Version Packages PR and runs publish scripts on merge. Needs a Fine-Grained PAT (not GITHUB_TOKEN).
-- `softprops/action-gh-release@v2`: Already in use for GitHub Releases. Reused for host releases with changed trigger.
+**Tray implementation pattern (from STACK.md):**
+```go
+start, end := systray.RunWithExternalLoop(onTrayReady, onTrayExit)
+// called from Wails OnStartup:
+start()
+// called from Wails OnShutdown:
+end()
+```
 
-### Expected Features
+### Features (from FEATURES.md)
 
-**Must have (table stakes):**
-- Changesets monorepo with two private workspace packages and separate version tracks
-- Version Packages PR auto-created on push to `main` when changesets exist
-- CHANGELOG auto-generated per package from changeset summaries
-- Git tags per package: `go-mapi-extension@X.Y.Z` and `go-mapi-host@X.Y.Z`
-- Chrome Web Store auto-publish on extension version bump
-- Edge Add-ons auto-publish (same ZIP, second destination)
-- GitHub Release for host bumps with installer `.exe` and SHA-256 sidecar
-- Stable `releases/latest/download/go-mapi-setup.exe` URL
+**Table stakes (must ship in v3.0):**
+- System tray: persistent icon, right-click menu, left-click window toggle, minimize-to-tray, two icon states (idle / error)
+- Toast notifications: WinRT (not NIIF_INFO balloons); AppUserModelID required for persistent Action Center toasts
+- Desktop OAuth: PKCE loopback, re-auth on 401, sign-in/sign-out menu items
+- Automode: Manual (user clicks Create Draft) and Auto-draft (automatic on arrival); Auto-send deferred
+- Autoupdate: notify-only (no in-process replacement); check on startup + daily
+- NSIS installer: AppUserModelID + Start menu shortcut, Firewall inbound rule, v2.x artifact cleanup
 
-**Should have:**
-- Decoupled CI jobs — extension and host publish as separate jobs gated by `publishedPackages` output
+**Differentiators (v3.0 if time permits):**
+- Offline queue (queue emails when no network; drain on reconnect)
+- Settings UI (automode toggle, notification prefs, sign-out)
+- Draft preview before auto-send (irreversibility guard)
 
-**Defer:**
-- Automated Edge API key rotation reminders
-- Host self-update detection
-- Changesets bot PR comments (overkill for solo maintainer)
+**Explicitly deferred to v4+:**
+- Auto-send (irreversibility risk for unverified users)
+- Multi-account support
+- SMTP fallback
+- macOS/Linux
 
-**Anti-features:**
-- Single version for both packages — prevents independent cadence
-- Auto-publish on every push to `develop` — CWS rate limits
-- npm registry publishing — both must be `private: true`
+**Feature dependency graph (critical for phase ordering):**
+- Toasts require AppUserModelID - installer must come before or with toast work
+- Automode requires OAuth
+- Installer enables OAuth (AUMID shortcut registration)
+- Autoupdate requires installer (stable install path)
 
-### Architecture Approach
+### Architecture (from ARCHITECTURE.md)
 
-This is a migration of version authority and workflow triggers, not a redesign. All existing build logic (MinGW/CMake, Go ldflags, Vite, InnoSetup, SignPath) is unchanged; only the source of the version string and workflow dispatch mechanism changes.
+**Major structural change:** src/native-host/ absorbed into src/app/ (Wails app). src/extension/ becomes src/app/frontend/ (Svelte). The MAPI interceptor DLL (src/interceptor/) is unchanged.
 
-**Major components (new or modified):**
-1. `.changeset/config.json` — must include `privatePackages: { version: true, tag: true }`
-2. `src/native-host/package.json` (new stub) — gives changesets a package to track for host
-3. `.github/workflows/release-pipeline.yml` (new) — runs `changesets/action` on `main`; dispatches publish workflows
-4. `.github/workflows/publish-extension.yml` (new) — builds ZIP, publishes to CWS and Edge
-5. `installer-release.yml` (modified) — trigger changes from `push: tags: v*` to `workflow_dispatch`
-6. `release.yml` (retire after validation)
+**Key components:**
+- App struct (Go): Bound to Wails runtime; exposes GetQueue, CreateDraft, DeleteEmail, SignIn, SignOut, GetAuthStatus, GetSettings, SaveSettings, CheckForUpdate
+- Watcher (watcher.go): Filesystem watcher unchanged; WatcherCallback replaces *NativeMessaging dependency
+- GmailClient (gmail.go): Unchanged core; add 30s timeout + 3-retry exponential backoff (currently has neither)
+- State: In-memory queue (Go process), keyring tokens (Windows Credential Manager), %APPDATA%/go-mapi/settings.json; frontend is ephemeral
+- Window lifecycle: Hidden: true, HiddenOnTaskbar: true at startup; intercept WindowClosing to call window.Hide() not quit
 
-**Version source migration:**
+**Event channels (Wails runtime events):** queue-update, auth-changed, draft-created, update-available, error
 
-| Component | Before | After |
-|-----------|--------|-------|
-| Go host binary | root `package.json` | `src/native-host/package.json` |
-| Extension manifest | root `package.json` | `src/extension/package.json` |
-| Installer | root `package.json` | `src/native-host/package.json` |
+**Single-instance guard:** Named mutex (CreateMutex) at startup - two lines, prevents duplicate draft creation from double-click.
 
-### Critical Pitfalls
+**WM_QUERYENDSESSION:** Requires hidden message-only HWND separate from Wails window (Wails v2 does not expose logoff hook).
 
-1. **`GITHUB_TOKEN` blocks CI on Version Packages PR** — GitHub prevents its own tokens from triggering downstream workflows. Fix: Fine-Grained PAT with `contents: write` and `pull-requests: write`, stored as `CHANGESET_TOKEN`.
-2. **`manifest.json` version drift causes store rejection** — changesets bumps `package.json` but manifest retains old version. Fix: `version` lifecycle script syncs `manifest.json` and stages it.
-3. **Go binary reads wrong version after monorepo split** — build scripts still read root `package.json`. Fix: update all build steps to read `src/native-host/package.json`.
-4. **Edge API v1 deprecated January 2025** — pre-2025 tooling fails silently. Fix: use `birchill/edge-addon-upload@v1.1.0` with v1.1 API credentials.
-5. **Existing `release.yml` + `installer-release.yml` race on tags** — both trigger on `v*` tags. Fix: convert to `workflow_dispatch`, dispatch sequentially from release pipeline.
-6. **changesets `privatePackages` defaults don't create tags** — default is `tag: false`. Fix: explicit `tag: true` in config.
-7. **Chrome review delay causes protocol skew** — host ships while extension is in review queue. Fix: maintain backward compatibility across at least one minor version.
+**Architecture note on ARCHITECTURE.md dissent:** That file recommends Wails v3 alpha. Do not use. Single-instance is met with a named mutex in v2, simpler and more reliable.
+
+**Minor library conflict:** ARCHITECTURE.md uses github.com/99designs/keyring; STACK.md uses github.com/zalando/go-keyring. Use zalando - simpler API, Windows-native DPAPI, no CGo.
+
+### Pitfalls (from PITFALLS.md)
+
+**Critical pitfalls (project-blocking if ignored):**
+
+| # | Pitfall | Prevention |
+|---|---|---|
+| 1 | WebView2 RAM 80-150 MB per session (not 10-30 MB) | Phase 1 measurement gate; lazy WebView2 init |
+| 3 | Google OAuth 100-user lifetime cap for unverified apps | Submit verification at Phase 2 START (4-8 week review) |
+| 7 | Wails v2 tray race: blank flash, multiple instances | Named mutex; Hidden: true + WindowHide() from OnStartup |
+| 10 | SmartScreen zero reputation (new binary name) | Submit to Microsoft WDSI after first public release |
+
+**High-priority pitfalls:**
+
+| # | Pitfall | Prevention |
+|---|---|---|
+| 4 | OAuth loopback Windows Firewall prompt on RDS | Pre-create inbound rule in NSIS installer; use 127.0.0.1 not localhost |
+| 8 | Self-update: EXE locked in Program Files | Notify-only autoupdate; re-run installer for actual update |
+| 9 | v2.x artifact cleanup on upgrade | NSIS installer removes native messaging manifests; clears registry |
+| 12 | Gmail API no timeout, no retry | Add 30s http.Client timeout; 3-retry exponential backoff |
+
+**Moderate pitfalls:**
+
+| # | Pitfall | Prevention |
+|---|---|---|
+| 2 | WebView2 bootstrapper timing bug on offline/server machines | Test on clean offline VM; bundle offline installer as fallback |
+| 5 | OAuth refresh token silent invalidation | Implement 401-triggered re-auth; surface Sign in required notification |
+| 6 | DPAPI credentials do not roam on RDS farms | Document re-auth per server; warn in installer for RDS deployments |
+| 11 | Wails v2 Go version sensitivity | Pin Go 1.23; build 64-bit only |
+
+---
 
 ## Implications for Roadmap
 
-### Phase 1: Changesets Monorepo Scaffold
-**Rationale:** Foundation for everything else. Nothing downstream is safe to build until changesets is configured and proven to create tags correctly.
-**Delivers:** CHANGESET_TOKEN PAT configured; `.changeset/config.json`; `src/native-host/package.json` stub; root `workspaces` updated; version source migrated in all build scripts; Version Packages PR working with CI checks.
-**Avoids:** Pitfalls 1 (PAT), 3 (wrong version source), 6 (missing tags).
+### Suggested Phase Structure
 
-### Phase 2: Extension Publishing Pipeline
-**Rationale:** Most frequent release operation. CWS OAuth approval has external lead time — start immediately after Phase 1.
-**Delivers:** `manifest.json` version sync script; `publish-extension.yml` workflow; Chrome Web Store auto-publish; Edge Add-ons auto-publish.
-**Avoids:** Pitfalls 2 (manifest drift), 4 (Edge API v1 deprecated), 7 (protocol skew awareness).
+The dependency graph and pitfall severity dictate a 5-phase structure. The critical path runs: RAM validation to OAuth to feature completion to installer to release hardening.
 
-### Phase 3: Host Release Pipeline
-**Rationale:** Rare but complex. Isolating allows extension pipeline to ship first.
-**Delivers:** `installer-release.yml` converted to `workflow_dispatch`; release pipeline dispatches on host version bump; GitHub Release with `.exe` and `.sha256` assets; stable download URL confirmed.
-**Avoids:** Pitfall 5 (workflow race).
+---
 
-### Phase 4: Pipeline Integration and Legacy Retirement
-**Rationale:** Only retire `release.yml` after at least one successful real release.
-**Delivers:** `release-pipeline.yml` fully wired; `release.yml` retired; decoupled CI jobs validated end-to-end.
+**Phase 1: Wails Shell + RAM Measurement Gate**
 
-### Phase Ordering Rationale
+Rationale: Nothing else can proceed until we know if WebView2 is viable for the RDS constraint. Build the minimal Wails app with tray integration and measure RAM before writing any business logic.
 
-- Phase 1 is a hard dependency — tags and version sources are the shared dependency surface
-- Phase 2 before Phase 3 because extension releases are more frequent and CWS OAuth has lead time
-- Phase 4 last because retiring `release.yml` before the replacement is proven creates a release gap
+Delivers:
+- Wails v2.12.0 + fyne.io/systray v1.12.0 integrated (RunWithExternalLoop pattern)
+- App starts hidden, tray icon appears, right-click menu has Quit
+- Single-instance named mutex guard
+- Window show/hide on tray left-click
+- WM_QUERYENDSESSION hidden HWND
+- RAM measurement: tray-only mode (no OAuth, no watcher) on RDS and workstation
 
-### Research Flags
+Gate: RAM <= 80 MB per session in tray-only mode with lazy WebView2 init. If above threshold, halt and re-evaluate. Do not proceed to Phase 2 without passing this gate.
 
-Needs deeper research during planning:
-- **Phase 2:** Edge Add-ons credential setup (partner-portal-gated), CWS OAuth client type ("Desktop App" vs "Chrome Extension")
-- **Phase 3:** changesets GitHub Release creation for private packages (documented edge cases, `workflow_dispatch` workaround safer)
+Features from FEATURES.md: System tray (table stakes - partial)
+Pitfalls to avoid: #1 (RAM), #7 (tray race), #11 (Go version)
+Research flag: YES - spike needed: fyne.io/systray RunWithExternalLoop integration with Wails v2; document working pattern before phase begins
 
-Standard patterns (skip research-phase):
-- **Phase 1:** changesets scaffold is well-documented
-- **Phase 4:** pure workflow configuration
+---
+
+**Phase 2: OAuth + Credential Storage**
+
+Rationale: OAuth is the dependency for all email features. Start Google verification request on day 1 of this phase - the 4-8 week review window means waiting costs launch weeks.
+
+Delivers:
+- PKCE loopback OAuth flow (golang.org/x/oauth2 v0.36.0, S256ChallengeOption)
+- Token storage via go-keyring (Windows Credential Manager / DPAPI)
+- Sign In / Sign Out tray menu items
+- 401-triggered re-auth notification (Sign in required)
+- Google OAuth verification request submitted
+
+Features from FEATURES.md: Desktop OAuth (table stakes)
+Pitfalls to avoid: #3 (100-user cap), #4 (RDS firewall - stub firewall rule for dev), #5 (silent invalidation), #6 (DPAPI roaming)
+Research flag: NO - PKCE loopback is well-documented in golang.org/x/oauth2
+
+---
+
+**Phase 3: Email Queue + Automode + Toasts**
+
+Rationale: Core feature work. Watcher and Gmail client already exist; adapt them to the App struct. WinRT toasts require AppUserModelID which will be set up in Phase 4 installer - use a dev AppUserModelID for Phase 3 testing.
+
+Delivers:
+- FileWatcher adapted (WatcherCallback replacing NativeMessaging)
+- GmailClient with 30s timeout + 3-retry exponential backoff
+- Email queue UI (Svelte frontend)
+- Manual mode: user clicks Create Draft per email
+- Auto-draft mode: automatic on arrival
+- WinRT toast notifications on email arrival and draft creation
+- Settings persistence (%APPDATA%/go-mapi/settings.json)
+
+Features from FEATURES.md: Automode (table stakes), toasts (table stakes), settings UI (differentiator)
+Pitfalls to avoid: #12 (Gmail timeout/retry), #7 (window flash on notification click)
+Research flag: YES - WinRT toast library selection (go-toast vs go10ft/toast vs direct COM); AppUserModelID registration approach
+
+---
+
+**Phase 4: NSIS Installer**
+
+Rationale: Installer must come before release. It retroactively fixes Phase 3 gaps: AppUserModelID enables persistent Action Center toasts; Firewall rule eliminates RDS OAuth dialog. Handles v2.x cleanup.
+
+Delivers:
+- NSIS installer (.exe) with:
+  - AppUserModelID + Start menu shortcut (persistent Action Center toasts)
+  - Windows Firewall inbound rule (OAuth loopback, no RDS dialog)
+  - v2.x cleanup: native messaging manifests removed, MAPI registry cleared, extension unregistered
+  - MAPI interceptor DLL registration
+  - WebView2 Evergreen Bootstrapper (offline fallback bundled)
+- Uninstaller
+- Installer tested on: Windows 10/11 workstation, Windows Server 2019/2022 RDS
+
+Features from FEATURES.md: NSIS installer (table stakes)
+Pitfalls to avoid: #2 (WebView2 bootstrapper offline), #4 (Firewall rule), #9 (v2.x cleanup), #10 (SmartScreen - include guidance in installer)
+Research flag: NO - NSIS patterns are well-documented for Wails apps
+
+---
+
+**Phase 5: Autoupdate + Release Hardening**
+
+Rationale: Final phase. Autoupdate is notify-only (no binary replacement). SmartScreen submission happens after first public binary is signed and released. Confirm Google OAuth verification completed before public launch.
+
+Delivers:
+- go-selfupdate v1.5.2 integration: check on startup + daily alarm
+- Update available tray menu item + notification
+- Update installs by re-running installer download
+- GitHub release pipeline (build, sign if available, upload)
+- SmartScreen WDSI submission
+- Google OAuth verification confirmed (or contingency plan if still pending)
+- End-to-end smoke test: MAPI trigger to DLL to watcher to auto-draft to Gmail draft visible
+
+Features from FEATURES.md: Autoupdate notify-only (table stakes)
+Pitfalls to avoid: #8 (EXE locked / binary replacement), #10 (SmartScreen)
+Research flag: NO - autoupdate pattern is straightforward with go-selfupdate
+
+---
+
+### Cross-Phase Constraints
+
+- **Google OAuth verification:** Submit at Phase 2 START. If not submitted until Phase 4-5, launch will be blocked by the 4-8 week review window.
+- **AppUserModelID:** Must be registered by installer (Phase 4) for persistent Action Center toasts. Phase 3 tests toasts with a dev AUMID; Phase 4 makes it permanent.
+- **RAM gate is a hard stop:** Phase 1 result determines whether Phases 2-5 proceed as designed. No parallel work on OAuth or features while the gate is unmeasured.
+
+---
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
-|------|------------|-------|
-| Stack | HIGH | changesets 2.30.0, chrome-webstore-upload-cli 3.5.0, birchill/edge-addon-upload 1.1.0 verified |
-| Features | MEDIUM-HIGH | P1 features derived from current manual process. Edge 72-day rotation confirmed. |
-| Architecture | HIGH | Version source migration and workflow_dispatch pattern verified |
-| Pitfalls | HIGH | All critical pitfalls verified against official docs and GitHub issues |
+|---|---|---|
+| Stack | HIGH | 3:1 consensus on Wails v2 + fyne.io/systray; all library choices have production precedents |
+| Features | HIGH | Clear table stakes vs differentiator vs deferred split; dependency graph well-mapped |
+| Architecture | MEDIUM | Core patterns solid; Wails v2-specific window lifecycle needs spike to confirm |
+| Pitfalls | HIGH | RAM measurement is the only unresolved item; all other pitfalls have concrete prevention strategies |
 
-**Overall confidence:** HIGH for Phases 1 and 2 (Chrome). MEDIUM for Phase 2 (Edge) and Phase 3.
+**Overall: MEDIUM-HIGH**
 
-### Gaps to Address
+### Gaps to Address in Planning
 
-- Edge API key rotation operationalization: 72-day expiry needs a plan (calendar reminder vs automated workflow)
-- First manual store submissions: both CWS and Edge require initial manual submission before API works
-- SignPath credential validity: Phase 3 preserves signing logic but secrets must be valid
-- changesets `createGithubReleases` for private packages: needs Phase 3 dry-run validation
+1. **RAM constraint validation (Phase 1 gate):** No measurement exists. The 10-30 MB target in PROJECT.md may need to be revised or the approach changed. Highest-priority unknown.
+
+2. **fyne.io/systray + Wails v2 integration spike:** RunWithExternalLoop is documented but go-mapi has no existing Wails code. A working prototype must be built and the pattern documented before Phase 1 completes.
+
+3. **WinRT toast library selection:** Three Go libraries exist (go-toast, go10ft/toast, direct COM via golang.org/x/sys). None have been benchmarked for AppUserModelID support and Action Center persistence. Resolve in Phase 3 research.
+
+4. **Google OAuth verification timeline:** 4-8 week external dependency. If submission is delayed, it becomes the critical path item for launch. Treat as project risk from Phase 2 onward.
+
+---
 
 ## Sources
 
-### Primary (HIGH confidence)
-- [changesets/changesets](https://github.com/changesets/changesets) — v2.30.0, config options, `privatePackages`
-- [changesets/action](https://github.com/changesets/action) — v1.7.0, `publish` input, `publishedPackages` output
-- [changesets/action#70, #99](https://github.com/changesets/action/issues/70) — GITHUB_TOKEN PAT requirement
-- [fregante/chrome-webstore-upload-cli](https://github.com/fregante/chrome-webstore-upload-cli) — v3.5.0
-- [Microsoft Learn: Edge Add-ons REST API](https://learn.microsoft.com/en-us/microsoft-edge/extensions/update/api/using-addons-api) — v1.1 endpoints
-- [Microsoft Edge Blog Jan 2025](https://blogs.windows.com/msedgedev/2025/01/08/) — 72-day API key expiry
+STACK.md - Technology recommendations with version rationale; tray integration patterns; Go version constraints; Svelte vs React comparison for RDS.
 
-### Secondary (MEDIUM confidence)
-- [changesets/action#269](https://github.com/changesets/action/issues/269) — GitHub Release for non-npm packages
-- [Chrome Web Store API docs](https://developer.chrome.com/docs/webstore/using-api) — OAuth client type
+FEATURES.md - Table stakes definition; differentiator vs deferred split; feature dependency graph; MVP scope; WinRT toast AppUserModelID requirement; automode design (Manual + Auto-draft, no Auto-send).
 
----
-*Research completed: 2026-04-12*
-*Ready for roadmap: yes*
+ARCHITECTURE.md - Directory structure migration plan; App struct bound methods; event channel names; state location decisions; window lifecycle patterns. Note: this file recommends Wails v3 alpha - recommendation overridden by 3:1 consensus; use Wails v2.12.0.
+
+PITFALLS.md - 12 pitfalls with severity ratings and prevention strategies; WebView2 RAM measurement (80-150 MB per session); Google OAuth 100-user cap; RDS-specific constraints; SmartScreen reputation zero-start.
+
+PROJECT.md - v3.0 milestone scope; RAM budget constraint (10-30 MB target - flagged as constraint-to-validate-early vs PITFALLS.md measurement); out-of-scope items.
+
+Architecture re-eval note (2026-04-12-architecture-reeval-wails.md) - Seed decision motivating the Wails pivot; confirms 30x10-30 MB as target, 30x200 MB as unacceptable.

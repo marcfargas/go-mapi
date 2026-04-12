@@ -1,425 +1,884 @@
 # Architecture Research
 
-**Domain:** Release pipeline integration — changesets monorepo dual-package, Chrome/Edge Web Store publishing, GitHub Releases for host installer
+**Domain:** Wails v3 desktop app — folding Go native-host into a Wails shell with system tray
 **Researched:** 2026-04-12
-**Confidence:** HIGH for changesets config patterns and Chrome Web Store API (verified against official docs). MEDIUM for Edge Add-ons API (official API exists but credential setup is partner-portal-gated). MEDIUM for changesets private-package tag behavior (documented but has known edge-case bugs with GitHub Release creation).
-
-> **Scope reminder.** This document covers ONLY what v2.1.0 adds to the release pipeline. It does NOT redesign the bridge components. Existing architecture is documented in `.planning/codebase/ARCHITECTURE.md`. The existing build workflows are the integration surface.
+**Confidence:** HIGH for Wails v3 API shape (verified against pkg.go.dev and official examples). MEDIUM for RDS RAM profile (no authoritative per-session measurement found — must be measured). MEDIUM for OAuth loopback flow (well-documented pattern, implementation details need integration testing). LOW for autoupdate installer-replacement strategy on Windows (no canonical Wails-specific approach; must use go-selfupdate or similar).
 
 ---
 
-## 1. Current State (What Exists)
+## Critical Decision: Wails v2 vs v3
 
-### Version Authority — Single Source, Single Track
-
-Everything currently derives version from root `package.json`:
-
-```
-root/package.json  "version": "2.0.0"
-       │
-       ├──▶ build:native-host  →  -ldflags "-X main.Version=2.0.0"  →  go-mapi-host.exe
-       ├──▶ build:extension    →  Vite reads package.json → manifest.json baked at build
-       └──▶ build:installer    →  iscc /DGOMAPIVersion=2.0.0         →  go-mapi-setup.exe
-```
-
-`src/extension/package.json` exists as a workspace member but its `"version"` field is not currently the authority for the extension manifest — Vite/build scripts read the root.
-
-### Existing CI Workflows
-
-| Workflow | Trigger | What It Does |
-|----------|---------|-------------|
-| `build.yml` | push to main/develop, PR | Builds all three components, runs tests, uploads artifacts |
-| `release.yml` | push `v*` tag | Rebuilds everything, creates GitHub Release with DLL + host + extension ZIP + install script |
-| `installer-release.yml` | push `v*` tag | Builds installer, optionally signs via SignPath, publishes `go-mapi-setup.exe` to GitHub Release |
-| `go-race-nightly.yml` | scheduled | Go race detector tests |
-| `e2e.yml` | PR/push | Playwright E2E tests |
-| `installer-smoke.yml` | PR/push | Installer smoke tests |
-
-**Problem:** Both `release.yml` and `installer-release.yml` trigger on any `v*` tag. They treat extension and host as a single release unit. There is no way to publish only the extension without a full host/installer rebuild.
-
-### Current Workspace Structure
-
-```
-go-mapi/                        ← root (private, version "2.0.0")
-  package.json                  ← version authority for everything
-  .github/workflows/            ← CI/CD
-  src/
-    extension/                  ← npm workspace "go-mapi-extension"
-      package.json              ← version "2.0.0" (not the authority today)
-    native-host/                ← Go module (not an npm package)
-    interceptor/                ← C++ (not an npm package)
-    installer/                  ← InnoSetup script
-```
+**Use Wails v3 (alpha).** Wails v2 does not support system tray — confirmed by the Wails maintainers (GitHub Discussion #4514: "we are not supporting systray in v2"). System tray is a hard requirement for go-mapi (the app must persist in the background without a browser). Wails v3 has built-in systray support with Windows-verified examples (systray-basic, systray-menu at alpha.74). The API is "reasonably stable, applications running in production." Accept the alpha risk; the alternative (v2 + third-party tray glue) is more fragile and unsupported.
 
 ---
 
-## 2. Target State (What v2.1.0 Adds)
-
-### Decoupled Version Tracks
+## System Overview
 
 ```
-.changeset/config.json
-       │
-       ├── package: "go-mapi-extension"   →  src/extension/package.json  →  extension version
-       └── package: "go-mapi-host"        →  host-package.json (new)      →  host/installer version
-```
-
-The Go host has no `package.json` today. A minimal `host-package.json` (or `src/native-host/package.json`) with `"private": true` and `"name": "go-mapi-host"` gives changesets something to update. This is the canonical changesets pattern for non-npm packages.
-
-### New Release Data Flow
-
-```
-Developer writes changeset
-        │
-        ▼
-.changeset/*.md  committed to develop/main
-        │
-        ▼  (changesets/action on push to main)
-"Version Packages" PR created/updated
-  - bumps src/extension/package.json
-  - bumps host-package.json
-  - updates CHANGELOG.md files
-        │
-        ▼  (PR merged)
-changesets/action publish hook fires
-        │
-        ├──▶ extension version bump detected?
-        │         └──▶ trigger: build extension + publish to CWS + publish to Edge Add-ons
-        │
-        └──▶ host version bump detected?
-                  └──▶ trigger: build DLL + host + installer + sign + publish GitHub Release
+┌─────────────────────────────────────────────────────────────────┐
+│                  UNCHANGED: MAPI Interception                    │
+│  Windows App → MAPISendMail() → go-mapi.dll (C++) → JSON file   │
+│                         %TEMP%\go-mapi\{uuid}.json              │
+└──────────────────────────────────┬──────────────────────────────┘
+                                   │ fsnotify (file events)
+┌──────────────────────────────────▼──────────────────────────────┐
+│                  NEW: Wails App (go-mapi.exe)                    │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Go Backend (main package)                                  │  │
+│  │                                                              │  │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │  │
+│  │  │ EmailWatcher │  │ GmailClient  │  │   AuthManager    │  │  │
+│  │  │  (watcher.go)│  │  (gmail.go)  │  │   (auth.go NEW)  │  │  │
+│  │  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │  │
+│  │         │                 │                    │            │  │
+│  │  ┌──────▼─────────────────▼────────────────────▼─────────┐  │  │
+│  │  │            App struct (app.go)                          │  │  │
+│  │  │  Bound methods → wailsjs/go/main/App.*                  │  │  │
+│  │  │  GetQueue() []EmailWithId                               │  │  │
+│  │  │  CreateDraft(id) DraftResult                            │  │  │
+│  │  │  DeleteEmail(id) error                                  │  │  │
+│  │  │  GetAuthStatus() AuthStatus                             │  │  │
+│  │  │  SignIn() error                                         │  │  │
+│  │  │  SignOut() error                                        │  │  │
+│  │  └─────────────────────────────────────────────────────── ┘  │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  WebView2 Frontend (React + TypeScript + Vite)             │  │
+│  │  Calls App.* methods directly via wailsjs bindings         │  │
+│  │  Receives events via EventsOn("queue-update", handler)     │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+│  ┌────────────┐   ┌────────────────────────────────────────────┐ │
+│  │ SystemTray │   │  Window (hidden on start, shown on demand)  │ │
+│  │  icon+menu │   │  HiddenOnTaskbar: true                      │ │
+│  └────────────┘   └────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Component Boundaries (New vs Modified)
+## 1. Project Layout
 
-### New Components
+### Recommended Layout: Wails App Absorbs Native-Host
 
-| Component | Location | What It Is |
-|-----------|----------|------------|
-| Changesets config | `.changeset/config.json` | Controls which packages are versioned, tag creation, ignore list |
-| Host package stub | `src/native-host/package.json` | `{"name":"go-mapi-host","version":"2.0.0","private":true}` — gives changesets a package.json to bump |
-| Extension publish script | `scripts/publish-extension.sh` (or inline in workflow) | Zips `src/extension/dist/`, calls chrome-webstore-upload or CWS API |
-| Changesets CI workflow | `.github/workflows/release-pipeline.yml` | Runs `changesets/action`, dispatches publish jobs |
-| CWS publish workflow | `.github/workflows/publish-extension.yml` | Builds + publishes extension to Chrome Web Store and Edge Add-ons |
-| Host release workflow | `.github/workflows/publish-host.yml` | Builds + signs + publishes installer to GitHub Releases |
+Do NOT use `wails init` scaffold as-is. Instead, absorb the existing `src/native-host/` package into the Wails app directly. The extension is being removed, so the monorepo npm workspace structure shrinks but does not need to be eliminated.
 
-### Modified Components
+**Target directory structure:**
 
-| Component | Change |
-|-----------|--------|
-| `src/extension/package.json` | Becomes the version authority for the extension (was already a workspace package but version was ignored) |
-| `build.yml` | Add `workflow_call` trigger from release pipeline; version now read from `src/extension/package.json` for extension builds |
-| `installer-release.yml` | Converted from tag-triggered to `workflow_call` triggered by publish-host.yml; version comes from host-package.json, not a manually pushed tag |
-| `release.yml` | Retired or scoped down — changesets handles tagging now |
-| Root `package.json` | Remove as version authority for DLL/host/extension. Root version becomes "pipeline metadata" or is dropped in favor of per-package versions. Scripts that read it for version injection must be updated. |
+```
+go-mapi/
+├── src/
+│   ├── interceptor/          # UNCHANGED — C++ DLL
+│   │   └── ...
+│   │
+│   ├── app/                  # NEW — Wails desktop app (replaces src/native-host/)
+│   │   ├── main.go           # Wails app entry point (wails.Run, tray setup)
+│   │   ├── app.go            # App struct — bound methods exposed to frontend
+│   │   ├── watcher.go        # MOVED from src/native-host/watcher.go (minimal changes)
+│   │   ├── gmail.go          # MOVED from src/native-host/gmail.go (minimal changes)
+│   │   ├── auth.go           # NEW — OAuth2 loopback flow + keyring token storage
+│   │   ├── updater.go        # NEW — autoupdate check (go-selfupdate)
+│   │   ├── protocol.go       # KEPT but stripped — MailMessage/Recipients/Attachment types only
+│   │   ├── frontend/         # NEW — React+Vite UI (replaces src/extension/)
+│   │   │   ├── src/
+│   │   │   │   ├── App.tsx
+│   │   │   │   ├── components/
+│   │   │   │   │   ├── EmailList.tsx
+│   │   │   │   │   ├── EmailDetail.tsx
+│   │   │   │   │   └── AuthPrompt.tsx
+│   │   │   │   └── types/
+│   │   │   │       └── email.ts  # mirrors Go EmailWithId shape
+│   │   │   ├── package.json
+│   │   │   ├── vite.config.ts
+│   │   │   └── tsconfig.json
+│   │   ├── build/            # Wails build resources (icons, manifests)
+│   │   │   └── windows/
+│   │   │       └── icon.ico
+│   │   ├── wails.json        # Wails project config
+│   │   ├── go.mod            # Module: github.com/marcfargas/go-mapi/app
+│   │   └── go.sum
+│   │
+│   └── installer/            # STAYS — Inno Setup .iss script (updated targets)
+│       └── go-mapi.iss
+│
+├── scripts/
+│   ├── build-app.ps1         # NEW — builds Wails app (replaces build:native-host)
+│   └── install.ps1           # UPDATED — installs Wails binary instead of native host
+│
+├── package.json              # Root workspace (shrinks — extension removed)
+└── .github/workflows/
+    └── build.yml             # UPDATED — Wails build target
+```
 
-### Unchanged Components
+### go.mod Placement
 
-- `build.yml` build logic (just the trigger changes)
-- `installer-release.yml` build + signing logic (just the trigger and version source change)
-- `src/interceptor/build.ps1` — DLL build is driven by host version
-- InnoSetup `.iss` script — still receives version via `/DGOMAPIVersion=` flag
-- Go host ldflags version injection — still works, source changes to host-package.json
+The Wails app has its own `go.mod` at `src/app/go.mod`. This is consistent with Wails scaffold convention: the Go module root is the directory that `wails build` runs from. The `wails.json` file sits alongside `go.mod`.
+
+Do not put Wails' `go.mod` at the repository root — the root is still an npm workspace root and mixing Go module root with npm workspace root creates toolchain confusion.
+
+### Module Name
+
+```
+module github.com/marcfargas/go-mapi/app
+```
+
+Matches the existing GitHub organization and project naming convention.
+
+### Monorepo Status
+
+The npm monorepo shrinks: `src/extension` workspace is removed. The root `package.json` retains workspace structure for `src/app/frontend` if npm tooling is used for the frontend build. If Wails handles all frontend building via `wails.json` `frontend:*` hooks, the npm workspace can be eliminated entirely and the root `package.json` becomes a thin build-scripts container.
+
+**Recommendation:** Keep root `package.json` as build orchestration only. Remove `src/extension` from workspaces. Add `src/app/frontend` if npm scripts are needed outside Wails build. The `@changesets/cli` dependency is retained for v3.0 versioning.
 
 ---
 
-## 4. Changesets Configuration Architecture
+## 2. Go Backend Boundary — What Gets Exposed vs. What Stays Internal
 
-### Package Registry
+### Wails Binding Pattern
 
-```json
-// .changeset/config.json
-{
-  "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
-  "changelog": "@changesets/cli/changelog",
-  "commit": false,
-  "fixed": [],
-  "linked": [],
-  "access": "restricted",
-  "baseBranch": "main",
-  "updateInternalDependencies": "patch",
-  "ignore": [],
-  "privatePackages": {
-    "version": true,
-    "tag": true
-  }
+Wails v3 generates TypeScript bindings from exported methods on structs passed to `application.New(Options{Services: []*App})`. Any exported method on a bound struct is callable from the frontend as `App.MethodName(args)` in TypeScript.
+
+### App struct — Bound Methods (public API to frontend)
+
+```go
+// app.go
+type App struct {
+    watcher *EmailWatcher
+    gmail   *GmailClient   // created per-request with current token
+    auth    *AuthManager
+    ctx     context.Context
+}
+
+// GetQueue returns all emails currently in the watch directory.
+// Called by frontend on mount and after queue-update events.
+func (a *App) GetQueue() []EmailWithId
+
+// CreateDraft creates a Gmail draft from the queued email.
+// Returns draft URL on success. Removes email from queue on success.
+func (a *App) CreateDraft(id string) (*DraftResult, error)
+
+// SendEmail sends the email immediately via Gmail API.
+// Returns message ID on success. Removes email from queue on success.
+func (a *App) SendEmail(id string) (*SendResult, error)
+
+// DeleteEmail removes an email from the queue without drafting.
+func (a *App) DeleteEmail(id string) error
+
+// GetAuthStatus returns whether a valid OAuth token is available.
+func (a *App) GetAuthStatus() AuthStatus
+
+// SignIn initiates the OAuth2 loopback flow (opens browser, waits for code).
+func (a *App) SignIn() error
+
+// SignOut revokes token and clears from keyring.
+func (a *App) SignOut() error
+
+// GetSettings returns current user-facing settings.
+func (a *App) GetSettings() AppSettings
+
+// SaveSettings persists settings to disk.
+func (a *App) SaveSettings(settings AppSettings) error
+
+// CheckForUpdate checks GitHub Releases for a newer version (opt-out autoupdate).
+func (a *App) CheckForUpdate() (*UpdateInfo, error)
+```
+
+### Internal (not bound — no frontend access needed)
+
+| Type/Function | Location | Reason Internal |
+|---|---|---|
+| `EmailWatcher` | `watcher.go` | Lifecycle managed by App; events pushed via Emit |
+| `GmailClient` / `buildFullMIME()` | `gmail.go` | Created per-request by App methods; no direct frontend call |
+| `validateMailMessage()` | `watcher.go` | Validation is an implementation detail |
+| `normalizeAddress()` / `normalizeRecipients()` | `watcher.go` | Same |
+| `AuthManager` | `auth.go` | Exposed only through `SignIn`, `SignOut`, `GetAuthStatus` |
+| `generateID()` | `watcher.go` | Internal ID generation |
+| `logInfo()` / `logError()` | `main.go` or `logging.go` | File-based logging; no frontend API |
+
+### Data Types Exposed via Bindings
+
+```go
+// protocol.go — stripped to shared types only (no NativeMessaging)
+type MailMessage struct { ... }    // unchanged
+type Recipients  struct { ... }    // unchanged
+type Recipient   struct { ... }    // unchanged
+type Attachment  struct { ... }    // unchanged
+
+// New types for App API surface
+type EmailWithId struct {
+    ID    string       `json:"id"`
+    Email *MailMessage `json:"email"`
+}
+
+type DraftResult struct {
+    DraftID  string `json:"draftId"`
+    GmailURL string `json:"gmailUrl"`
+}
+
+type SendResult struct {
+    MessageID string `json:"messageId"`
+}
+
+type AuthStatus struct {
+    Authenticated bool   `json:"authenticated"`
+    Email         string `json:"email,omitempty"`
+}
+
+type AppSettings struct {
+    Mode        string `json:"mode"` // "auto-draft" | "auto-send" | "manual"
+    UpdatesEnabled bool `json:"updatesEnabled"`
+}
+
+type UpdateInfo struct {
+    Available bool   `json:"available"`
+    Version   string `json:"version,omitempty"`
+    URL       string `json:"url,omitempty"`
 }
 ```
 
-`privatePackages.tag: true` is required because both packages are private. Without it, changesets updates versions but never creates git tags — and git tags are the trigger for publish workflows.
-
-### Package Setup
-
-```
-# Extension package — already exists, needs version authority confirmed
-src/extension/package.json
-  "name": "go-mapi-extension"
-  "private": true
-  "version": "2.0.0"
-
-# Host package stub — NEW, placed at root of native-host
-src/native-host/package.json
-  "name": "go-mapi-host"
-  "private": true
-  "version": "2.0.0"
-```
-
-The root `package.json` workspace array must include `src/native-host` so changesets sees it:
-
-```json
-// root package.json
-"workspaces": [
-  "src/extension",
-  "src/native-host"
-]
-```
-
-### Version Bump → Tag → Publish Flow
-
-```
-changeset version runs
-  → src/extension/package.json bumped (e.g., 2.0.0 → 2.1.0)
-  → src/native-host/package.json bumped (e.g., 2.0.0 → 2.1.0)
-  → CHANGELOG files updated
-
-Version Packages PR merged → changesets/action publish hook
-  → changeset publish runs
-  → for each package with version bump:
-       creates git tag: go-mapi-extension@2.1.0
-       creates git tag: go-mapi-host@2.1.0
-  → publish script runs per package
-       go-mapi-extension: build + upload to CWS/Edge
-       go-mapi-host: trigger installer build workflow
-```
-
-**Critical limitation:** `changeset publish` only creates GitHub Releases for packages it successfully "publishes." For private packages with no npm publish step, GitHub Releases are not auto-created. The workaround: the publish script for `go-mapi-host` triggers `installer-release.yml` via `workflow_dispatch`, which creates the GitHub Release itself.
+Wails v3 auto-generates TypeScript types for all these structs. The `wailsjs/` directory is generated at build time — do not hand-edit it.
 
 ---
 
-## 5. Publish Script Architecture
+## 3. Frontend/Backend Binding and Event Channels
 
-### Extension Publish Path
+### Method Calls (Frontend → Go)
 
-```
-publish script (go-mapi-extension)
-  1. npm run -w go-mapi-extension build        (Vite build → dist/)
-  2. Zip dist/ → go-mapi-extension-X.Y.Z.zip
-  3. chrome-webstore-upload upload              (Chrome Web Store API)
-  4. wdzeng/edge-addon or equivalent           (Edge Add-ons API v1.1)
-  5. Exit 0 → changeset publish marks package as published, creates tag
-```
+Wails v3 generates bindings into `frontend/wailsjs/go/main/App.ts`. In TypeScript:
 
-**Chrome Web Store credentials (repository secrets):**
-- `CWS_EXTENSION_ID` — 32-character extension ID from Chrome Web Store developer dashboard
-- `CWS_CLIENT_ID` — OAuth2 client ID (from GCP project, scope: `chromewebstore`)
-- `CWS_CLIENT_SECRET` — OAuth2 client secret
-- `CWS_REFRESH_TOKEN` — Long-lived refresh token (obtained once via OAuth flow)
+```typescript
+import { GetQueue, CreateDraft, DeleteEmail, SignIn, GetAuthStatus } from '../wailsjs/go/main/App';
 
-**Edge Add-ons credentials (repository secrets):**
-- `EDGE_PRODUCT_ID` — Product ID from Edge Partner Center
-- `EDGE_CLIENT_ID` — API client ID from Edge Partner Center
-- `EDGE_API_KEY` — API key from Edge Partner Center (Edge Add-ons API v1.1)
-
-### Host Publish Path
-
-```
-publish script (go-mapi-host)
-  1. Read version from src/native-host/package.json
-  2. gh workflow run installer-release.yml --field version=X.Y.Z
-  3. Exit 0 → changeset publish marks package as published, creates tag
-  (installer-release.yml handles the actual build + sign + GitHub Release)
+// Calling Go methods — all return Promises
+const queue = await GetQueue();
+const result = await CreateDraft(emailId);
 ```
 
-Alternatively: the `changesets/action` `publish` output `publishedPackages` can be read in subsequent workflow steps to conditionally trigger the installer workflow, keeping the publish script simpler.
+All bound methods are async from the frontend's perspective. Errors from Go are thrown as JavaScript exceptions.
+
+### Event Channels (Go → Frontend)
+
+Go pushes events to the frontend using `application.EmitEvent(app, "event-name", data)` in v3 (or `runtime.EventsEmit(ctx, ...)` in v2 style). Frontend subscribes with `EventsOn`.
+
+**Events emitted by Go:**
+
+| Event Name | Payload | When Emitted |
+|---|---|---|
+| `queue-update` | `EmailWithId[]` — full current queue | New email arrives from watcher OR email deleted |
+| `auth-changed` | `AuthStatus` | Token obtained, refreshed, or revoked |
+| `draft-created` | `DraftResult` + email ID | Auto-draft mode draft created |
+| `update-available` | `UpdateInfo` | Background update check finds new version |
+| `error` | `{message: string}` | Unrecoverable error needing user attention |
+
+**Frontend subscribes:**
+
+```typescript
+import { EventsOn } from '../wailsjs/runtime/runtime';
+
+EventsOn('queue-update', (queue: EmailWithId[]) => {
+    setEmails(queue);
+});
+```
+
+### Queue-Update Emission Pattern
+
+The watcher's callback mechanism must change: instead of calling `messaging.SendEmail()` on a `NativeMessaging` stdin/stdout writer, it calls a callback registered by the App struct, which then emits the event:
+
+```go
+// watcher.go — change the callback type
+type WatcherCallback func(emails map[string]*MailMessage)
+
+// EmailWatcher carries an onUpdate callback instead of *NativeMessaging
+type EmailWatcher struct {
+    onUpdate WatcherCallback
+    // ... rest unchanged
+}
+
+// app.go — App registers its own callback
+func (a *App) onWatcherUpdate(emails map[string]*MailMessage) {
+    queue := toEmailWithIdSlice(emails)
+    application.EmitEvent(a.ctx, "queue-update", queue)
+    a.updateTrayBadge(len(queue))
+}
+```
+
+This is the key structural change to `watcher.go`: replace the `*NativeMessaging` dependency with a `WatcherCallback` function. All other watcher logic (debouncing, AV retry, validation, ID generation) is preserved unchanged.
 
 ---
 
-## 6. Version Source Changes
+## 4. Watcher Lifecycle
 
-### Problem: Root package.json was the single version authority
+### Where It Lives
 
-Three places inject version into build artifacts:
+The `EmailWatcher` is created during `OnStartup` and stopped during `OnShutdown`. These are Wails application lifecycle hooks.
 
-1. **Go host binary**: `go build -ldflags "-X main.Version=<ver>"` — currently reads root `package.json`
-2. **Extension manifest**: Vite build reads root `package.json` via a build plugin/script
-3. **Installer**: `iscc /DGOMAPIVersion=<ver>` — currently passed explicitly in workflows
-
-### After v2.1.0
-
-Each component reads from its own package source:
-
-| Component | Version Source |
-|-----------|---------------|
-| go-mapi-host binary | `src/native-host/package.json` |
-| Extension manifest (at build) | `src/extension/package.json` |
-| Installer | `src/native-host/package.json` (same as host) |
-
-The `build:native-host` npm script must be updated to read from `src/native-host/package.json` instead of root. The Vite extension build already runs in the `src/extension` workspace context so `package.json` is local.
-
-### Extension Manifest Version Format Constraint
-
-Chrome Web Store accepts version in format `X.Y.Z` or `X.Y.Z.W` (1–4 dot-separated integers, 0–65535 each). **Semver prerelease labels are not supported** — `2.1.0-alpha.1` cannot be used in `manifest.json`. The Vite build plugin must strip any prerelease suffix when writing the manifest version field. This is a non-obvious constraint that affects how changesets prerelease mode works for the extension package.
-
----
-
-## 7. CI Workflow Architecture (Target)
-
-### New Workflow: `release-pipeline.yml`
-
-```yaml
-# Triggers on push to main (after Version Packages PR merge)
-# Runs changesets/action in publish mode
-on:
-  push:
-    branches: [main]
-
-jobs:
-  release:
-    runs-on: ubuntu-latest  # changesets itself is platform-agnostic
-    outputs:
-      published: ${{ steps.changesets.outputs.published }}
-      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-      - run: npm ci
-      - uses: changesets/action@v1
-        id: changesets
-        with:
-          publish: npm run release     # calls changeset publish
-          version: npm run version     # calls changeset version
-          title: "chore: release packages"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Store publish credentials available to publish scripts:
-          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-          # ... etc
+```go
+// main.go
+app := application.New(application.Options{
+    OnStartup: func(ctx context.Context) {
+        a.ctx = ctx
+        a.watcher, _ = NewEmailWatcher(watchDir, a.onWatcherUpdate)
+        a.watcher.Start()
+        a.auth.LoadToken()
+        go a.runAutoModeLoop()
+    },
+    OnShutdown: func(ctx context.Context) {
+        a.watcher.Stop()
+    },
+})
 ```
 
-### Modified Workflow: `installer-release.yml`
+### When the Window is Hidden (Minimized to Tray)
 
-Retain all existing build/sign/release logic. Change trigger from `push: tags: v*` to `workflow_dispatch` with a `version` input. The release pipeline workflow dispatches it after host package version bump is detected.
+In Wails v3, when the window is hidden (`window.Hide()`), the Go process continues running. The watcher goroutine keeps running. Events can still be emitted — they queue up and deliver when the frontend reconnects on window show.
 
-### Retired Workflow: `release.yml`
+This is the correct behavior for go-mapi: the DLL can keep writing files, the watcher keeps processing them, and when the user opens the window they see the current queue without delay.
 
-`release.yml` currently builds everything on `v*` tag push and creates a GitHub Release. Once changesets controls tagging and the host/extension publish pipelines are separate, `release.yml` is either retired or repurposed as a manual fallback.
+### Window Lifecycle
 
----
+```go
+window := app.NewWebviewWindowWithOptions(application.WebviewWindowOptions{
+    Hidden:          true,   // start hidden
+    HiddenOnTaskbar: true,   // no taskbar button when hidden
+    AlwaysOnTop:     false,
+    Width:           440,
+    Height:          600,
+})
 
-## 8. Data Flow Diagram
-
-```
-Developer adds changeset:
-  npx changeset → .changeset/abc123.md → committed to develop
-
-Merge to main:
-  push to main triggers release-pipeline.yml
-
-  Case A: changesets exist (first run after Version Packages PR merge)
-    changesets/action → creates "Version Packages" PR
-    (PR contains: bumped package.json files + CHANGELOG updates)
-
-  Case B: Version Packages PR is merged to main
-    changesets/action → runs publish script
-    publish script:
-      ├── go-mapi-extension version bumped?
-      │     └── build extension
-      │           ├── upload to Chrome Web Store   (CWS API + secrets)
-      │           └── upload to Edge Add-ons       (Edge API v1.1 + secrets)
-      │
-      └── go-mapi-host version bumped?
-            └── trigger installer-release.yml (workflow_dispatch)
-                  ├── build DLL (MinGW + CMake, windows-latest)
-                  ├── build host binary (Go, windows-latest)
-                  ├── sign via SignPath (gated on SIGNPATH_API_TOKEN)
-                  ├── build installer (InnoSetup 6)
-                  ├── sign installer (gated on SIGNPATH_API_TOKEN)
-                  └── create GitHub Release (softprops/action-gh-release@v2)
-                        └── attach go-mapi-setup.exe
+// Intercept close: hide instead of quit
+window.OnWindowEvent(events.Common.WindowClosing, func(event *application.WindowEvent) {
+    event.Cancel()
+    window.Hide()
+})
 ```
 
----
+### Auto-Mode Loop
 
-## 9. Anti-Patterns to Avoid
+When mode is `auto-draft` or `auto-send`, Go processes emails automatically without window interaction. The auto-mode loop runs as a goroutine started in `OnStartup`:
 
-### Anti-Pattern 1: Shared Version PR for Extension + Host
+```go
+func (a *App) runAutoModeLoop() {
+    for email := range a.watcher.NewEmailChan() {
+        settings := a.GetSettings()
+        switch settings.Mode {
+        case "auto-draft":
+            a.CreateDraft(email.ID)
+        case "auto-send":
+            a.SendEmail(email.ID)
+        }
+    }
+}
+```
 
-**What:** Both packages version-bump together in the same "Version Packages" PR every time.
-**Why bad:** Extension iterates frequently; host is lean and stable. Forcing a host version bump (and full Windows build + signing) on every extension change negates the decoupled track goal.
-**Do this instead:** Keep packages separate in changesets. Only add a host changeset when host/DLL/installer actually changes.
-
-### Anti-Pattern 2: Using Root package.json Version for Build Injection
-
-**What:** Continuing to read root `package.json` version in build scripts after introducing per-package versions.
-**Why bad:** Root version diverges from the package-specific versions changesets manages. Installers and binaries get the wrong version baked in.
-**Do this instead:** Each build step reads version from the package it is building: `jq -r '.version' src/native-host/package.json`, not root.
-
-### Anti-Pattern 3: Prerelease Labels in Extension Manifest
-
-**What:** Using changesets pre-release mode and letting `2.1.0-beta.1` flow into `manifest.json`.
-**Why bad:** Chrome Web Store rejects the extension package at upload — manifest version must be `X.Y.Z` integers only.
-**Do this instead:** Strip prerelease suffix in the Vite build plugin when writing manifest version. Keep the semver label in `package.json` for changesets; write only the numeric prefix to the manifest.
-
-### Anti-Pattern 4: Triggering Publish on Every Push to Main
-
-**What:** The publish script runs and tries to publish on every `push` to main, not just when the Version Packages PR merges.
-**Why bad:** Re-uploads the same extension version, potentially hitting rate limits or causing CWS review delays.
-**Do this instead:** Use `changesets/action` output `published: true` as a gate. Publish steps only run when changesets confirms new packages were published.
-
-### Anti-Pattern 5: Hardcoded Tag Format Assumptions
-
-**What:** Existing workflows assume tag format `v*` (e.g., `v2.1.0`). Changesets creates package-scoped tags: `go-mapi-extension@2.1.0`.
-**Why bad:** `release.yml` and `installer-release.yml` both trigger on `v*` — they will not trigger from changesets-created tags without modification.
-**Do this instead:** Switch publish triggers from tag-push to `workflow_dispatch` or `workflow_call` from the release pipeline. Do not rely on git tag format for workflow dispatch.
+This requires adding a `NewEmailChan()` channel to `EmailWatcher` alongside the callback, or merging the two patterns. The callback is used for UI events; the channel is used for auto-mode processing.
 
 ---
 
-## 10. Integration Points Summary
+## 5. OAuth Token Storage and Refresh
 
-| Integration | New/Modified | Mechanism | Credentials Needed |
-|-------------|-------------|-----------|-------------------|
-| Changesets Version PR | New | `changesets/action@v1` + GITHUB_TOKEN | `GITHUB_TOKEN` (write to PR) |
-| Chrome Web Store publish | New | `chrome-webstore-upload` CLI or `mnao305/chrome-extension-upload@v6` | `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_EXTENSION_ID` |
-| Edge Add-ons publish | New | `wdzeng/edge-addon` action or Edge API v1.1 directly | `EDGE_PRODUCT_ID`, `EDGE_CLIENT_ID`, `EDGE_API_KEY` |
-| GitHub Release (host) | Modified trigger | `installer-release.yml` via `workflow_dispatch` | `GITHUB_TOKEN` (already in place) |
-| SignPath signing | Unchanged | `SignPath/github-action-submit-signing-request@v1` | `SIGNPATH_API_TOKEN` etc (already in place) |
-| Go host version injection | Modified source | Read from `src/native-host/package.json` instead of root | None |
-| Extension manifest version | Modified source | Read from `src/extension/package.json`, strip prerelease suffix | None |
+### Flow
+
+Replace `chrome.identity.getAuthToken()` with the Google Desktop App OAuth2 loopback flow:
+
+1. App opens user's default browser to `https://accounts.google.com/o/oauth2/auth?redirect_uri=http://127.0.0.1:{port}&...`
+2. App starts local HTTP server on a random high port (e.g., `:0` bound)
+3. Google redirects to `http://127.0.0.1:{port}/?code=...`
+4. App exchanges code for access + refresh tokens via `https://oauth2.googleapis.com/token`
+5. Tokens stored in OS credential vault
+
+**Reference:** https://developers.google.com/identity/protocols/oauth2/native-app — loopback redirect continues to be supported for desktop apps (not deprecated).
+
+### Token Storage
+
+Use `github.com/99designs/keyring` — the standard Go cross-platform credential vault library. On Windows it uses Windows Credential Manager (WinCredBackend). This satisfies the "OS credential vault, not disk" requirement.
+
+```go
+// auth.go
+import "github.com/99designs/keyring"
+
+const keyringService = "go-mapi"
+const keyringKey = "oauth-tokens"
+
+type AuthManager struct {
+    ring   keyring.Keyring
+    tokens *OAuthTokens
+    mu     sync.RWMutex
+}
+
+type OAuthTokens struct {
+    AccessToken  string    `json:"access_token"`
+    RefreshToken string    `json:"refresh_token"`
+    Expiry       time.Time `json:"expiry"`
+}
+```
+
+### Token Refresh Strategy
+
+The access token is short-lived (~1 hour). Refresh happens transparently:
+
+1. Before each Gmail API call, check `tokens.Expiry.Before(time.Now().Add(5 * time.Minute))`
+2. If expiring, call `https://oauth2.googleapis.com/token` with `grant_type=refresh_token`
+3. Store updated tokens back to keyring
+4. If refresh fails (revoked token), clear keyring, emit `auth-changed` with `{authenticated: false}`, prompt user to sign in again
+
+The existing `GmailClient` handles 401 returns as `"token expired"` errors. In v3, the App struct catches these, triggers refresh, and retries. The `GmailClient` itself stays stateless (receives token per call — unchanged from v2 architecture).
+
+### GCP Application Type
+
+The existing GCP OAuth app registered for the browser extension uses `chrome_extension` type. A new OAuth 2.0 client of type **Desktop app** must be created in the same GCP project. Desktop apps do not require a verified redirect URI — the loopback `http://127.0.0.1` is inherently trusted. The `client_id` and `client_secret` are embedded in the Go binary (acceptable for FOSS desktop apps; Google's own guidance accepts this).
 
 ---
 
-## 11. Build Order for v2.1.0 Phase Work
+## 6. Tray vs Window Split
 
-The dependencies between tasks determine sequencing:
+### Process Model
 
-1. **Changesets scaffold** — `.changeset/config.json`, host package stub, root workspace update. Nothing else can proceed until changesets knows both packages. No CI changes yet.
+The Wails app is a single process. There is no separate tray process. The tray IS the persistent process. The window is created once at startup (hidden) and shown/hidden on demand.
 
-2. **Version source migration** — Update `build:native-host` script and Vite build plugin to read from per-package `package.json`. Validate that existing build still produces correct versions. Gate: CI green on develop.
+```go
+// main.go
+systemTray := app.NewSystemTray()
+systemTray.SetIcon(trayIcon)   // embedded ICO resource
+systemTray.SetTooltip("go-mapi")
 
-3. **Extension publish pipeline** — Add `publish-extension.yml` workflow. Requires CWS credentials and Edge Add-ons credentials configured as secrets. This is independently testable (manual `workflow_dispatch` with a dev build).
+// Left-click: toggle window
+systemTray.OnClick(func() {
+    if window.IsVisible() {
+        window.Hide()
+    } else {
+        window.Show()
+        window.Focus()
+    }
+})
 
-4. **Host publish pipeline** — Convert `installer-release.yml` to `workflow_dispatch`-triggered. Add dispatch call from release pipeline. Validate end-to-end with a manual dispatch. Existing signing logic is unchanged.
+// Right-click: context menu
+menu := app.NewMenu()
+menu.Add("Open").OnClick(func(_ *application.Context) { window.Show() })
+menu.Add("Sign Out").OnClick(func(_ *application.Context) { a.SignOut() })
+menu.AddSeparator()
+menu.Add("Quit").OnClick(func(_ *application.Context) { app.Quit() })
+systemTray.SetMenu(menu)
+```
 
-5. **Release pipeline workflow** — Wire `changesets/action` into `release-pipeline.yml`. Test with a real changeset cycle on develop→main. This is the integration step that ties 3 and 4 together.
+### Tray Badge (Queue Count)
 
-6. **Retire `release.yml`** — Only safe to do after the new pipeline produces a successful end-to-end release. Keep as manual fallback until confirmed.
+The tray icon does not have a native badge API on Windows. The pattern is to re-render the tray icon with a count overlay. Use `image` + `draw` stdlib packages to composite the count onto the base icon at runtime.
+
+```go
+func (a *App) updateTrayBadge(count int) {
+    if count == 0 {
+        a.tray.SetIcon(baseIcon)
+        a.tray.SetTooltip("go-mapi — no pending emails")
+        return
+    }
+    icon := renderBadgedIcon(baseIcon, count)
+    a.tray.SetIcon(icon)
+    a.tray.SetTooltip(fmt.Sprintf("go-mapi — %d pending email(s)", count))
+}
+```
+
+### Raise-Existing-Window
+
+Use Wails v3's `single_instance` plugin (`github.com/wailsapp/wails/v3/plugins/single_instance`). When a second instance is launched (e.g., user double-clicks the exe), the plugin sends a signal to the running instance which can respond by showing the window.
+
+```go
+app.Use(single_instance.New(single_instance.Options{
+    UniqueID: "com.gomapi.app",
+    OnSecondInstanceLaunch: func(secondInstanceData single_instance.SecondInstanceData) {
+        window.Show()
+        window.Focus()
+    },
+}))
+```
+
+### State Location
+
+All application state lives in the Go process (in-memory + keyring + `%APPDATA%\go-mapi\settings.json`). The window/frontend holds no persistent state — it reads from Go on mount and reacts to events.
+
+```
+Go process (persistent):
+  - Email queue (EmailWatcher in-memory map)
+  - OAuth tokens (keyring)
+  - Settings (AppSettings in %APPDATA%\go-mapi\settings.json)
+  - Update check result (in-memory, checked on startup)
+
+Frontend (ephemeral, per-window-open):
+  - Displayed queue (local React state, refreshed from Go via GetQueue + events)
+  - Selected email detail (local UI state)
+  - Auth status (refreshed from Go via GetAuthStatus)
+```
+
+---
+
+## 7. Autoupdate Architecture
+
+### Approach: In-App Update Check + Notify Only (No Silent Replace)
+
+Wails v3 does not have built-in autoupdate. Wails v2 GitHub Issue #1178 was never resolved. The recommended pattern for Go desktop apps is `github.com/creativeprojects/go-selfupdate`.
+
+**However:** On Windows, replacing a running executable requires the old process to exit first. Silent in-place replacement is complex and can corrupt if the update crashes mid-write. For v3.0, implement **update notification only** — check for a new version, show a notification, let the user download and run the new installer manually. This is the pragmatic choice for a solo maintainer FOSS project.
+
+**Full self-replace can be deferred to a later milestone.**
+
+### Update Check Flow
+
+```go
+// updater.go
+func (a *App) CheckForUpdate() (*UpdateInfo, error) {
+    updater, err := selfupdate.NewUpdater(selfupdate.Config{
+        Source: selfupdate.NewGitHubSource(selfupdate.GitHubConfig{
+            OwnerName:      "marcfargas",
+            RepositoryName: "go-mapi",
+        }),
+    })
+    if err != nil {
+        return &UpdateInfo{Available: false}, nil
+    }
+    latest, found, err := updater.DetectLatest(context.Background(), selfupdate.NewRepositorySlug("marcfargas", "go-mapi"))
+    if err != nil || !found {
+        return &UpdateInfo{Available: false}, nil
+    }
+    current := semver.MustParse(Version)
+    if latest.Version.GT(current) {
+        return &UpdateInfo{Available: true, Version: latest.Version.String(), URL: latest.ReleaseURL}, nil
+    }
+    return &UpdateInfo{Available: false}, nil
+}
+```
+
+### Cadence
+
+Check on app startup (once, non-blocking goroutine). If update available, emit `update-available` event to frontend, show a tray notification, update tray tooltip.
+
+### Opt-Out
+
+The `AppSettings.UpdatesEnabled` field controls whether the check runs. Default: true. Persisted in `%APPDATA%\go-mapi\settings.json`.
+
+### No Separate Updater Process
+
+No separate updater binary or scheduled task. The check is a lightweight HTTP call to the GitHub API at startup. This avoids all the complexity of background services, scheduled tasks, and binary-replacement races.
+
+---
+
+## 8. Installer Changes
+
+### What the v3 Installer Installs
+
+| Component | Action | Notes |
+|---|---|---|
+| `go-mapi.exe` (Wails app) | Install to `%ProgramFiles%\go-mapi\` | Replaces `go-mapi-host.exe` |
+| `go-mapi.dll` (MAPI interceptor) | Install to `%System32%\` (32-bit) and `%ProgramFiles%\go-mapi\` (64-bit) | UNCHANGED |
+| Registry MAPI handler | Write `HKLM\SOFTWARE\Clients\Mail\go-mapi` | UNCHANGED |
+| `%TEMP%\go-mapi\` directory | Create on first run (app creates it) | No installer action needed |
+| WebView2 Runtime | Check; bootstrap install if missing | See below |
+| Run at startup | Add `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\go-mapi` | NEW — tray app should autostart |
+
+### WebView2 Runtime Bootstrap
+
+WebView2 is NOT bundled. Use the Microsoft Evergreen Bootstrapper:
+
+```pascal
+// In Inno Setup [Code] section — PrepareToInstall()
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if not RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}') then
+  begin
+    // Download and run MicrosoftEdgeWebview2Setup.exe /silent /install
+    DownloadBootstrapper();
+    RunBootstrapper();
+  end;
+  Result := '';
+end;
+```
+
+Machine-wide installation (`/install` flag, not `/installlevel`) is required for RDS environments so all user sessions share the runtime.
+
+### Autostartup Entry
+
+The tray app must persist after logout/login. Register in `HKCU\Run` (user-level, no admin required after install):
+
+```pascal
+[Registry]
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
+  ValueType: string; ValueName: "go-mapi"; \
+  ValueData: """{app}\go-mapi.exe"""; Flags: uninsdeletevalue
+```
+
+### What the Installer No Longer Does
+
+- Does NOT install native messaging manifests (`com.gomapi.host.json`) to `%APPDATA%\Google\Chrome\...` or `%APPDATA%\Microsoft\Edge\...`
+- Does NOT set `allowed_origins` registry keys for Chrome/Edge native messaging
+- Does NOT require Chrome or Edge to be installed
+
+---
+
+## 9. Migration Cleanup — v2.x Artifact Detection and Removal
+
+### v2.x Artifacts to Remove
+
+| Artifact | Location | Detection Method |
+|---|---|---|
+| Native host binary | `%ProgramFiles%\go-mapi\go-mapi-host.exe` | File exists check |
+| Chrome native messaging manifest | `%APPDATA%\Google\Chrome\NativeMessagingHosts\com.gomapi.host.json` | File exists check |
+| Edge native messaging manifest | `%APPDATA%\Microsoft\Edge\NativeMessagingHosts\com.gomapi.host.json` | File exists check |
+| HKCU Chrome NM registry | `HKCU\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.gomapi.host` | RegKeyExists |
+| HKLM Chrome NM registry | `HKLM\SOFTWARE\Google\Chrome\NativeMessagingHosts\com.gomapi.host` | RegKeyExists |
+| v2 uninstall entry | `HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\go-mapi_is1` | RegKeyExists |
+| Old `%APPDATA%\go-mapi\` config dir | If v2 wrote anything here | Directory exists check |
+
+### Cleanup Strategy in v3 Installer
+
+Inno Setup `[Code]` section `InitializeSetup()`:
+
+```pascal
+function InitializeSetup(): Boolean;
+var
+  UninstallStr: String;
+begin
+  // Detect v2.x installation and run its uninstaller first
+  if RegQueryStringValue(HKLM,
+    'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\go-mapi_is1',
+    'UninstallString', UninstallStr) then
+  begin
+    if MsgBox('go-mapi v2.x is installed. Remove it before installing v3?',
+              mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      Exec(RemoveQuotes(UninstallStr), '/SILENT', '', SW_SHOW, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+  Result := True;
+end;
+```
+
+Additionally, use `[InstallDelete]` to remove native messaging manifests if they survive the v2 uninstaller:
+
+```pascal
+[InstallDelete]
+Type: files; Name: "{userappdata}\Google\Chrome\NativeMessagingHosts\com.gomapi.host.json"
+Type: files; Name: "{userappdata}\Microsoft\Edge\NativeMessagingHosts\com.gomapi.host.json"
+```
+
+### Clean Break, Not In-Place Upgrade
+
+v3.0 is a clean-break migration. Users uninstall v2.x (via the prompt above or manually), then install v3.0. There is no in-place upgrade path. The Inno Setup `AppId` for v3.0 uses a new GUID to prevent Inno Setup from treating it as an upgrade of the same application.
+
+---
+
+## 10. Data Flow Diagrams
+
+### Email Arrives → Queue Update → User Action → Gmail API
+
+```
+[Windows App] calls MAPISendMail()
+    ↓
+[go-mapi.dll] intercepts → writes {uuid}.json to %TEMP%\go-mapi\
+    ↓
+[fsnotify watcher] detects Create event (debounced 500ms)
+    ↓
+[EmailWatcher.processFile()] reads → validates → normalizes → generates ID
+    ↓
+[App.onWatcherUpdate()] callback fires
+    ↓
+[application.EmitEvent(ctx, "queue-update", queue)] — Go → WebView2
+    ↓
+[Frontend EventsOn("queue-update")] → React state update → re-render EmailList
+    ↓ (also)
+[App.updateTrayBadge(count)] → tray icon re-rendered with count badge
+    ↓
+User opens window (left-clicks tray) → sees updated list
+    ↓
+User clicks "Save as Draft" → Frontend calls CreateDraft(id)
+    ↓
+[App.CreateDraft(id)] → AuthManager.GetToken() → checks expiry → refresh if needed
+    ↓
+[GmailClient.CreateDraft(email)] → buildFullMIME(msg) → POST /gmail/v1/users/me/drafts
+    ↓
+Gmail API returns draft ID
+    ↓
+[App.CreateDraft] → watcher.MarkProcessed(id) → os.Remove(jsonFile)
+    ↓
+[onWatcherUpdate fires again] → "queue-update" event with email removed
+    ↓
+Frontend removes email from list, shows success toast
+    ↓ (also)
+[application.EmitEvent(ctx, "draft-created", result)] → optional additional event
+```
+
+### Auto-Draft Mode Flow
+
+```
+New email detected by watcher
+    ↓
+onWatcherUpdate callback fires
+    ↓ (mode == "auto-draft")
+App.runAutoModeLoop() picks up email from channel
+    ↓
+App.CreateDraft(id) — same path as manual, no window interaction
+    ↓
+On success: emit "queue-update" (now empty or reduced)
+On error: emit "error" event → show tray notification
+```
+
+### Token Refresh Flow
+
+```
+App.CreateDraft(id) called
+    ↓
+AuthManager.GetToken()
+    → token.Expiry > now + 5min? → return token (fast path)
+    → else: POST /token with refresh_token
+        → success: store new access + expiry in keyring, return token
+        → 401 (token revoked): clear keyring, emit "auth-changed" {authenticated:false}
+            → Frontend shows AuthPrompt, user clicks "Sign In"
+            → Frontend calls App.SignIn()
+            → OAuth loopback flow → new tokens stored
+            → emit "auth-changed" {authenticated:true}
+            → user retries draft creation
+```
+
+---
+
+## 11. Build Order / Dependency Graph
+
+The phases of v3 development have hard dependencies. Build this order:
+
+```
+Phase 1: Wails Shell + Tray (no functionality)
+    - Scaffold Wails v3 app at src/app/
+    - System tray with show/hide window
+    - Single-instance enforcement
+    - App compiles and runs; window shows placeholder UI
+    GATE: app.exe runs, tray appears, window shows/hides
+
+Phase 2: Watcher Integration
+    - Move watcher.go, gmail.go, protocol.go (types only) into src/app/
+    - Replace NativeMessaging dep with WatcherCallback
+    - Wire onWatcherUpdate → EmitEvent("queue-update")
+    - GetQueue() bound method
+    GATE: emails arriving in %TEMP%\go-mapi appear in console/event log
+
+Phase 3: Frontend Queue Viewer
+    - React frontend: EmailList + EmailDetail (port from extension)
+    - Subscribe to "queue-update" events
+    - Call GetQueue() on mount
+    - DeleteEmail() action
+    GATE: queue visible in window; delete works; no OAuth yet
+
+Phase 4: OAuth + Gmail Integration
+    - auth.go with loopback flow + keyring storage
+    - CreateDraft() + SendEmail() bound methods
+    - AuthStatus + SignIn/SignOut
+    - AuthPrompt component in frontend
+    GATE: full draft creation end-to-end; token survives restart
+
+Phase 5: Mode Toggle + Auto-Mode
+    - AppSettings (manual/auto-draft/auto-send)
+    - Settings persistence to %APPDATA%\go-mapi\settings.json
+    - runAutoModeLoop() goroutine
+    - Settings UI in frontend
+    GATE: auto-draft mode processes emails without window open
+
+Phase 6: Installer + Migration
+    - Updated Inno Setup .iss (Wails binary, WebView2 bootstrap, autostart, cleanup)
+    - v2.x artifact detection and removal
+    - Uninstaller parity
+    GATE: clean install on fresh Windows 10/11; v2.x upgrade path tested
+
+Phase 7: Autoupdate + Polish
+    - updater.go with go-selfupdate check
+    - Tray badge (queue count overlay on icon)
+    - Tray notifications for new emails
+    - Update notification in tray/window
+    GATE: end-to-end user flow from fresh install to draft creation
+```
+
+**Why this order:**
+- Phase 1 before everything: Wails v3 alpha may have project-setup surprises; fail fast
+- Phase 2 before Phase 3: Frontend is useless without data; backend must work first
+- Phase 3 before Phase 4: Separate concerns; queue viewer testable without auth
+- Phase 4 after Phase 3: OAuth is the highest-complexity new piece; keep isolated
+- Phase 5 after Phase 4: Auto-mode requires working draft creation
+- Phase 6 late: Installer is the distribution concern; core functionality comes first
+- Phase 7 last: Polish and update check are non-blocking to core value
+
+---
+
+## 12. Anti-Patterns to Avoid
+
+### Anti-Pattern 1: Keeping NativeMessaging as the Watcher Callback Interface
+
+**What:** Leaving `EmailWatcher` typed to `*NativeMessaging` and wrapping it in a fake NativeMessaging that emits Wails events.
+**Why bad:** NativeMessaging is a stdin/stdout 4-byte-framed protocol — it's meaningless in a non-native-messaging context. Creates dead code and confusion.
+**Do this instead:** Replace `*NativeMessaging` in EmailWatcher with `func(map[string]*MailMessage)` callback. One-line change in `NewEmailWatcher()` signature; the rest of watcher.go is untouched.
+
+### Anti-Pattern 2: Running Wails Frontend State as Source of Truth
+
+**What:** Storing the email queue in React state only; not re-syncing from Go on window open.
+**Why bad:** The window can be hidden and re-shown; the frontend context may be stale or the service worker equivalent doesn't exist in Wails. Events missed while hidden don't auto-replay.
+**Do this instead:** On every window show event, call `GetQueue()` to refresh full state. Use events only as an incremental update signal. The queue source of truth is always the Go in-memory map (not the frontend).
+
+### Anti-Pattern 3: Embedding WebView2 Runtime
+
+**What:** Using Wails' bundled WebView2 (fixed version embedded in binary) instead of Evergreen runtime.
+**Why bad:** Wails binary size explodes. More critically, on RDS each user session runs a separate WebView2 process if not using the shared Evergreen runtime — multiplying RAM usage. Embedded WebView2 cannot share the Edge renderer across sessions.
+**Do this instead:** Use Evergreen (machine-wide) runtime. Check at install time; bootstrap if missing. Accept the online dependency; WebView2 is present on all modern Windows 10/11 machines (ships with Windows Update since 2021).
+
+### Anti-Pattern 4: Storing OAuth Tokens in a File
+
+**What:** Writing `tokens.json` to `%APPDATA%\go-mapi\` with the access and refresh token.
+**Why bad:** Any process running as the same user can read `%APPDATA%`. Refresh tokens are effectively permanent credentials.
+**Do this instead:** Use Windows Credential Manager via `github.com/99designs/keyring`. The token is encrypted at rest by the OS, tied to the user's login. The file-based approach is only acceptable for non-sensitive settings (AppSettings).
+
+### Anti-Pattern 5: Using Wails v2 for This Project
+
+**What:** Building on Wails v2 because it's stable, using go-systray or a third-party tray library.
+**Why bad:** The Wails team confirmed v2 won't get systray support. Third-party tray integration with Wails v2 has known Objective-C linking conflicts on macOS (not relevant here, but signals fragility). The workaround would require `go:build` hacks and Win32 API calls outside the Wails lifecycle. More maintenance burden than accepting Wails v3 alpha.
+**Do this instead:** Use Wails v3. Pin to a specific alpha tag (e.g., `v3.0.0-alpha.74`). Update alpha version only intentionally, not automatically.
+
+### Anti-Pattern 6: Checking for Updates on Every App Event
+
+**What:** Polling GitHub releases API on watcher events or frequent intervals.
+**Why bad:** GitHub API has rate limits (60 unauthenticated requests/hour). Users on RDS may share an IP, multiplying requests across sessions.
+**Do this instead:** Check once at startup, and once per day via a `time.Ticker` that fires only if the app has been running more than 24 hours. Cache the last check time in settings.
+
+---
+
+## 13. Integration Points Summary
+
+| New Component | Integrates With | Integration Mechanism | Status |
+|---|---|---|---|
+| Wails App (`src/app/`) | `src/interceptor/` (DLL) | Filesystem IPC unchanged (`%TEMP%\go-mapi\`) | No change needed |
+| `watcher.go` (moved) | Wails App | WatcherCallback replaces NativeMessaging | Single function signature change |
+| `gmail.go` (moved) | Wails App | Called by App.CreateDraft / App.SendEmail | No changes to gmail.go internals |
+| `auth.go` (new) | `github.com/99designs/keyring` | Windows Credential Manager | New dependency |
+| `auth.go` (new) | Google OAuth2 endpoints | HTTP loopback redirect + token exchange | New code |
+| `updater.go` (new) | `github.com/creativeprojects/go-selfupdate` | GitHub Releases API | New dependency |
+| Inno Setup `.iss` | WebView2 Evergreen Bootstrapper | Microsoft download + silent install | Installer code change |
+| Inno Setup `.iss` | v2.x uninstaller | RegQueryStringValue → Exec uninstall | New cleanup code |
+| Frontend | `wailsjs/go/main/App.*` (generated) | Wails TypeScript bindings | Auto-generated |
+| Frontend | `wailsjs/runtime/runtime.ts` (generated) | EventsOn / EventsEmit | Auto-generated |
 
 ---
 
 ## Sources
 
-- Changesets config options: https://github.com/changesets/changesets/blob/main/docs/config-file-options.md
-- Changesets versioning apps (non-npm): https://github.com/changesets/changesets/blob/main/docs/versioning-apps.md
-- Changesets GitHub Action: https://github.com/changesets/action
-- Chrome Web Store version format (integer-only, no semver prerelease): https://developer.chrome.com/docs/apps/manifest/version
-- Chrome Web Store automated publishing: https://github.com/mnao305/chrome-extension-upload
-- Edge Add-ons API announcement: https://techcommunity.microsoft.com/discussions/edgeinsiderannouncements/introducing-api-to-automate-publishing-and-updating-microsoft-edge-add-ons/2654592
-- Edge Add-ons GitHub Action (`wdzeng/edge-addon`): https://github.com/wdzeng/edge-addon
-- Changesets private packages tag discussion: https://github.com/changesets/changesets/discussions/1312
-- Changesets GitHub Releases for non-npm packages issue: https://github.com/changesets/action/issues/269
+- Wails v3 systray support confirmation (v2 won't get it): https://github.com/wailsapp/wails/discussions/4514
+- Wails v3 systray-basic example (alpha.74): https://pkg.go.dev/github.com/wailsapp/wails/v3/examples/systray-basic
+- Wails v3 systray-menu example: https://pkg.go.dev/github.com/wailsapp/wails/v3/examples/systray-menu
+- Wails v3 single_instance plugin: https://pkg.go.dev/github.com/wailsapp/wails/v3/plugins/single_instance
+- Wails v2 App options (StartHidden, HideWindowOnClose): https://pkg.go.dev/github.com/wailsapp/wails/v2@v2.11.0/pkg/options
+- Wails v3 bindings/events changes from v2: https://v3alpha.wails.io/migration/v2-to-v3/
+- Google OAuth2 loopback redirect for desktop apps: https://developers.google.com/identity/protocols/oauth2/native-app
+- Google loopback migration guide (confirms desktop loopback stays supported): https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration
+- keyring library (Windows Credential Manager): https://github.com/99designs/keyring
+- go-selfupdate (GitHub Releases based): https://github.com/creativeprojects/go-selfupdate
+- WebView2 RDS/per-machine install guidance: https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution
+- WebView2 machine-wide install requirement for RDS: https://github.com/MicrosoftEdge/WebView2Feedback/issues/3338
+- Inno Setup WebView2 registry detection: https://groups.google.com/g/innosetup/c/_SfytB8FGdI
+- Inno Setup previous version uninstall pattern: https://www.w3tutorials.net/blog/how-to-automatically-uninstall-previous-installed-version-in-inno-setup/
 
 ---
-*Architecture research for: release pipeline integration (v2.1.0)*
+*Architecture research for: go-mapi v3.0 Wails Pivot*
 *Researched: 2026-04-12*
