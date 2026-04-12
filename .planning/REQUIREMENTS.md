@@ -107,23 +107,60 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 
 ## Traceability
 
-Which phases cover which requirements. Filled during roadmap creation.
+Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SHELL-01..07 | TBD | Pending |
-| AUTH-01..07 | TBD | Pending |
-| QUEUE-01..07 | TBD | Pending |
-| NOTIF-01..05 | TBD | Pending |
-| INST-01..07 | TBD | Pending |
-| REL-01..07 | TBD | Pending |
-| QUAL-01..04 | TBD | Pending |
+| SHELL-01 | Phase 7 | Pending |
+| SHELL-02 | Phase 7 | Pending |
+| SHELL-03 | Phase 7 | Pending |
+| SHELL-04 | Phase 7 | Pending |
+| SHELL-05 | Phase 7 | Pending |
+| SHELL-06 | Phase 7 | Pending |
+| SHELL-07 | Phase 7 | Pending |
+| AUTH-01 | Phase 8 | Pending |
+| AUTH-02 | Phase 8 | Pending |
+| AUTH-03 | Phase 8 | Pending |
+| AUTH-04 | Phase 8 | Pending |
+| AUTH-05 | Phase 8 | Pending |
+| AUTH-06 | Phase 8 | Pending |
+| AUTH-07 | Phase 8 | Pending |
+| QUEUE-01 | Phase 9 | Pending |
+| QUEUE-02 | Phase 9 | Pending |
+| QUEUE-03 | Phase 9 | Pending |
+| QUEUE-04 | Phase 9 | Pending |
+| QUEUE-05 | Phase 9 | Pending |
+| QUEUE-06 | Phase 9 | Pending |
+| QUEUE-07 | Phase 9 | Pending |
+| NOTIF-01 | Phase 9 | Pending |
+| NOTIF-02 | Phase 9 | Pending |
+| NOTIF-03 | Phase 9 | Pending |
+| NOTIF-04 | Phase 9 | Pending |
+| NOTIF-05 | Phase 9 | Pending |
+| INST-01 | Phase 10 | Pending |
+| INST-02 | Phase 10 | Pending |
+| INST-03 | Phase 10 | Pending |
+| INST-04 | Phase 10 | Pending |
+| INST-05 | Phase 10 | Pending |
+| INST-06 | Phase 10 | Pending |
+| INST-07 | Phase 10 | Pending |
+| REL-01 | Phase 11 | Pending |
+| REL-02 | Phase 11 | Pending |
+| REL-03 | Phase 11 | Pending |
+| REL-04 | Phase 11 | Pending |
+| REL-05 | Phase 11 | Pending |
+| REL-06 | Phase 11 | Pending |
+| REL-07 | Phase 11 | Pending |
+| QUAL-01 | Phase 7 | Pending |
+| QUAL-02 | Phase 7 | Pending |
+| QUAL-03 | Phase 8 | Pending |
+| QUAL-04 | Phase 7 | Pending |
 
 **Coverage:**
-- v3.0 requirements: 43 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 43 ⚠️ (will be resolved by roadmapper)
+- v3.0 requirements: 44 total (note: original count of 43 was off by one — all categories re-counted from requirements text)
+- Mapped to phases: 44
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-12*
-*Last updated: 2026-04-12 after v3.0 milestone kickoff — research synthesized into scoped requirements*
+*Last updated: 2026-04-12 — traceability table filled by roadmapper; all 44 requirements mapped to phases 7-11*
