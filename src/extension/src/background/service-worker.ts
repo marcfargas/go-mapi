@@ -262,22 +262,57 @@ function handleNativeMessage(message: NativeIncomingMessage) {
   }
 }
 
+// --- OAuth helper: Chrome getAuthToken with launchWebAuthFlow fallback ---
+// getAuthToken is Chrome-only; Edge throws "This API is not supported on
+// Microsoft Edge". launchWebAuthFlow works on all Chromium browsers.
+
+async function getOAuthToken(interactive = true): Promise<string> {
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      chrome.identity.getAuthToken({ interactive }, (t) => {
+        if (chrome.runtime.lastError || !t) {
+          reject(new Error(chrome.runtime.lastError?.message || 'Auth failed'));
+        } else {
+          resolve(t);
+        }
+      });
+    });
+  } catch (err) {
+    if (!interactive) throw err;
+
+    const manifest = chrome.runtime.getManifest();
+    const clientId = manifest.oauth2?.client_id;
+    const scopes = manifest.oauth2?.scopes?.join(' ') ?? '';
+    if (!clientId) throw new Error('No OAuth client_id in manifest');
+
+    const redirectUrl = chrome.identity.getRedirectURL();
+    const authUrl =
+      `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${encodeURIComponent(clientId)}&` +
+      `redirect_uri=${encodeURIComponent(redirectUrl)}&` +
+      `response_type=token&` +
+      `scope=${encodeURIComponent(scopes)}`;
+
+    const responseUrl = await chrome.identity.launchWebAuthFlow({
+      url: authUrl,
+      interactive: true,
+    });
+    if (!responseUrl) throw new Error('OAuth flow cancelled or returned no URL');
+
+    const hash = new URL(responseUrl).hash.substring(1);
+    const token = new URLSearchParams(hash).get('access_token');
+    if (!token) throw new Error('No access_token in OAuth response');
+    return token;
+  }
+}
+
 // --- Auto-draft: get token, send email to Go host ---
 
 async function autoCreateDraft(email: EmailWithId) {
   try {
-    // Try non-interactive auth first
     let token: string;
     try {
-      token = await new Promise<string>((resolve, reject) => {
-        chrome.identity.getAuthToken({ interactive: false }, (t) => {
-          if (chrome.runtime.lastError || !t) {
-            reject(new Error(chrome.runtime.lastError?.message || 'Not signed in'));
-          } else {
-            resolve(t);
-          }
-        });
-      });
+      token = await getOAuthToken(false);
     } catch {
       // Not signed in — show notification
       chrome.notifications.create(`auth:${email.id}`, {
@@ -319,13 +354,13 @@ chrome.notifications.onClicked.addListener((notificationId) => {
     });
     chrome.notifications.clear(notificationId);
   } else if (notificationId.startsWith('auth:')) {
-    chrome.identity.getAuthToken({ interactive: true }, (token) => {
+    getOAuthToken(true).then((token) => {
       if (token) {
         for (const email of emails.values()) {
           autoCreateDraft(email);
         }
       }
-    });
+    }).catch(() => { /* user cancelled or auth failed */ });
     chrome.notifications.clear(notificationId);
   }
 });
@@ -360,13 +395,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
             sendResponse({ success: false, error: 'Email not found' });
             return;
           }
-          // Get token and delegate to Go
-          const token = await new Promise<string>((resolve, reject) => {
-            chrome.identity.getAuthToken({ interactive: true }, (t) => {
-              if (chrome.runtime.lastError || !t) reject(new Error(chrome.runtime.lastError?.message || 'Auth failed'));
-              else resolve(t);
-            });
-          });
+          const token = await getOAuthToken();
           sendToNativeHost({ type: MSG_TYPE.CREATE_DRAFT, id: request.id, token, email });
           sendResponse({ success: true });
           break;
