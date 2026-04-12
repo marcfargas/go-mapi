@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.1.0
 milestone_name: Release Pipeline (capped)
-status: milestone-capped
-stopped_at: v2.1.0 capped at Phase 6; Phases 7-9 dropped for v3.0 Wails pivot
-last_updated: "2026-04-12T19:00:00.000Z"
+status: Awaiting milestone archive → v3.0 Wails milestone kickoff
+stopped_at: v2.1.0 capped at Phase 6; Phases 7-9 dropped
+last_updated: "2026-04-12T19:05:36.593Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 1

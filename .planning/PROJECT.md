@@ -10,16 +10,26 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 
 ## Requirements
 
-## Current Milestone: v2.1.0 Release Pipeline
+## Current Milestone: v3.0 Wails Pivot (scoping)
 
-**Goal:** Decouple extension and host release tracks with automated publishing via changesets.
+**Goal:** Replace the browser extension + Chrome native-host architecture with a standalone Wails (Go + WebView2) desktop app. Remove dependence on CWS/Edge review cycles, unlock features the extension sandbox blocks (automode, composer, enterprise management), and open a Firefox-compatible path.
 
-**Target features:**
-- Changesets monorepo setup with two packages (extension + host), separate version tracks
-- Automated extension publishing to Chrome Web Store and Edge Add-ons on Version Packages PR merge
-- Automated host/installer release via same changesets flow (separate version track, infrequent)
-- GitHub Releases with changelog and installer artifacts for host releases
-- Proper tagging, changelogs, and release notes generated from changesets
+**Preserved from v2.0/v2.1:**
+- C++ MAPI interceptor DLL — unchanged
+- Filesystem-based IPC (`%TEMP%\go-mapi\`) — unchanged
+- Privacy-first delete-on-process model — unchanged
+- Go as primary language — unchanged
+
+**Changes:**
+- UI: Chrome extension popup → system tray icon + native window
+- OAuth: `chrome.identity.getAuthToken()` → Google desktop app OAuth (loopback redirect)
+- New: toast notifications for queued emails, opt-out automode (auto-draft or auto-send)
+- New: opt-out autoupdate (Wails / WebView2 built-in if available)
+- Future: in-app composer (SMTP prep), enterprise control plane
+
+**Key constraint:** RDS deployments host ~30 concurrent users on one server. Per-instance RAM must stay 10-30 MB (WebView2 shares the Edge runtime process; needs verification).
+
+See `.planning/notes/2026-04-12-architecture-reeval-wails.md`. Run `/gsd-new-milestone` to scope into phases.
 
 ### Validated
 
@@ -43,17 +53,22 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 - ✓ PowerShell-based install script (`scripts/install.ps1`) for developers — existing
 - ✓ Unit + integration tests for Go protocol, validator, watcher (~55 tests); protocol fixtures shared with TypeScript — existing
 - ✓ CI builds all three components (DLL via MinGW+CMake, Go host, Vite extension bundle) via GitHub Actions — existing
+- ✓ Changesets monorepo with two private workspace packages (`src/extension`, `src/native-host`) on independent semver tracks — v2.1.0
+- ✓ Version authority migrated from root `package.json` to per-package files; build scripts read per-package versions — v2.1.0
+- ✓ Version Packages CI workflow via `changesets/action@v1.7.0` + `CHANGESET_TOKEN` PAT for downstream CI triggering — v2.1.0
 
 ### Active
 
-<!-- v2.1.0 milestone scope. All hypotheses until shipped. -->
+<!-- v3.0 Wails pivot — to be scoped via /gsd-new-milestone. -->
 
-**Release pipeline — decoupled tracks:**
-- [ ] Changesets monorepo setup with two packages (extension + host), each on its own version track
-- [ ] Automated extension publishing to Chrome Web Store and Edge Add-ons on Version Packages PR merge
-- [ ] Automated host/installer release via same changesets flow (separate version track, infrequent)
-- [ ] GitHub Releases with changelog and installer artifacts for host releases
-- [ ] Proper tagging, changelogs, and release notes generated from changesets
+**Wails desktop app (scoping):**
+- [ ] Replace Chrome extension UI with Wails system tray + native window
+- [ ] Migrate OAuth from `chrome.identity` to Google desktop app flow (loopback redirect)
+- [ ] Toast notifications for queued emails
+- [ ] Automode (opt-out): auto-draft or auto-send without user interaction
+- [ ] Opt-out autoupdate mechanism
+- [ ] RAM profile verification — 10-30 MB per instance in RDS deployments (30 concurrent users)
+- [ ] New distribution model replacing CWS/Edge review cycle
 
 ### Out of Scope
 
@@ -116,9 +131,11 @@ A non-technical Windows user can install go-mapi once and have every "Send to Ma
 | E2E test covers happy path only, not exhaustive scenarios | Regression safety on the main flow is the priority; edge cases stay in unit/integration tests | — Pending |
 | Code signing via free OSS service if available (SignPath.io), unsigned otherwise | Solo FOSS project budget; paid EV certs are out of scope | — Pending |
 | Outlook / multi-account / SMTP / queue mgmt deferred to future milestones | Keep v2.0.0 scope tight; install UX + reliability first, then expand | — Pending |
-| Decoupled release tracks (extension vs host) | Host is lean/stable, extension iterates frequently — separate version tracks prevent unnecessary host releases | — Pending |
-| Changesets for versioning + changelogs | Explicit changeset files per change, Version Packages PR flow, works with monorepo dual-package setup | — Pending |
-| Publish to both Chrome Web Store and Edge Add-ons | Extension already supports Edge; users on both browsers deserve auto-updates | — Pending |
+| Decoupled release tracks (extension vs host) | Host is lean/stable, extension iterates frequently — separate version tracks prevent unnecessary host releases | ⚠️ Revisit — changesets foundation shipped v2.1.0; extension track retired with Wails pivot |
+| Changesets for versioning + changelogs | Explicit changeset files per change, Version Packages PR flow, works with monorepo dual-package setup | ✓ Good — shipped v2.1.0 Phase 6 |
+| Publish to both Chrome Web Store and Edge Add-ons | Extension already supports Edge; users on both browsers deserve auto-updates | — Dropped — browser extension being replaced with Wails desktop app in v3.0 |
+| Cap v2.1.0 at Phase 6, drop Phases 7-9 | Extension auto-publish pipeline would be retired within weeks once Wails pivot lands; building throwaway infra is wasteful | — Pending (v3.0 validates) |
+| Replace browser extension with standalone Wails (Go + WebView2) desktop app | Extension sandbox blocks automode/composer/enterprise features; CWS+Edge review cycles slow iteration; no Firefox path; WebView2 shares Edge runtime on Windows (better RAM profile for RDS than Electron) | — Pending (v3.0) |
 
 ## Evolution
 
@@ -138,4 +155,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-12 after v2.1.0 milestone kickoff (Release Pipeline)*
+*Last updated: 2026-04-12 after v2.1.0 milestone archive (capped at Phase 6) and v3.0 Wails pivot staging*
