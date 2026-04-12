@@ -3,7 +3,7 @@
 ## Milestones
 
 - ✅ **v2.0.0 Installer UX + Test-Suite Completeness** - Phases 1-5 (shipped 2026-04-12)
-- 🚧 **v2.1.0 Release Pipeline** - Phases 6-9 (in progress)
+- 🚧 **v2.1.0 Release Pipeline (capped)** - Phase 6 only; Phases 7-9 dropped in favor of v3.0 Wails pivot
 
 ## Phases
 
@@ -100,10 +100,9 @@ Plans:
 
 **Milestone Goal:** Decouple extension and host release tracks with automated publishing via changesets, so every version bump triggers the right publish workflow without manual steps.
 
-- [ ] **Phase 6: Changesets Monorepo Scaffold** - Configure changesets with two private workspace packages, migrate version authority to per-package package.json files
-- [ ] **Phase 7: Extension Publishing Pipeline** - Auto-publish extension to Chrome Web Store and Edge Add-ons on extension version bump
-- [ ] **Phase 8: Host Release Pipeline** - Auto-create GitHub Release with installer assets on host version bump
-- [ ] **Phase 9: Pipeline Integration and Legacy Retirement** - Wire orchestrating release-pipeline.yml, validate end-to-end, retire legacy release.yml
+- [x] **Phase 6: Changesets Monorepo Scaffold** - Configure changesets with two private workspace packages, migrate version authority to per-package package.json files (completed 2026-04-12)
+
+**Note:** Phases 7-9 (extension publishing, host release pipeline, pipeline integration) were dropped on 2026-04-12 after the strategic decision to replace the browser extension with a standalone Wails desktop app in v3.0. The auto-publish pipeline would have been retired within weeks; capping v2.1.0 at Phase 6 and moving directly to the Wails pivot. See `.planning/notes/2026-04-12-architecture-reeval-wails.md`.
 
 ## Phase Details
 
@@ -124,38 +123,6 @@ Plans:
 - [x] 06-02-PLAN.md — Migrate version sources in build scripts and Vite plugin
 - [x] 06-03-PLAN.md — Create Version Packages CI workflow + CHANGESET_TOKEN setup
 
-### Phase 7: Extension Publishing Pipeline
-**Goal**: Merging a Version Packages PR that bumps the extension version automatically publishes the updated extension ZIP to Chrome Web Store and Edge Add-ons without manual steps
-**Depends on**: Phase 6
-**Requirements**: PUB-01, PUB-02, PUB-03, PUB-04
-**Success Criteria** (what must be TRUE):
-  1. An extension version bump triggers `publish-extension.yml` which builds the extension ZIP and submits it to Chrome Web Store; the submission is accepted by the CWS API (not necessarily approved by reviewers, which is async)
-  2. The same workflow also submits to Edge Add-ons via the v1.1 API; the upload completes without a 4xx/5xx error
-  3. All four CWS credentials and all three Edge credentials are stored as repo secrets and the workflow fails loudly if any secret is missing
-  4. A host-only changeset does not trigger `publish-extension.yml`
-**Plans**: TBD
-
-### Phase 8: Host Release Pipeline
-**Goal**: Merging a Version Packages PR that bumps the host version automatically creates a GitHub Release with the installer binary and SHA-256 sidecar at the stable download URL
-**Depends on**: Phase 6
-**Requirements**: REL-01, REL-02, REL-03
-**Success Criteria** (what must be TRUE):
-  1. A host version bump dispatches `installer-release.yml` via `workflow_dispatch` with the correct version input; the workflow builds and signs the installer
-  2. A GitHub Release is created with `go-mapi-setup.exe` and `go-mapi-setup.exe.sha256` as release assets
-  3. `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe` returns 200 after the release is published
-  4. An extension-only changeset does not trigger `installer-release.yml`
-**Plans**: TBD
-
-### Phase 9: Pipeline Integration and Legacy Retirement
-**Goal**: A single orchestrating workflow correctly routes extension-only, host-only, and combined changesets to their respective publish jobs, and the legacy release.yml is retired after one validated real release
-**Depends on**: Phases 7, 8
-**Requirements**: PIPE-01, PIPE-02, PIPE-03
-**Success Criteria** (what must be TRUE):
-  1. An extension-only changeset fires only `publish-extension.yml`; a host-only changeset fires only `installer-release.yml`; a combined changeset fires both, in sequence
-  2. `release-pipeline.yml` is the sole trigger for both downstream publish workflows — no manual tag pushes or workflow_dispatch calls needed after a Version Packages PR merges
-  3. `release.yml` is deleted from `.github/workflows/` and the deletion is verified against CI history showing at least one successful end-to-end release via the new pipeline
-**Plans**: TBD
-
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -165,15 +132,12 @@ Plans:
 | 3. Inno Setup Installer + Signing + Distribution | v2.0.0 | 4/4 | Complete | 2026-04-10 |
 | 4. Test-Suite Completeness + E2E | v2.0.0 | 4/4 | Complete | 2026-04-10 |
 | 5. Release Cut | v2.0.0 | 4/4 | Complete | 2026-04-12 |
-| 6. Changesets Monorepo Scaffold | v2.1.0 | 0/3 | In progress | - |
-| 7. Extension Publishing Pipeline | v2.1.0 | 0/? | Not started | - |
-| 8. Host Release Pipeline | v2.1.0 | 0/? | Not started | - |
-| 9. Pipeline Integration and Legacy Retirement | v2.1.0 | 0/? | Not started | - |
+| 6. Changesets Monorepo Scaffold | v2.1.0 | 3/3 | Complete | 2026-04-12 |
 
 ## Coverage
 
-**v2.1.0 requirements:** 20 total
-- Mapped to phases: 20
+**v2.1.0 requirements:** 10 total (originally 20; PUB-*/REL-*/PIPE-* dropped with Phases 7-9)
+- Mapped to phases: 10
 - Unmapped: 0
 
 | Requirement | Phase |
@@ -188,16 +152,6 @@ Plans:
 | VER-02 | Phase 6 |
 | VER-03 | Phase 6 |
 | VER-04 | Phase 6 |
-| PUB-01 | Phase 7 |
-| PUB-02 | Phase 7 |
-| PUB-03 | Phase 7 |
-| PUB-04 | Phase 7 |
-| REL-01 | Phase 8 |
-| REL-02 | Phase 8 |
-| REL-03 | Phase 8 |
-| PIPE-01 | Phase 9 |
-| PIPE-02 | Phase 9 |
-| PIPE-03 | Phase 9 |
 
 ---
-*Roadmap updated: 2026-04-12 — Phase 6 plans created (3 plans in 2 waves)*
+*Roadmap updated: 2026-04-12 — v2.1.0 capped at Phase 6; Phases 7-9 dropped for v3.0 Wails pivot*

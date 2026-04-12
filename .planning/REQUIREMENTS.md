@@ -23,24 +23,20 @@ Requirements for v2.1.0 Release Pipeline milestone. Each maps to roadmap phases.
 - [ ] **VER-03**: Installer build reads version from `src/native-host/package.json`
 - [ ] **VER-04**: `manifest.json` version auto-synced via lifecycle script on changeset version bump (strips prerelease suffixes for CWS integer-only format)
 
-### Extension Publishing
+### Dropped Requirements
 
-- [ ] **PUB-01**: `publish-extension.yml` workflow auto-publishes extension ZIP to Chrome Web Store on extension version bump
-- [ ] **PUB-02**: Same workflow auto-publishes to Edge Add-ons via `birchill/edge-addon-upload@v1.1.0` (API v1.1 credentials)
-- [ ] **PUB-03**: CWS OAuth credentials stored as repo secrets (`CWS_EXTENSION_ID`, `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`)
-- [ ] **PUB-04**: Edge Add-ons credentials stored as repo secrets (`EDGE_API_KEY`, `EDGE_CLIENT_ID`, `EDGE_PRODUCT_ID`)
+The following requirements were defined for Phases 7-9 but dropped on 2026-04-12 when v2.1.0 was capped at Phase 6 in favor of the v3.0 Wails pivot. Preserved here for historical traceability:
 
-### Host Release
-
-- [ ] **REL-01**: `installer-release.yml` converted from tag trigger to `workflow_dispatch` with version input
-- [ ] **REL-02**: GitHub Release auto-created on host version bump with installer `.exe` and `.sha256` sidecar
-- [ ] **REL-03**: Stable download URL `releases/latest/download/go-mapi-setup.exe` verified working
-
-### Pipeline Integration
-
-- [ ] **PIPE-01**: `release-pipeline.yml` orchestrates changesets action, detects which packages bumped, dispatches appropriate publish workflows
-- [ ] **PIPE-02**: Legacy `release.yml` retired after at least one successful end-to-end release via new pipeline
-- [ ] **PIPE-03**: Extension-only changeset fires only extension publish; host changeset fires only host release; combined changeset fires both
+- ~~**PUB-01**~~: `publish-extension.yml` auto-publishes to CWS on extension version bump — dropped (extension architecture being replaced)
+- ~~**PUB-02**~~: Same workflow auto-publishes to Edge Add-ons — dropped
+- ~~**PUB-03**~~: CWS OAuth credentials stored as repo secrets — dropped
+- ~~**PUB-04**~~: Edge Add-ons credentials stored as repo secrets — dropped
+- ~~**REL-01**~~: `installer-release.yml` converted from tag trigger to `workflow_dispatch` — dropped (Wails app will have a new distribution model)
+- ~~**REL-02**~~: GitHub Release auto-created on host version bump — dropped
+- ~~**REL-03**~~: Stable download URL verified — dropped
+- ~~**PIPE-01**~~: `release-pipeline.yml` orchestrator — dropped
+- ~~**PIPE-02**~~: Legacy `release.yml` retired — dropped (will be rethought in v3.0)
+- ~~**PIPE-03**~~: Per-package changeset routing — dropped
 
 ## Future Requirements
 
@@ -74,22 +70,22 @@ Requirements for v2.1.0 Release Pipeline milestone. Each maps to roadmap phases.
 | VER-02 | Phase 6 | Pending |
 | VER-03 | Phase 6 | Pending |
 | VER-04 | Phase 6 | Pending |
-| PUB-01 | Phase 7 | Pending |
-| PUB-02 | Phase 7 | Pending |
-| PUB-03 | Phase 7 | Pending |
-| PUB-04 | Phase 7 | Pending |
-| REL-01 | Phase 8 | Pending |
-| REL-02 | Phase 8 | Pending |
-| REL-03 | Phase 8 | Pending |
-| PIPE-01 | Phase 9 | Pending |
-| PIPE-02 | Phase 9 | Pending |
-| PIPE-03 | Phase 9 | Pending |
+| PUB-01 | — | Dropped (v3.0 Wails pivot) |
+| PUB-02 | — | Dropped (v3.0 Wails pivot) |
+| PUB-03 | — | Dropped (v3.0 Wails pivot) |
+| PUB-04 | — | Dropped (v3.0 Wails pivot) |
+| REL-01 | — | Dropped (v3.0 Wails pivot) |
+| REL-02 | — | Dropped (v3.0 Wails pivot) |
+| REL-03 | — | Dropped (v3.0 Wails pivot) |
+| PIPE-01 | — | Dropped (v3.0 Wails pivot) |
+| PIPE-02 | — | Dropped (v3.0 Wails pivot) |
+| PIPE-03 | — | Dropped (v3.0 Wails pivot) |
 
 **Coverage:**
-- v2.1.0 requirements: 20 total
-- Mapped to phases: 20 ✓
+- v2.1.0 active requirements: 10 (originally 20; 10 dropped with Phases 7-9)
+- Mapped to phases: 10 ✓
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-12*
-*Last updated: 2026-04-12 — traceability filled after roadmap creation*
+*Last updated: 2026-04-12 — PUB-*/REL-*/PIPE-* dropped; v2.1.0 capped at Phase 6 for v3.0 Wails pivot*
