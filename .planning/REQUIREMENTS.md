@@ -64,32 +64,32 @@ Requirements for v2.1.0 Release Pipeline milestone. Each maps to roadmap phases.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CS-01 | — | Pending |
-| CS-02 | — | Pending |
-| CS-03 | — | Pending |
-| CS-04 | — | Pending |
-| CS-05 | — | Pending |
-| CS-06 | — | Pending |
-| VER-01 | — | Pending |
-| VER-02 | — | Pending |
-| VER-03 | — | Pending |
-| VER-04 | — | Pending |
-| PUB-01 | — | Pending |
-| PUB-02 | — | Pending |
-| PUB-03 | — | Pending |
-| PUB-04 | — | Pending |
-| REL-01 | — | Pending |
-| REL-02 | — | Pending |
-| REL-03 | — | Pending |
-| PIPE-01 | — | Pending |
-| PIPE-02 | — | Pending |
-| PIPE-03 | — | Pending |
+| CS-01 | Phase 6 | Pending |
+| CS-02 | Phase 6 | Pending |
+| CS-03 | Phase 6 | Pending |
+| CS-04 | Phase 6 | Pending |
+| CS-05 | Phase 6 | Pending |
+| CS-06 | Phase 6 | Pending |
+| VER-01 | Phase 6 | Pending |
+| VER-02 | Phase 6 | Pending |
+| VER-03 | Phase 6 | Pending |
+| VER-04 | Phase 6 | Pending |
+| PUB-01 | Phase 7 | Pending |
+| PUB-02 | Phase 7 | Pending |
+| PUB-03 | Phase 7 | Pending |
+| PUB-04 | Phase 7 | Pending |
+| REL-01 | Phase 8 | Pending |
+| REL-02 | Phase 8 | Pending |
+| REL-03 | Phase 8 | Pending |
+| PIPE-01 | Phase 9 | Pending |
+| PIPE-02 | Phase 9 | Pending |
+| PIPE-03 | Phase 9 | Pending |
 
 **Coverage:**
 - v2.1.0 requirements: 20 total
-- Mapped to phases: 0
-- Unmapped: 20 ⚠️
+- Mapped to phases: 20 ✓
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-04-12*
-*Last updated: 2026-04-12 after initial definition*
+*Last updated: 2026-04-12 — traceability filled after roadmap creation*
