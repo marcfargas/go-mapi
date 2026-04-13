@@ -613,32 +613,32 @@ Sources (already cited inline):
 
 **User confirmation needed for:** A2 (UX fallback), A3 (memory optimization availability). A1/A5/A6 are verifiable mechanically. A4 is Claude's discretion. A7 is a VM-provisioning detail.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Left-click toggle pattern on `fyne.io/systray` v1.12.0 Windows**
    - What we know: `RunWithExternalLoop` is the integration API; menu click handlers use `ClickedCh`. Left-click on the tray icon itself is tracked as a separate concern.
    - What's unclear: Whether v1.12.0's `OnClick` hook fires on left-click on Windows, or only on default-action (double-click / menu-item-0).
-   - Recommendation: Wave 0 spike — 50-line standalone Go program with fyne.io/systray, log any click event. 30 minutes. Determines whether D-06 UX can be met literally or needs adjustment.
+   - **RESOLVED (2026-04-13):** Per CONTEXT.md D-06, plans implement left-click toggle using `fyne.io/systray`'s `SetOnClick` callback (available in v1.12.0). If left-click hook does not fire reliably on Windows during implementation, fall back to the `menu item [0]` default-action approach with a single "Show" entry — behavior stays identical from the user's perspective. No separate Wave 0 spike; Plan 02 Task 3 verifies this during tray wiring with visual checkpoint gating further work.
 
 2. **Raise-existing-window transport**
    - What we know: Second `wails.Run` will fail with mutex-already-exists; we want to signal the running instance to `WindowShow`.
    - What's unclear: Simplest transport — `FindWindow` by title + `WM_USER` custom message, or a named pipe, or a shared event.
-   - Recommendation: `FindWindow` by the Wails window title is simplest; test with Wails' default title behavior. If fragile (e.g., title changes with locale), use a named event the running instance waits on.
+   - **RESOLVED (2026-04-13):** Plan 03 Task 1 uses `FindWindowW` on the Wails window class/title (default title `"go-mapi"`) to locate the existing instance, then posts a custom `WM_USER+1` message that the main-window handler translates to `runtime.WindowShow`. If title-matching proves fragile (e.g., locale-dependent) during RAM-gate validation on RDS, the plan's fallback is a named event (`Local\go-mapi-raise-v3`) the running instance waits on — swap is one-function isolated to `singleinstance.go`.
 
 3. **Internal package shape: one module or nested module**
    - What we know: Both shapes work with go.work.
    - What's unclear: Which shape minimizes replace-directive noise and keeps `go test ./...` clean in each workspace.
-   - Recommendation: Try option 1 (`internal/mapi` as its own module) first; fall back to a root module if import paths get gnarly.
+   - **RESOLVED (2026-04-13):** Per CONTEXT.md D-08/D-09 and Plan 01, `internal/mapi/` becomes its own module referenced via `go.work`. Plan 01 Task 1 performs the extraction and Task 3 runs the existing native-host test suite to prove behavior-preserving. If import paths get gnarly during the Wails-side import in Plan 02, the fallback is collapsing to a single root module — decision revisited at Plan 02 Task 1 scaffold step.
 
 4. **CoreWebView2MemoryUsageTargetLevel exposure in Wails v2.12.0**
    - What we know: The API exists in WebView2; Wails v2 wraps WebView2 options.
    - What's unclear: Whether the specific `MemoryUsageTargetLevel` field is plumbed through Wails options or requires a patch / custom build.
-   - Recommendation: Check `windows.Options` struct in Wails v2.12.0 source during the Pattern 1 spike. If not exposed, accept lazy-init alone and document the gap.
+   - **RESOLVED (2026-04-13):** Accept lazy-init (StartHidden) alone as the memory-discipline strategy. If Wails v2.12.0's `windows.Options` exposes `MemoryUsageTargetLevel`, Plan 02 wires it on `OnHide`; if not, the 80 MB gate (D-04) is still tested on lazy-init only and the gap is documented in 07-SUMMARY.md. No gate is blocked on this knob — D-12 contingency covers the scenario where 80 MB is missed regardless.
 
 5. **RDS VM provisioning — WebView2 presence**
    - What we know: Hetzner Windows Server 2022 image ships stock; WebView2 ships with modern Windows Update.
    - What's unclear: Whether a fresh Hetzner image has WebView2 or whether it needs manual install.
-   - Recommendation: As part of D-02 provisioning, run the Evergreen Bootstrapper once on the VM (non-automated — this is measurement setup, not product installer). Document the presence/absence of WebView2 pre-bootstrap.
+   - **RESOLVED (2026-04-13):** Plan 04 Task 1 (VM provisioning) runs the Evergreen Bootstrapper unconditionally as part of measurement-setup (idempotent — no-ops if present). Presence/absence pre-bootstrap is recorded in the measurement log so the Phase 10 installer scope knows whether to bundle the bootstrapper for RDS images.
 
 ## Environment Availability
 
