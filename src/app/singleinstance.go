@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"golang.org/x/sys/windows"
@@ -25,9 +26,21 @@ var (
 // acquireSingleInstance tries to grab the per-session mutex.
 // Returns raised=true if another instance already owns it (and signals that instance via named event).
 //
-// CRITICAL (REVIEWS HIGH): CreateMutex returns a valid handle even when ERROR_ALREADY_EXISTS.
-// The error is reported via GetLastError, NOT via the err return. Call GetLastError BEFORE any
-// other syscall on this thread to avoid clobbering it.
+// CORRECTNESS NOTE (post-Plan-03 fix): The earlier implementation called
+// `windows.GetLastError()` AFTER `windows.CreateMutex` and compared against
+// ERROR_ALREADY_EXISTS. That is unreliable in Go: the runtime may run other
+// goroutines / syscalls on this OS thread between the CreateMutex syscall and
+// the GetLastError syscall, clobbering the per-thread last-error value. The
+// `golang.org/x/sys/windows.CreateMutex` wrapper already inspects the syscall's
+// raw `e1` errno immediately and sets the `err` return to ERROR_ALREADY_EXISTS
+// when the mutex pre-existed (see the //sys directive in syscall_windows.go:
+// `[failretval == 0 || e1 == ERROR_ALREADY_EXISTS]`). So the canonical, race-
+// free check is: inspect `err` directly, NOT GetLastError.
+//
+// The bug this fixes: with the GetLastError approach, the second instance saw
+// lastErr=0 (success) instead of ERROR_ALREADY_EXISTS, treated itself as the
+// first instance, kept its CreateMutex handle, and proceeded into wails.Run —
+// so multiple processes coexisted instead of single-instance enforcement.
 func acquireSingleInstance() (raised bool, err error) {
 	name, err := windows.UTF16PtrFromString(mutexName)
 	if err != nil {
@@ -35,15 +48,14 @@ func acquireSingleInstance() (raised bool, err error) {
 	}
 
 	handle, createErr := windows.CreateMutex(nil, false, name)
-	// GetLastError MUST be called before any other syscall on this goroutine (REVIEWS HIGH fix).
-	lastErr := windows.GetLastError()
-
+	// Canonical check: x/sys/windows.CreateMutex sets createErr to
+	// ERROR_ALREADY_EXISTS (an errors.Is-compatible Errno) when the mutex
+	// pre-existed. handle is still valid in that case and must be closed.
 	if handle == 0 {
-		// Genuine CreateMutex failure (rare) — fail closed only if we can't create state.
-		return false, fmt.Errorf("createmutex failed: %v (lastErr=%v)", createErr, lastErr)
+		return false, fmt.Errorf("CreateMutex failed: %w", createErr)
 	}
 
-	if lastErr == windows.ERROR_ALREADY_EXISTS {
+	if errors.Is(createErr, windows.ERROR_ALREADY_EXISTS) {
 		// Another instance owns the mutex. Close our duplicate handle.
 		_ = windows.CloseHandle(handle)
 		// Signal the first instance via named event.
@@ -62,11 +74,18 @@ func acquireSingleInstance() (raised bool, err error) {
 	// Create the named event (auto-reset, initial non-signaled) so the second instance can
 	// find and signal it. Create BEFORE wails.Run so second-instance SetEvent works even if
 	// our window isn't up yet; the dispatcher goroutine (started in app.startup) waits on it.
+	//
+	// Same correctness note as CreateMutex: use the err return, not GetLastError.
 	evtName, _ := windows.UTF16PtrFromString(raiseEventName)
 	evt, evtErr := windows.CreateEvent(nil, 0 /* auto-reset */, 0 /* non-signaled */, evtName)
 	if evt == 0 {
 		logError("createevent for raise transport: %v", evtErr)
 		// Not fatal — mutex still enforces single-instance; we just lose the UX raise.
+	} else if errors.Is(evtErr, windows.ERROR_ALREADY_EXISTS) {
+		// Stale event from a previously-killed first instance — adopt the existing handle.
+		// SetEvent / WaitForSingleObject both work on the existing kernel object.
+		eventHandle = evt
+		logInfo("adopted existing named event (stale from previous run)")
 	} else {
 		eventHandle = evt
 	}
