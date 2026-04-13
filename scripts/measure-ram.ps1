@@ -197,13 +197,13 @@ if ($PSCmdlet.ParameterSetName -eq 'Orchestrate') {
     $ceilingMin = if ($Smoke) { 7 } else { 55 }
     $deadline = (Get-Date).AddMinutes($ceilingMin)
     while ((Get-Date) -lt $deadline) {
-        $flags = Get-ChildItem -Path $WorkDir -Filter 'done-ramtest*.flag' -ErrorAction SilentlyContinue
+        $flags = @(Get-ChildItem -Path $WorkDir -Filter 'done-ramtest*.flag' -ErrorAction SilentlyContinue)
         if ($flags.Count -ge $N) { break }
         Start-Sleep -Seconds 30
     }
 
     # Collate per-user CSVs
-    $fragments = Get-ChildItem -Path $WorkDir -Filter 'phase-07-ram-gate-ramtest*.csv' -ErrorAction SilentlyContinue
+    $fragments = @(Get-ChildItem -Path $WorkDir -Filter 'phase-07-ram-gate-ramtest*.csv' -ErrorAction SilentlyContinue)
     $headerWritten = $false
     foreach ($f in $fragments) {
         $lines = Get-Content $f.FullName
