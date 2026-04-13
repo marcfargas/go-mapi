@@ -105,6 +105,20 @@ function Sample-Session {
 
 # ------------------------------------------------------------------ Worker
 if ($PSCmdlet.ParameterSetName -eq 'Worker') {
+    # Per-user log file — captures any error before process exits so Task Scheduler
+    # failures are diagnosable (stdout/stderr of the scheduled task are otherwise lost).
+    $workerLog = Join-Path $WorkDir "worker-$User.log"
+    Start-Transcript -Path $workerLog -Force | Out-Null
+    trap {
+        "[$(Get-Date -Format o)] FATAL: $_`n$($_.ScriptStackTrace)" |
+            Out-File -FilePath $workerLog -Append -Encoding UTF8
+        Stop-Transcript | Out-Null
+        exit 1
+    }
+
+    "[$(Get-Date -Format o)] Worker start: User=$User Smoke=$Smoke iters=$iterCount" |
+        Out-File -FilePath $workerLog -Append -Encoding UTF8
+
     $outCsv = Join-Path $WorkDir "phase-07-ram-gate-$User.csv"
     if (Test-Path $outCsv) { Remove-Item $outCsv -Force }
 
@@ -145,11 +159,25 @@ if ($PSCmdlet.ParameterSetName -eq 'Worker') {
     # Flag done for this user
     $flag = Join-Path $WorkDir "done-$User.flag"
     Set-Content -Path $flag -Value (Get-Date -Format o)
+    "[$(Get-Date -Format o)] Worker done: $User" | Out-File -FilePath $workerLog -Append -Encoding UTF8
+    Stop-Transcript | Out-Null
     return
 }
 
 # ------------------------------------------------------------------ Orchestrate
 if ($PSCmdlet.ParameterSetName -eq 'Orchestrate') {
+    $orchLog = Join-Path $WorkDir 'orchestrator.log'
+    Start-Transcript -Path $orchLog -Force | Out-Null
+    trap {
+        "[$(Get-Date -Format o)] FATAL: $_`n$($_.ScriptStackTrace)" |
+            Out-File -FilePath $orchLog -Append -Encoding UTF8
+        Stop-Transcript | Out-Null
+        exit 1
+    }
+
+    "[$(Get-Date -Format o)] Orchestrator start: N=$N Smoke=$Smoke" |
+        Out-File -FilePath $orchLog -Append -Encoding UTF8
+
     $canonicalCsv = Join-Path $WorkDir 'phase-07-ram-gate.csv'
     if (Test-Path $canonicalCsv) { Remove-Item $canonicalCsv -Force }
 
@@ -182,6 +210,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Orchestrate') {
     }
 
     Set-Content -Path (Join-Path $WorkDir 'measurement-complete.flag') -Value (Get-Date -Format o)
+    "[$(Get-Date -Format o)] Orchestrator done: fragments=$($fragments.Count) canonical=$canonicalCsv" |
+        Out-File -FilePath $orchLog -Append -Encoding UTF8
+    Stop-Transcript | Out-Null
     return
 }
 

@@ -167,6 +167,8 @@ if (-not `$m) { throw "FATAL: user $u not in Performance Log Users group -- Win3
     $bootstrap = @"
 `$ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Path C:\gomapi -Force | Out-Null
+# Grant Users modify on C:\gomapi so ramtest* workers can write CSV fragments and flags
+icacls C:\gomapi /grant 'Users:(OI)(CI)M' /T | Out-Null
 $($userLines -join "`n")
 
 # WebView2 Evergreen bootstrapper (silent install)
