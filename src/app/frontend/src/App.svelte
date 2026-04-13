@@ -1,22 +1,29 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { EventsOn } from '../wailsjs/runtime/runtime';
   import { subscribeQueue, fetchQueue, type EmailWithId } from './lib/queue';
   import './lib/styles.css';
 
   let queue = $state<EmailWithId[]>([]);
   let errorMsg = $state<string | null>(null);
   let unsub: (() => void) | null = null;
+  let unsubError: (() => void) | null = null;
 
   onMount(async () => {
     try {
       queue = await fetchQueue();
       unsub = subscribeQueue((next) => { queue = next; });
+      // Listen for watcher startup errors emitted by Go startup goroutine.
+      unsubError = EventsOn('queue-error', (msg: string) => { errorMsg = msg; });
     } catch (e) {
       errorMsg = (e as Error).message;
     }
   });
 
-  onDestroy(() => unsub?.());
+  onDestroy(() => {
+    unsub?.();
+    unsubError?.();
+  });
 
   function formatTimestamp(iso: string): string {
     const d = new Date(iso);

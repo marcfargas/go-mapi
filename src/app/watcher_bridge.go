@@ -22,10 +22,20 @@ type watcherBridge struct {
 	getSnap   func() []mapi.EmailWithId
 }
 
+// newWatcherBridge creates a bridge backed by the Wails EventsEmit for the given context.
+// onError is called synchronously from the watcher goroutine — must be non-blocking.
 func newWatcherBridge(ctx context.Context, onError func(err error)) *watcherBridge {
+	return newWatcherBridgeWithEmitter(ctx, onError, func(name string, data ...interface{}) {
+		wruntime.EventsEmit(ctx, name, data...)
+	})
+}
+
+// newWatcherBridgeWithEmitter creates a bridge with an injectable emitter. Used in tests
+// to avoid calling the Wails runtime with a non-Wails context.
+func newWatcherBridgeWithEmitter(ctx context.Context, onError func(err error), emitFn func(string, ...interface{})) *watcherBridge {
 	b := &watcherBridge{
 		ctx:     ctx,
-		emitter: func(name string, data ...interface{}) { wruntime.EventsEmit(ctx, name, data...) },
+		emitter: emitFn,
 		onError: onError,
 		pending: make(chan struct{}, 1),
 		done:    make(chan struct{}),
