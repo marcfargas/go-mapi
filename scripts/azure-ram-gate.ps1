@@ -279,7 +279,7 @@ Write-Output 'MEASURE_SCRIPT_UPLOADED'
         $p = $userPasswords[$u]
         @"
 `$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\gomapi\measure-ram.ps1 -Worker -User $u$(if ($Smoke) { " -Smoke" })'
-`$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
+`$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(10))
 `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask -TaskName 'gomapi-ramtest-$u' -Action `$action -Trigger `$trigger -Settings `$settings -User '$u' -Password '$p' -RunLevel Limited -Force | Out-Null
 "@
