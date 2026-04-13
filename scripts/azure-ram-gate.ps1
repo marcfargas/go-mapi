@@ -84,7 +84,7 @@ $binaryHash = (Get-FileHash -Path $BinaryPath -Algorithm SHA256).Hash
 Write-Host "  Binary SHA256: $binaryHash"
 
 # -------- provision --------
-$vmName       = 'gomapi-ramgate-vm'
+$vmName       = 'gomapi-ramgate'  # Windows computer name ≤15 chars
 $adminUser    = 'gomapiadmin'
 # Generate strong password (memory only, never persisted)
 # Cryptographic RNG; works on pwsh 7 (System.Web unavailable on .NET Core).
