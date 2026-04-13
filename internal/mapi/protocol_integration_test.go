@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/marcfargas/go-mapi/native-host/internal/mapi/testutil"
+	"github.com/marcfargas/go-mapi/internal/mapi/testutil"
 )
 
 // TestProtocolFixtures_MailMessage validates that MailMessage JSON parsing from

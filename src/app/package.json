@@ -1,0 +1,6 @@
+{
+  "name": "@marcfargas/go-mapi-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Wails desktop app for go-mapi v3.0"
+}

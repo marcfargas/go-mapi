@@ -11,5 +11,10 @@
   "privatePackages": {
     "version": true,
     "tag": true
-  }
+  },
+  "$workspaces": [
+    "src/extension",
+    "src/native-host",
+    "src/app"
+  ]
 }

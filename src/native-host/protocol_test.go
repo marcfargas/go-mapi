@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
+	mapi "github.com/marcfargas/go-mapi/internal/mapi"
 )
 
 // Helper to create a native messaging format message

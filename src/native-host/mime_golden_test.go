@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
+	mapi "github.com/marcfargas/go-mapi/internal/mapi"
 )
 
 // GOTEST-02: Golden-file tests for buildFullMIME.

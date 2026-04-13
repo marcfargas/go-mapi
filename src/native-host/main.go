@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
+	mapi "github.com/marcfargas/go-mapi/internal/mapi"
 )
 
 const (
