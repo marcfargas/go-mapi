@@ -38,8 +38,15 @@ param(
     [Parameter(ParameterSetName = 'Aggregate', Mandatory = $true)]
     [string] $Aggregate,
 
-    [string] $WorkDir = 'C:\gomapi'
+    [string] $WorkDir = 'C:\gomapi',
+
+    # Smoke mode: 1 iteration, 10s idles — pipeline validation only, NOT real gate data.
+    [switch] $Smoke
 )
+
+$iterCount = if ($Smoke) { 1 } else { 3 }
+$idlePre   = if ($Smoke) { 10 } else { 295 }
+$idlePost  = if ($Smoke) { 10 } else { 285 }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -106,19 +113,17 @@ if ($PSCmdlet.ParameterSetName -eq 'Worker') {
 
     $exePath = Join-Path $WorkDir 'go-mapi.exe'
 
-    for ($iter = 1; $iter -le 3; $iter++) {
+    for ($iter = 1; $iter -le $iterCount; $iter++) {
         # Cold start
         $proc = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
         Start-Sleep -Seconds 5
         Sample-Session -SessionUser $User -Iteration $iter -Scenario 'cold-start' -OutputCsv $outCsv
 
         # Idle pre-WebView2 (main window never toggled → WebView2 not spawned)
-        Start-Sleep -Seconds 295  # total ~5 min from launch
+        Start-Sleep -Seconds $idlePre
         Sample-Session -SessionUser $User -Iteration $iter -Scenario 'idle-pre-webview' -OutputCsv $outCsv
 
         # Trigger main window show → WebView2 initialises.
-        # Plan 03 exposed --show-window for automation; fallback: toggle via Wails runtime socket
-        # (documented in VERIFICATION.md if fallback used).
         try {
             Start-Process -FilePath $exePath -ArgumentList '--show-window' -WindowStyle Hidden | Out-Null
         } catch {
@@ -126,8 +131,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Worker') {
         }
         Start-Sleep -Seconds 15  # give WebView2 time to spawn child processes
 
-        # Back to tray (best-effort). Then wait until 5 min idle-post.
-        Start-Sleep -Seconds 285
+        Start-Sleep -Seconds $idlePost
         Sample-Session -SessionUser $User -Iteration $iter -Scenario 'idle-post-webview' -OutputCsv $outCsv
 
         # Close all go-mapi.exe + msedgewebview2.exe for this user before next iter
@@ -154,8 +158,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Orchestrate') {
         Start-ScheduledTask -TaskName "gomapi-ramtest-ramtest$i"
     }
 
-    # Wait for all per-user flags with a 55-minute hard ceiling
-    $deadline = (Get-Date).AddMinutes(55)
+    # Wait for all per-user flags
+    $ceilingMin = if ($Smoke) { 7 } else { 55 }
+    $deadline = (Get-Date).AddMinutes($ceilingMin)
     while ((Get-Date) -lt $deadline) {
         $flags = Get-ChildItem -Path $WorkDir -Filter 'done-ramtest*.flag' -ErrorAction SilentlyContinue
         if ($flags.Count -ge $N) { break }

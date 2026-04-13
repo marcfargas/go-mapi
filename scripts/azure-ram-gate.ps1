@@ -28,8 +28,20 @@ param(
     [string] $MeasureScript  = 'scripts/measure-ram.ps1',
     [string] $CsvOut         = 'docs/measurements/phase-07-ram-gate.csv',
     [switch] $Confirm,
-    [switch] $KeepResourceGroup
+    [switch] $KeepResourceGroup,
+    [switch] $Smoke,
+    [int]    $PollTimeoutMinutes = 60
 )
+
+# Smoke mode: fastest possible end-to-end pipeline validation.
+# N=1, single iteration, 10s idle periods → ~2 min wall time.
+# Use to verify provision/bootstrap/task/orchestrator chain works before committing
+# to a full measurement run. Data produced is NOT the real gate result.
+if ($Smoke) {
+    $N = 1
+    $PollTimeoutMinutes = 8
+    Write-Host "  [SMOKE] overriding: N=1, PollTimeoutMinutes=8, worker uses short idles + 1 iter" -ForegroundColor Yellow
+}
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -264,7 +276,7 @@ Write-Output 'MEASURE_SCRIPT_UPLOADED'
     $taskLines = foreach ($u in $userPasswords.Keys) {
         $p = $userPasswords[$u]
         @"
-`$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\gomapi\measure-ram.ps1 -Worker -User $u'
+`$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File C:\gomapi\measure-ram.ps1 -Worker -User $u$(if ($Smoke) { " -Smoke" })'
 `$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1))
 `$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
 Register-ScheduledTask -TaskName 'gomapi-ramtest-$u' -Action `$action -Trigger `$trigger -Settings `$settings -User '$u' -Password '$p' -RunLevel Limited -Force | Out-Null
@@ -275,7 +287,7 @@ Register-ScheduledTask -TaskName 'gomapi-ramtest-$u' -Action `$action -Trigger `
 `$ErrorActionPreference = 'Stop'
 $($taskLines -join "`n")
 # Kick the orchestrator (runs as admin) which will Start-ScheduledTask for all and wait on flags
-Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\gomapi\measure-ram.ps1','-Orchestrate','-N','$N' -WindowStyle Hidden
+Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','C:\gomapi\measure-ram.ps1','-Orchestrate','-N','$N'$(if ($Smoke) { ",'-Smoke'" }) -WindowStyle Hidden
 Write-Output 'ORCHESTRATOR_STARTED'
 "@
     $orchFile = Join-Path $env:TEMP "ramgate-orch-$RgName.ps1"
@@ -288,7 +300,7 @@ Write-Output 'ORCHESTRATOR_STARTED'
     $pollScript = "if (Test-Path 'C:\gomapi\measurement-complete.flag') { Write-Output 'DONE' } else { Write-Output 'PENDING' }"
     $pollFile = Join-Path $env:TEMP "ramgate-poll-$RgName.ps1"
     Set-Content -Path $pollFile -Value $pollScript -Encoding UTF8
-    $deadline = (Get-Date).AddMinutes(30)
+    $deadline = (Get-Date).AddMinutes($PollTimeoutMinutes)
     $complete = $false
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 60
