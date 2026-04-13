@@ -328,7 +328,14 @@ Write-Output "CSV_B64_END"
     $pullRes = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$pullFile" --output json 2>&1
     $pullRes = ($pullRes | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail 6 "CSV pull run-command failed: $pullRes" }
-    $match = [regex]::Match($pullRes, 'CSV_B64_START\s*([A-Za-z0-9+/=\r\n\s]+?)\s*CSV_B64_END')
+    # Parse JSON envelope; the StdOut message field has newlines as actual \n after ConvertFrom-Json.
+    try {
+        $pullJson = $pullRes | ConvertFrom-Json
+        $pullStdout = (($pullJson.value | Where-Object { $_.code -like '*StdOut*' } | Select-Object -First 1).message)
+    } catch {
+        Fail 6 "Could not parse pull run-command JSON: $_`nRaw: $pullRes"
+    }
+    $match = [regex]::Match($pullStdout, 'CSV_B64_START\s*([A-Za-z0-9+/=\r\n\s]+?)\s*CSV_B64_END')
     if (-not $match.Success) { Fail 6 "Could not locate CSV_B64 block in output." }
     $csvB64 = ($match.Groups[1].Value -replace '\s', '')
     $csvText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($csvB64))
