@@ -146,9 +146,9 @@ if (-not (Get-LocalUser -Name '$u' -ErrorAction SilentlyContinue)) {
     Add-LocalGroupMember -Group 'Users' -Member '$u'
 }
 Add-LocalGroupMember -Group 'Performance Log Users' -Member '$u' -ErrorAction SilentlyContinue
-# Assert membership — fail loud if missing (silent failure would yield empty CSV)
+# Assert membership -- fail loud if missing (silent failure would yield empty CSV)
 `$m = Get-LocalGroupMember -Group 'Performance Log Users' -Member '$u' -ErrorAction SilentlyContinue
-if (-not `$m) { throw "FATAL: user $u not in Performance Log Users group — Win32_PerfRawData_PerfProc_Process would return empty" }
+if (-not `$m) { throw "FATAL: user $u not in Performance Log Users group -- Win32_PerfRawData_PerfProc_Process would return empty" }
 "@
     }
 
