@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"runtime"
 
 	"fyne.io/systray"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -13,10 +14,25 @@ var trayIdleIcon []byte
 //go:embed assets/tray/tray-error.ico
 var trayErrorIcon []byte
 
+// startTray launches the system tray on a dedicated OS thread.
+//
+// CRITICAL (Plan 03 fix): fyne.io/systray creates its hidden tray window on the goroutine
+// that calls Register/Run. The Win32 message pump for that window MUST run on the same
+// OS thread (Win32 dispatches WM_RBUTTONUP / WM_LBUTTONUP to the thread that owns the
+// window's message queue). Using `RunWithExternalLoop` here was wrong: its `start()`
+// spawns a fresh goroutine that pumps messages from a *different* OS thread, so right-
+// click never reached `wt.wndProc`, and no menu appeared.
+//
+// Fix: spawn one dedicated goroutine, LockOSThread, and call `systray.Run` (which does
+// Register + nativeLoop on the same locked thread). `Run` blocks until `systray.Quit()`,
+// so it lives on its own goroutine for the lifetime of the app.
 func (a *App) startTray() {
-	start, end := systray.RunWithExternalLoop(a.onTrayReady, func() {})
-	start()
-	a.trayEnd = end
+	a.trayEnd = func() { systray.Quit() }
+	go func() {
+		runtime.LockOSThread()
+		// systray.Run blocks here, pumping messages on this locked thread.
+		systray.Run(a.onTrayReady, func() {})
+	}()
 }
 
 func (a *App) onTrayReady() {
@@ -30,6 +46,8 @@ func (a *App) onTrayReady() {
 	mShow := systray.AddMenuItem("Show", "Open main window")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Exit go-mapi")
+
+	logInfo("tray ready: menu items registered (Show, Quit)")
 
 	go func() {
 		for {
