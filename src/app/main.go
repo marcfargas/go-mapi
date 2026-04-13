@@ -14,6 +14,17 @@ var assets embed.FS
 var Version = "0.0.0-dev" // overridden via -ldflags "-X main.Version=..."
 
 func main() {
+	raised, siErr := acquireSingleInstance()
+	if siErr != nil {
+		logError("single-instance: %v", siErr)
+		// Fail-open: proceed to run anyway so the user doesn't lose access.
+	}
+	if raised {
+		// Another instance owns the mutex; we signaled its named event. Exit now.
+		return
+	}
+	defer releaseSingleInstance()
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{
