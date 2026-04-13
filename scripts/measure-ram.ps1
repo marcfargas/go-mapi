@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Phase 7 RAM gate — on-VM benchmark orchestrator + per-session sampler.
+    Phase 7 RAM gate -- on-VM benchmark orchestrator + per-session sampler.
 
 .DESCRIPTION
     Three modes:
@@ -40,7 +40,7 @@ param(
 
     [string] $WorkDir = 'C:\gomapi',
 
-    # Smoke mode: 1 iteration, 10s idles — pipeline validation only, NOT real gate data.
+    # Smoke mode: 1 iteration, 10s idles -- pipeline validation only, NOT real gate data.
     [switch] $Smoke
 )
 
@@ -83,7 +83,7 @@ function Sample-Session {
         # Child msedgewebview2.exe processes by ParentProcessId
         $wvChildren = Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe' AND ParentProcessId=$gmPid"
 
-        # Private Working Set — keyed by IDProcess for unambiguous per-PID resolution
+        # Private Working Set -- keyed by IDProcess for unambiguous per-PID resolution
         # (avoids Get-Counter instance-name collisions across multiple go-mapi processes).
         $gmPerf = Get-CimInstance Win32_PerfRawData_PerfProc_Process -Filter "IDProcess=$gmPid"
         $gmWsBytes = if ($gmPerf) { $gmPerf.WorkingSetPrivate } else { 0 }
@@ -114,7 +114,7 @@ function Sample-Session {
 
 # ------------------------------------------------------------------ Worker
 if ($PSCmdlet.ParameterSetName -eq 'Worker') {
-    # Per-user log file — captures any error before process exits so Task Scheduler
+    # Per-user log file -- captures any error before process exits so Task Scheduler
     # failures are diagnosable (stdout/stderr of the scheduled task are otherwise lost).
     $workerLog = Join-Path $WorkDir "worker-$User.log"
     Start-Transcript -Path $workerLog -Force | Out-Null
@@ -132,7 +132,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Worker') {
     if (Test-Path $outCsv) { Remove-Item $outCsv -Force }
 
     # Canonical header so merge is simple (ensure present via one dummy write + overwrite)
-    # Actually we rely on Export-Csv to emit header on first Append — OK.
+    # Actually we rely on Export-Csv to emit header on first Append -- OK.
 
     $exePath = Join-Path $WorkDir 'go-mapi.exe'
 
@@ -142,15 +142,15 @@ if ($PSCmdlet.ParameterSetName -eq 'Worker') {
         Start-Sleep -Seconds 5
         Sample-Session -SessionUser $User -Iteration $iter -Scenario 'cold-start' -OutputCsv $outCsv
 
-        # Idle pre-WebView2 (main window never toggled → WebView2 not spawned)
+        # Idle pre-WebView2 (main window never toggled -> WebView2 not spawned)
         Start-Sleep -Seconds $idlePre
         Sample-Session -SessionUser $User -Iteration $iter -Scenario 'idle-pre-webview' -OutputCsv $outCsv
 
-        # Trigger main window show → WebView2 initialises.
+        # Trigger main window show -> WebView2 initialises.
         try {
             Start-Process -FilePath $exePath -ArgumentList '--show-window' -WindowStyle Hidden | Out-Null
         } catch {
-            # non-fatal — WebView2 may already have been triggered
+            # non-fatal -- WebView2 may already have been triggered
         }
         Start-Sleep -Seconds 15  # give WebView2 time to spawn child processes
 
@@ -233,7 +233,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Aggregate') {
 
     $scenarios = $rows | Group-Object scenario
     Write-Host ""
-    Write-Host "Phase 7 RAM gate — aggregate over $($rows.Count) rows from $Aggregate"
+    Write-Host "Phase 7 RAM gate -- aggregate over $($rows.Count) rows from $Aggregate"
     Write-Host ""
     Write-Host ("{0,-22} {1,8} {2,8} {3,8} {4,8} {5,8} {6,8}" -f 'scenario','n','mean','max','stddev','mean_gm','mean_wv')
 
@@ -254,7 +254,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Aggregate') {
         Write-Host ("{0,-22} {1,8} {2,8} {3,8} {4,8} {5,8} {6,8}" -f $sc.Name, $totals.Count, $mean, $max, $stddev, $meanGm, $meanWv)
 
         if ($mean -gt 0 -and ($stddev / $mean) -gt 0.20) {
-            Write-Warning "scenario='$($sc.Name)': stddev $stddev is > 20% of mean $mean — investigate variance per RESEARCH Pitfalls §1"
+            Write-Warning "scenario='$($sc.Name)': stddev $stddev is > 20% of mean $mean -- investigate variance per RESEARCH Pitfalls sec 1"
         }
     }
 
@@ -263,9 +263,9 @@ if ($PSCmdlet.ParameterSetName -eq 'Aggregate') {
         $gate = [math]::Round(($idlePost | Measure-Object -Average).Average, 2)
         Write-Host ""
         Write-Host "GATE METRIC (idle-post-webview mean total_ws_mb): $gate MB vs 80 MB threshold (D-04)"
-        if ($gate -le 30) { Write-Host "  STRETCH: ≤ 30 MB — exceptional result per D-04 stretch goal." -ForegroundColor Green }
-        elseif ($gate -le 80) { Write-Host "  WITHIN THRESHOLD (≤ 80 MB)." -ForegroundColor Green }
-        else { Write-Host "  EXCEEDS THRESHOLD (> 80 MB) — D-12 contingency applies." -ForegroundColor Red }
+        if ($gate -le 30) { Write-Host "  STRETCH: <= 30 MB -- exceptional result per D-04 stretch goal." -ForegroundColor Green }
+        elseif ($gate -le 80) { Write-Host "  WITHIN THRESHOLD (<= 80 MB)." -ForegroundColor Green }
+        else { Write-Host "  EXCEEDS THRESHOLD (> 80 MB) -- D-12 contingency applies." -ForegroundColor Red }
     }
     return
 }
