@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
@@ -170,5 +171,56 @@ func (nm *NativeMessaging) SendDraftError(emailID string, errMsg string) error {
 		ID:    emailID,
 		Error: errMsg,
 	})
+}
+
+// nativeMessagingAdapter implements mapi.WatcherCallback, bridging watcher
+// events to native-messaging frames sent to the Chrome extension.
+//
+// The legacy wire protocol sends one frame per changed item (not per-snapshot),
+// preserving the existing Extension ↔ Host contract:
+//   - New ID in snapshot → SendEmail (added)
+//   - ID absent from snapshot → SendRemoved (deleted/processed)
+type nativeMessagingAdapter struct {
+	nm      *NativeMessaging
+	mu      sync.Mutex
+	prevIDs map[string]struct{} // IDs seen in the last snapshot
+}
+
+func newNativeMessagingAdapter(nm *NativeMessaging) *nativeMessagingAdapter {
+	return &nativeMessagingAdapter{
+		nm:      nm,
+		prevIDs: make(map[string]struct{}),
+	}
+}
+
+func (a *nativeMessagingAdapter) OnQueueChanged(snapshot []mapi.EmailWithId) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Build current ID set
+	currentIDs := make(map[string]struct{}, len(snapshot))
+	for _, e := range snapshot {
+		currentIDs[e.Id] = struct{}{}
+	}
+
+	// Send removed notifications for IDs that disappeared
+	for id := range a.prevIDs {
+		if _, found := currentIDs[id]; !found {
+			_ = a.nm.SendRemoved(id)
+		}
+	}
+
+	// Send email notifications for IDs that are new
+	for _, e := range snapshot {
+		if _, seen := a.prevIDs[e.Id]; !seen {
+			_ = a.nm.SendEmail(e.Id, e.Message)
+		}
+	}
+
+	a.prevIDs = currentIDs
+}
+
+func (a *nativeMessagingAdapter) OnError(err error) {
+	_ = a.nm.SendError(err.Error())
 }
 

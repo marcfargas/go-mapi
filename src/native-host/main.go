@@ -94,7 +94,8 @@ func main() {
 	messaging := NewNativeMessaging()
 
 	// Create email watcher using resolved watch dir
-	watcher, err := NewEmailWatcher(hostConfig.watchDir, messaging)
+	adapter := newNativeMessagingAdapter(messaging)
+	watcher, err := mapi.NewEmailWatcher(hostConfig.watchDir, adapter)
 	if err != nil {
 		logError("failed to create watcher: %v", err)
 		messaging.SendError(fmt.Sprintf("failed to create watcher: %v", err))

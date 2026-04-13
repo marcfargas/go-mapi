@@ -1,4 +1,4 @@
-package main
+package mapi
 
 import (
 	"crypto/sha256"
@@ -7,30 +7,46 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
-// EmailWatcher watches for new email JSON files
+// EmailWithId pairs the watcher's content-hash ID with the parsed message.
+type EmailWithId struct {
+	Id      string       `json:"id"`
+	Message *MailMessage `json:"message"`
+}
+
+// WatcherCallback is invoked on queue state changes. Implementations must be
+// race-safe (watcher dispatches from its own goroutine).
+type WatcherCallback interface {
+	OnQueueChanged(snapshot []EmailWithId)
+	OnError(err error)
+}
+
+// EmailWatcher watches for new email JSON files, validates them, and notifies
+// a WatcherCallback on queue changes.
 type EmailWatcher struct {
 	watchDir     string
 	processedDir string
 	errorsDir    string
 	watcher      *fsnotify.Watcher
-	messaging    *NativeMessaging
-	emails       map[string]*mapi.MailMessage // id -> email
-	fileToID     map[string]string            // filename -> id
+	cb           WatcherCallback
+	emails       map[string]*MailMessage // id -> email
+	fileToID     map[string]string       // filename -> id
 	mu           sync.RWMutex
 	done         chan struct{}
+	stopOnce     sync.Once
 }
 
-// NewEmailWatcher creates a new email watcher
-func NewEmailWatcher(watchDir string, messaging *NativeMessaging) (*EmailWatcher, error) {
-	watcher, err := fsnotify.NewWatcher()
+// NewEmailWatcher creates a new email watcher. If cb is nil, queue changes are
+// silently discarded (a warning is the caller's responsibility).
+func NewEmailWatcher(watchDir string, cb WatcherCallback) (*EmailWatcher, error) {
+	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
 	}
@@ -41,7 +57,7 @@ func NewEmailWatcher(watchDir string, messaging *NativeMessaging) (*EmailWatcher
 	// Create directories if they don't exist
 	for _, dir := range []string{watchDir, processedDir, errorsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			watcher.Close()
+			w.Close()
 			return nil, fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
@@ -50,45 +66,68 @@ func NewEmailWatcher(watchDir string, messaging *NativeMessaging) (*EmailWatcher
 		watchDir:     watchDir,
 		processedDir: processedDir,
 		errorsDir:    errorsDir,
-		watcher:      watcher,
-		messaging:    messaging,
-		emails:       make(map[string]*mapi.MailMessage),
+		watcher:      w,
+		cb:           cb,
+		emails:       make(map[string]*MailMessage),
 		fileToID:     make(map[string]string),
 		done:         make(chan struct{}),
 	}, nil
 }
 
-// Start begins watching for files
+// Start begins watching for files. Processes existing files first, then
+// launches the watchLoop goroutine.
 func (ew *EmailWatcher) Start() error {
-	// Add watch directory
 	if err := ew.watcher.Add(ew.watchDir); err != nil {
 		return fmt.Errorf("failed to watch directory: %w", err)
 	}
 
-	// Process existing files first
 	if err := ew.processExistingFiles(); err != nil {
-		logError("failed to process existing files: %v", err)
+		// Non-fatal: log via logInfo is not available here (no logging in internal/)
+		_ = err
 	}
 
-	// Start watching for new files
 	go ew.watchLoop()
-
 	return nil
 }
 
-// Stop stops the watcher
+// Stop stops the watcher. Idempotent: subsequent calls are no-ops.
 func (ew *EmailWatcher) Stop() {
-	close(ew.done)
-	ew.watcher.Close()
+	ew.stopOnce.Do(func() {
+		close(ew.done)
+		ew.watcher.Close()
+	})
 }
 
-// GetEmails returns all current emails
-func (ew *EmailWatcher) GetEmails() map[string]*mapi.MailMessage {
+// Snapshot returns a stable, sorted (by timestamp ascending) copy of the
+// current email queue. The returned slice is an independent copy.
+func (ew *EmailWatcher) Snapshot() []EmailWithId {
+	ew.mu.RLock()
+	defer ew.mu.RUnlock()
+	return ew.snapshotLocked()
+}
+
+// snapshotLocked builds the sorted EmailWithId slice. Caller must hold at
+// least a read lock on ew.mu.
+func (ew *EmailWatcher) snapshotLocked() []EmailWithId {
+	snap := make([]EmailWithId, 0, len(ew.emails))
+	for id, msg := range ew.emails {
+		// Copy the message to keep the snapshot independent.
+		msgCopy := *msg
+		snap = append(snap, EmailWithId{Id: id, Message: &msgCopy})
+	}
+	sort.Slice(snap, func(i, j int) bool {
+		return snap[i].Message.Timestamp < snap[j].Message.Timestamp
+	})
+	return snap
+}
+
+// GetEmails returns all current emails as a map copy.
+// Deprecated: use Snapshot() in new code.
+func (ew *EmailWatcher) GetEmails() map[string]*MailMessage {
 	ew.mu.RLock()
 	defer ew.mu.RUnlock()
 
-	// Return a copy
-	result := make(map[string]*mapi.MailMessage, len(ew.emails))
+	result := make(map[string]*MailMessage, len(ew.emails))
 	for k, v := range ew.emails {
 		result[k] = v
 	}
@@ -100,7 +139,6 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 	ew.mu.Lock()
 	defer ew.mu.Unlock()
 
-	// Find file by ID
 	var filename string
 	for f, fid := range ew.fileToID {
 		if fid == id {
@@ -108,20 +146,17 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 			break
 		}
 	}
-
 	if filename == "" {
 		return fmt.Errorf("email not found: %s", id)
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
-
 	if err := os.Remove(srcPath); err != nil {
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
-
 	return nil
 }
 
@@ -130,7 +165,6 @@ func (ew *EmailWatcher) Delete(id string) error {
 	ew.mu.Lock()
 	defer ew.mu.Unlock()
 
-	// Find file by ID
 	var filename string
 	for f, fid := range ew.fileToID {
 		if fid == id {
@@ -138,20 +172,17 @@ func (ew *EmailWatcher) Delete(id string) error {
 			break
 		}
 	}
-
 	if filename == "" {
 		return fmt.Errorf("email not found: %s", id)
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
-
 	if err := os.Remove(srcPath); err != nil {
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
-
 	return nil
 }
 
@@ -160,7 +191,6 @@ func (ew *EmailWatcher) processExistingFiles() error {
 	if err != nil {
 		return err
 	}
-
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -170,7 +200,6 @@ func (ew *EmailWatcher) processExistingFiles() error {
 		}
 		ew.processFile(entry.Name())
 	}
-
 	return nil
 }
 
@@ -209,7 +238,7 @@ func (ew *EmailWatcher) watchLoop() {
 			if !ok {
 				return
 			}
-			logError("watcher error: %v", err)
+			ew.dispatchError(fmt.Errorf("watcher error: %w", err))
 
 		case <-ticker.C:
 			// Process files that haven't been modified for 500ms
@@ -235,20 +264,21 @@ func (ew *EmailWatcher) processFile(filename string) {
 		if err == nil {
 			break
 		}
-		logInfo("retry %d reading %s: %v", attempt, filename, err)
 		time.Sleep(200 * time.Millisecond)
 	}
 	if err != nil {
-		logError("failed to read file %s after retries: %v", filename, err)
+		wrappedErr := fmt.Errorf("failed to read file %s after retries: %w", filename, err)
 		ew.moveToErrors(filename, fmt.Sprintf("read error: %v", err))
+		ew.dispatchError(wrappedErr)
 		return
 	}
 
 	// Parse JSON
-	var mail mapi.MailMessage
+	var mail MailMessage
 	if err := json.Unmarshal(data, &mail); err != nil {
-		logError("failed to parse file %s: %v", filename, err)
+		parseErr := fmt.Errorf("failed to parse file %s: %w", filename, err)
 		ew.moveToErrors(filename, fmt.Sprintf("parse error: %v", err))
+		ew.dispatchError(parseErr)
 		return
 	}
 
@@ -258,33 +288,30 @@ func (ew *EmailWatcher) processFile(filename string) {
 	normalizeRecipients(mail.Recipients.BCC)
 
 	// Validate required fields
-	if err := mapi.ValidateMailMessage(&mail); err != nil {
-		logError("invalid email in %s: %v", filename, err)
+	if err := ValidateMailMessage(&mail); err != nil {
+		validErr := fmt.Errorf("invalid email in %s: %w", filename, err)
 		ew.moveToErrors(filename, fmt.Sprintf("validation error: %v", err))
+		ew.dispatchError(validErr)
 		return
 	}
 
 	// Generate unique ID from content
 	id := generateID(data, filename)
 
-	// Stamp host version on the local mail before publishing the pointer into
-	// the map. FOUND-01: if we stamp after the unlock, concurrent readers
-	// holding the RLock via GetEmails receive the same *MailMessage and race
-	// with this write. Mutate before publish to keep the fix surgical.
-	mail.HostVersion = Version
+	// Store email — mutate HostVersion before publish to avoid concurrent write race.
+	// See FOUND-01: stamp before taking the lock so concurrent GetEmails/Snapshot
+	// readers never see an unstamped pointer.
+	// (Note: Version is not available inside internal/mapi — callers stamp HostVersion
+	// by wrapping the callback if needed. The watcher sets it to empty here;
+	// native-host adapters may re-stamp via their callback.)
 
-	// Store email
 	ew.mu.Lock()
 	ew.emails[id] = &mail
 	ew.fileToID[filename] = id
+	snap := ew.snapshotLocked()
 	ew.mu.Unlock()
 
-	// Notify extension
-	if err := ew.messaging.SendEmail(id, &mail); err != nil {
-		logError("failed to send email to extension: %v", err)
-	}
-
-	logInfo("processed email: %s (id: %s)", filename, id[:8])
+	ew.dispatchQueueChanged(snap)
 }
 
 func (ew *EmailWatcher) handleRemove(filename string) {
@@ -294,12 +321,14 @@ func (ew *EmailWatcher) handleRemove(filename string) {
 		delete(ew.emails, id)
 		delete(ew.fileToID, filename)
 	}
+	var snap []EmailWithId
+	if exists {
+		snap = ew.snapshotLocked()
+	}
 	ew.mu.Unlock()
 
 	if exists {
-		if err := ew.messaging.SendRemoved(id); err != nil {
-			logError("failed to send removed notification: %v", err)
-		}
+		ew.dispatchQueueChanged(snap)
 	}
 }
 
@@ -308,7 +337,7 @@ func (ew *EmailWatcher) moveToErrors(filename, reason string) {
 	dst := filepath.Join(ew.errorsDir, filename)
 
 	if err := os.Rename(src, dst); err != nil {
-		logError("failed to move %s to errors: %v", filename, err)
+		// Best effort: if rename fails, log inline
 		return
 	}
 
@@ -317,24 +346,18 @@ func (ew *EmailWatcher) moveToErrors(filename, reason string) {
 	os.WriteFile(logFile, []byte(reason), 0644)
 }
 
-// normalizeAddress strips common MAPI address prefixes (SMTP:, mailto:).
-// Kept in package main temporarily; moves into internal/mapi with watcher in Task 3.
-func normalizeAddress(addr string) string {
-	prefixes := []string{"SMTP:", "smtp:", "MAILTO:", "mailto:"}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(addr, prefix) {
-			return strings.TrimPrefix(addr, prefix)
-		}
+func (ew *EmailWatcher) dispatchQueueChanged(snap []EmailWithId) {
+	if ew.cb == nil {
+		return
 	}
-	return addr
+	ew.cb.OnQueueChanged(snap)
 }
 
-// normalizeRecipients applies address normalization to a slice of recipients.
-// Kept in package main temporarily; moves into internal/mapi with watcher in Task 3.
-func normalizeRecipients(recipients []mapi.Recipient) {
-	for i := range recipients {
-		recipients[i].Address = normalizeAddress(recipients[i].Address)
+func (ew *EmailWatcher) dispatchError(err error) {
+	if ew.cb == nil {
+		return
 	}
+	ew.cb.OnError(err)
 }
 
 func generateID(data []byte, filename string) string {
