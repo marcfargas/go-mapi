@@ -213,6 +213,10 @@ func (a *nativeMessagingAdapter) OnQueueChanged(snapshot []mapi.EmailWithId) {
 	// Send email notifications for IDs that are new
 	for _, e := range snapshot {
 		if _, seen := a.prevIDs[e.Id]; !seen {
+			// Stamp host version before sending (was done in watcher.processFile
+			// previously; now the adapter is responsible since internal/mapi
+			// does not have access to the Version variable).
+			e.Message.HostVersion = Version
 			_ = a.nm.SendEmail(e.Id, e.Message)
 		}
 	}
