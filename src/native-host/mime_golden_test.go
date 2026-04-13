@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
 // GOTEST-02: Golden-file tests for buildFullMIME.
@@ -60,33 +62,33 @@ func TestBuildFullMIME_Golden(t *testing.T) {
 
 	cases := []struct {
 		name string
-		mail *MailMessage
+		mail *mapi.MailMessage
 	}{
 		{
 			name: "utf8_subject",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "Héllo Wörld",
 				Body:       "plain body",
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Name: "Alice", Address: "alice@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Name: "Alice", Address: "alice@example.com"}},
 				},
 			},
 		},
 		{
 			name: "attachment_spaces",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "With spaced attachment",
 				Body:       "see attached",
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Address: "bob@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Address: "bob@example.com"}},
 				},
-				Attachments: []Attachment{{
+				Attachments: []mapi.Attachment{{
 					Filename: "report final.txt",
 					Path:     attachSpaces,
 					Size:     0,
@@ -95,16 +97,16 @@ func TestBuildFullMIME_Golden(t *testing.T) {
 		},
 		{
 			name: "attachment_nonascii",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "Curriculum",
 				Body:       "attached résumé",
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Address: "hr@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Address: "hr@example.com"}},
 				},
-				Attachments: []Attachment{{
+				Attachments: []mapi.Attachment{{
 					Filename: "résumé.pdf",
 					Path:     attachNonASCII,
 					Size:     0,
@@ -113,40 +115,40 @@ func TestBuildFullMIME_Golden(t *testing.T) {
 		},
 		{
 			name: "boundary_collision",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "Boundary collision",
 				Body:       collisionBody,
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Address: "security@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Address: "security@example.com"}},
 				},
 			},
 		},
 		{
 			name: "long_body",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "Long body",
 				Body:       longBody,
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Address: "long@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Address: "long@example.com"}},
 				},
 			},
 		},
 		{
 			name: "empty_body",
-			mail: &MailMessage{
+			mail: &mapi.MailMessage{
 				Version:    1,
 				Timestamp:  "2026-04-10T00:00:00Z",
 				Subject:    "Empty body",
 				Body:       "",
 				BodyFormat: "plain",
-				Recipients: Recipients{
-					To: []Recipient{{Address: "void@example.com"}},
+				Recipients: mapi.Recipients{
+					To: []mapi.Recipient{{Address: "void@example.com"}},
 				},
 			},
 		},
@@ -155,7 +157,7 @@ func TestBuildFullMIME_Golden(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := buildFullMIME(tc.mail)
+			got, err := mapi.BuildFullMIME(tc.mail)
 			if err != nil {
 				t.Fatalf("buildFullMIME error: %v", err)
 			}

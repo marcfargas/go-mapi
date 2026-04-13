@@ -12,19 +12,20 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
 // EmailWatcher watches for new email JSON files
 type EmailWatcher struct {
-	watchDir    string
+	watchDir     string
 	processedDir string
-	errorsDir   string
-	watcher     *fsnotify.Watcher
-	messaging   *NativeMessaging
-	emails      map[string]*MailMessage // id -> email
-	fileToID    map[string]string       // filename -> id
-	mu          sync.RWMutex
-	done        chan struct{}
+	errorsDir    string
+	watcher      *fsnotify.Watcher
+	messaging    *NativeMessaging
+	emails       map[string]*mapi.MailMessage // id -> email
+	fileToID     map[string]string            // filename -> id
+	mu           sync.RWMutex
+	done         chan struct{}
 }
 
 // NewEmailWatcher creates a new email watcher
@@ -51,7 +52,7 @@ func NewEmailWatcher(watchDir string, messaging *NativeMessaging) (*EmailWatcher
 		errorsDir:    errorsDir,
 		watcher:      watcher,
 		messaging:    messaging,
-		emails:       make(map[string]*MailMessage),
+		emails:       make(map[string]*mapi.MailMessage),
 		fileToID:     make(map[string]string),
 		done:         make(chan struct{}),
 	}, nil
@@ -82,12 +83,12 @@ func (ew *EmailWatcher) Stop() {
 }
 
 // GetEmails returns all current emails
-func (ew *EmailWatcher) GetEmails() map[string]*MailMessage {
+func (ew *EmailWatcher) GetEmails() map[string]*mapi.MailMessage {
 	ew.mu.RLock()
 	defer ew.mu.RUnlock()
 
 	// Return a copy
-	result := make(map[string]*MailMessage, len(ew.emails))
+	result := make(map[string]*mapi.MailMessage, len(ew.emails))
 	for k, v := range ew.emails {
 		result[k] = v
 	}
@@ -244,7 +245,7 @@ func (ew *EmailWatcher) processFile(filename string) {
 	}
 
 	// Parse JSON
-	var mail MailMessage
+	var mail mapi.MailMessage
 	if err := json.Unmarshal(data, &mail); err != nil {
 		logError("failed to parse file %s: %v", filename, err)
 		ew.moveToErrors(filename, fmt.Sprintf("parse error: %v", err))
@@ -257,7 +258,7 @@ func (ew *EmailWatcher) processFile(filename string) {
 	normalizeRecipients(mail.Recipients.BCC)
 
 	// Validate required fields
-	if err := validateMailMessage(&mail); err != nil {
+	if err := mapi.ValidateMailMessage(&mail); err != nil {
 		logError("invalid email in %s: %v", filename, err)
 		ew.moveToErrors(filename, fmt.Sprintf("validation error: %v", err))
 		return
@@ -316,36 +317,8 @@ func (ew *EmailWatcher) moveToErrors(filename, reason string) {
 	os.WriteFile(logFile, []byte(reason), 0644)
 }
 
-func validateMailMessage(mail *MailMessage) error {
-	if mail.Version == 0 {
-		return fmt.Errorf("missing version")
-	}
-	if mail.Timestamp == "" {
-		return fmt.Errorf("missing timestamp")
-	}
-	if mail.BodyFormat != "plain" && mail.BodyFormat != "html" {
-		return fmt.Errorf("invalid bodyFormat: %s", mail.BodyFormat)
-	}
-	// Recipients are optional but if present must have address
-	for i, r := range mail.Recipients.To {
-		if r.Address == "" {
-			return fmt.Errorf("recipient to[%d] missing address", i)
-		}
-	}
-	for i, r := range mail.Recipients.CC {
-		if r.Address == "" {
-			return fmt.Errorf("recipient cc[%d] missing address", i)
-		}
-	}
-	for i, r := range mail.Recipients.BCC {
-		if r.Address == "" {
-			return fmt.Errorf("recipient bcc[%d] missing address", i)
-		}
-	}
-	return nil
-}
-
-// normalizeAddress strips common MAPI address prefixes (SMTP:, mailto:)
+// normalizeAddress strips common MAPI address prefixes (SMTP:, mailto:).
+// Kept in package main temporarily; moves into internal/mapi with watcher in Task 3.
 func normalizeAddress(addr string) string {
 	prefixes := []string{"SMTP:", "smtp:", "MAILTO:", "mailto:"}
 	for _, prefix := range prefixes {
@@ -356,8 +329,9 @@ func normalizeAddress(addr string) string {
 	return addr
 }
 
-// normalizeRecipients applies address normalization to a slice of recipients
-func normalizeRecipients(recipients []Recipient) {
+// normalizeRecipients applies address normalization to a slice of recipients.
+// Kept in package main temporarily; moves into internal/mapi with watcher in Task 3.
+func normalizeRecipients(recipients []mapi.Recipient) {
 	for i := range recipients {
 		recipients[i].Address = normalizeAddress(recipients[i].Address)
 	}

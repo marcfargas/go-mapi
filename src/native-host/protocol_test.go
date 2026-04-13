@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+
+	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
 // Helper to create a native messaging format message
@@ -185,14 +187,14 @@ func TestNativeMessaging_Write_EmailMessage(t *testing.T) {
 		writer: buf,
 	}
 
-	mail := &MailMessage{
+	mail := &mapi.MailMessage{
 		Version:    1,
 		Timestamp:  "2024-01-01T00:00:00Z",
 		Subject:    "Test Subject",
 		Body:       "Test Body",
 		BodyFormat: "plain",
-		Recipients: Recipients{
-			To: []Recipient{{Name: "John", Address: "john@example.com"}},
+		Recipients: mapi.Recipients{
+			To: []mapi.Recipient{{Name: "John", Address: "john@example.com"}},
 		},
 	}
 
@@ -327,18 +329,18 @@ func TestNativeMessaging_Roundtrip(t *testing.T) {
 	}
 
 	// Write an email
-	mail := &MailMessage{
+	mail := &mapi.MailMessage{
 		Version:    1,
 		Timestamp:  "2024-01-01T00:00:00Z",
 		Subject:    "Roundtrip Test",
 		Body:       "Body content",
 		BodyFormat: "html",
-		Recipients: Recipients{
-			To:  []Recipient{{Name: "To", Address: "to@example.com"}},
-			CC:  []Recipient{{Name: "CC", Address: "cc@example.com"}},
-			BCC: []Recipient{{Name: "BCC", Address: "bcc@example.com"}},
+		Recipients: mapi.Recipients{
+			To:  []mapi.Recipient{{Name: "To", Address: "to@example.com"}},
+			CC:  []mapi.Recipient{{Name: "CC", Address: "cc@example.com"}},
+			BCC: []mapi.Recipient{{Name: "BCC", Address: "bcc@example.com"}},
 		},
-		Attachments: []Attachment{{Filename: "file.txt", Path: "/tmp/file.txt", Size: 1024}},
+		Attachments: []mapi.Attachment{{Filename: "file.txt", Path: "/tmp/file.txt", Size: 1024}},
 		OriginApp:   "TestApp",
 	}
 

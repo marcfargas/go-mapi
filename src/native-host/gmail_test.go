@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
 // GOTEST-01: HTTP-level tests for GmailClient.CreateDraft.
@@ -16,17 +18,17 @@ import (
 // authentication failure, server-side error, network failure, and
 // response-body parse error.
 
-// newTestMail returns a minimal MailMessage that buildFullMIME can encode
+// newTestMail returns a minimal MailMessage that BuildFullMIME can encode
 // without touching the filesystem (no attachments).
-func newTestMail() *MailMessage {
-	return &MailMessage{
+func newTestMail() *mapi.MailMessage {
+	return &mapi.MailMessage{
 		Version:    1,
 		Timestamp:  "2026-04-10T00:00:00Z",
 		Subject:    "Gmail client test",
 		Body:       "body text",
 		BodyFormat: "plain",
-		Recipients: Recipients{
-			To: []Recipient{{Name: "Alice", Address: "alice@example.com"}},
+		Recipients: mapi.Recipients{
+			To: []mapi.Recipient{{Name: "Alice", Address: "alice@example.com"}},
 		},
 	}
 }
@@ -107,7 +109,7 @@ func TestGmailClient_CreateDraft(t *testing.T) {
 				defer srv.Close()
 			}
 
-			client := NewGmailClientWithBase("test-token", baseURL)
+			client := mapi.NewGmailClientWithBase("test-token", baseURL)
 			id, err := client.CreateDraft(newTestMail())
 
 			if tc.wantErrSub == "" {
@@ -165,7 +167,7 @@ func TestGmailClient_CreateDraft_RequestBodyShape(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewGmailClientWithBase("t", srv.URL)
+	client := mapi.NewGmailClientWithBase("t", srv.URL)
 	if _, err := client.CreateDraft(newTestMail()); err != nil {
 		t.Fatalf("CreateDraft error: %v", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	mapi "github.com/marcfargas/go-mapi/native-host/internal/mapi"
 )
 
 const (
@@ -70,7 +72,7 @@ func parseFlags() {
 	if *gmailBaseFlag != "" {
 		hostConfig.gmailAPIBase = *gmailBaseFlag
 	} else {
-		hostConfig.gmailAPIBase = gmailAPIBase
+		hostConfig.gmailAPIBase = mapi.GmailAPIBase
 	}
 }
 
@@ -181,7 +183,7 @@ func handleCreateDraft(messaging *NativeMessaging, msg *IncomingMessage) {
 		return
 	}
 
-	client := NewGmailClientWithBase(msg.Token, hostConfig.gmailAPIBase)
+	client := mapi.NewGmailClientWithBase(msg.Token, hostConfig.gmailAPIBase)
 
 	logInfo("creating draft with %d attachments", len(msg.Email.Attachments))
 	draftID, err := client.CreateDraft(msg.Email)

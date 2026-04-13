@@ -1,4 +1,4 @@
-package main
+package mapi
 
 import (
 	"bytes"
@@ -14,31 +14,31 @@ import (
 )
 
 const (
-	gmailAPIBase = "https://www.googleapis.com/gmail/v1/users/me"
-	maxFileSize  = 25 * 1024 * 1024 // 25MB Gmail limit
+	GmailAPIBase = "https://www.googleapis.com/gmail/v1/users/me"
+	MaxFileSize  = 25 * 1024 * 1024 // 25MB Gmail limit
 )
 
 // GmailClient handles Gmail API operations
 type GmailClient struct {
 	httpClient *http.Client
 	token      string
-	baseURL    string // FOUND-03: injection point for tests and FOUND-04 CLI flag; defaults to gmailAPIBase
+	baseURL    string // injection point for tests and CLI flag; defaults to GmailAPIBase
 }
 
 // NewGmailClient creates a new Gmail API client with the given OAuth token
 // using the default Gmail API base URL. For tests or alternate endpoints,
 // use NewGmailClientWithBase.
 func NewGmailClient(token string) *GmailClient {
-	return NewGmailClientWithBase(token, gmailAPIBase)
+	return NewGmailClientWithBase(token, GmailAPIBase)
 }
 
 // NewGmailClientWithBase creates a Gmail API client with an explicit base URL.
 // Used by tests (httptest.Server) and by the native host when --gmail-api-base
-// is passed on the command line (FOUND-04).
-// If baseURL is empty, the default gmailAPIBase is used.
+// is passed on the command line.
+// If baseURL is empty, the default GmailAPIBase is used.
 func NewGmailClientWithBase(token, baseURL string) *GmailClient {
 	if baseURL == "" {
-		baseURL = gmailAPIBase
+		baseURL = GmailAPIBase
 	}
 	return &GmailClient{
 		httpClient: &http.Client{},
@@ -56,12 +56,12 @@ type DraftResponse struct {
 // Builds the full MIME message locally (one API call, no round-trips).
 func (gc *GmailClient) CreateDraft(msg *MailMessage) (string, error) {
 	// Build full MIME message with attachments
-	mimeMsg, err := buildFullMIME(msg)
+	mimeMsg, err := BuildFullMIME(msg)
 	if err != nil {
 		return "", fmt.Errorf("failed to build MIME message: %w", err)
 	}
 
-	encodedMsg := base64URLEncode(mimeMsg)
+	encodedMsg := Base64URLEncode(mimeMsg)
 
 	body := map[string]interface{}{
 		"message": map[string]interface{}{
@@ -103,9 +103,9 @@ func (gc *GmailClient) CreateDraft(msg *MailMessage) (string, error) {
 	return draft.ID, nil
 }
 
-// buildFullMIME builds a complete RFC 2822 message from a MailMessage,
+// BuildFullMIME builds a complete RFC 2822 message from a MailMessage,
 // including attachments as MIME parts. Single-pass, no network calls.
-func buildFullMIME(msg *MailMessage) ([]byte, error) {
+func BuildFullMIME(msg *MailMessage) ([]byte, error) {
 	var buf bytes.Buffer
 
 	hasAttachments := len(msg.Attachments) > 0
@@ -145,7 +145,7 @@ func buildFullMIME(msg *MailMessage) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("attachment not found: %s: %w", att.Path, err)
 			}
-			if info.Size() > maxFileSize {
+			if info.Size() > MaxFileSize {
 				return nil, fmt.Errorf("attachment too large (%d bytes): %s", info.Size(), att.Filename)
 			}
 
@@ -230,8 +230,8 @@ func base64Wrap(data []byte) string {
 	return buf.String()
 }
 
-// base64URLEncode encodes bytes to base64url without padding
-func base64URLEncode(data []byte) string {
+// Base64URLEncode encodes bytes to base64url without padding
+func Base64URLEncode(data []byte) string {
 	s := base64.StdEncoding.EncodeToString(data)
 	s = strings.ReplaceAll(s, "+", "-")
 	s = strings.ReplaceAll(s, "/", "_")
