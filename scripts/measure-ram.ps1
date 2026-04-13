@@ -44,6 +44,15 @@ param(
     [switch] $Smoke
 )
 
+# FIRST THING: write a startup marker so we know powershell.exe at least loaded
+# the script. Happens before StrictMode/ErrorAction so it can't be aborted.
+try {
+    $startupLog = 'C:\gomapi\startup-debug.log'
+    $paramSet = if ($PSCmdlet -and $PSCmdlet.ParameterSetName) { $PSCmdlet.ParameterSetName } else { '(unresolved)' }
+    "[$([DateTime]::UtcNow.ToString('o'))] ENTER PID=$PID User=$env:USERNAME ParamSet=$paramSet Worker=$Worker Orchestrate=$Orchestrate User-arg='$User' N=$N Smoke=$Smoke" |
+        Out-File -FilePath $startupLog -Append -Encoding UTF8 -ErrorAction SilentlyContinue
+} catch { }
+
 $iterCount = if ($Smoke) { 1 } else { 3 }
 $idlePre   = if ($Smoke) { 10 } else { 295 }
 $idlePost  = if ($Smoke) { 10 } else { 285 }
