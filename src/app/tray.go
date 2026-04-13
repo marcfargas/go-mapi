@@ -16,12 +16,12 @@ var trayErrorIcon []byte
 
 // startTray launches the system tray on a dedicated OS thread.
 //
-// CRITICAL (Plan 03 fix): fyne.io/systray creates its hidden tray window on the goroutine
-// that calls Register/Run. The Win32 message pump for that window MUST run on the same
-// OS thread (Win32 dispatches WM_RBUTTONUP / WM_LBUTTONUP to the thread that owns the
-// window's message queue). Using `RunWithExternalLoop` here was wrong: its `start()`
-// spawns a fresh goroutine that pumps messages from a *different* OS thread, so right-
-// click never reached `wt.wndProc`, and no menu appeared.
+// CRITICAL (Plan 03 fix `e8b95da`): fyne.io/systray creates its hidden tray window on the
+// goroutine that calls Register/Run. The Win32 message pump for that window MUST run on the
+// same OS thread (Win32 dispatches WM_RBUTTONUP / WM_LBUTTONUP to the thread that owns the
+// window's message queue). Using `RunWithExternalLoop` here was wrong: its `start()` spawns
+// a fresh goroutine that pumps messages from a *different* OS thread, so right-click never
+// reached `wt.wndProc`, and no menu appeared.
 //
 // Fix: spawn one dedicated goroutine, LockOSThread, and call `systray.Run` (which does
 // Register + nativeLoop on the same locked thread). `Run` blocks until `systray.Quit()`,
@@ -55,17 +55,27 @@ func (a *App) onTrayReady() {
 			case <-mShow.ClickedCh:
 				a.showWindow()
 			case <-mQuit.ClickedCh:
-				wruntime.Quit(a.ctx)
+				// requestQuit sets intentionalQuit=true so beforeClose lets Wails
+				// terminate (instead of routing back through hide-to-tray). Plan 03
+				// Bug B fix: previously beforeClose unconditionally returned true,
+				// so wruntime.Quit was always cancelled and the menu did nothing.
+				logInfo("quit requested via tray menu")
+				a.requestQuit()
 				return
 			}
 		}
 	}()
 }
 
-// toggleWindow shows the window if hidden/minimised, hides it if visible.
+// toggleWindow shows the window if hidden, hides it if visible.
+//
+// Bug A fix: previously used wruntime.WindowIsNormal which returns true for any
+// non-min/non-max/non-fullscreen state — INCLUDING when the window is hidden. So
+// after WindowHide, IsNormal stayed true and a second left-click hid again instead
+// of showing. We now track visibility in App.visible and consult that.
 func (a *App) toggleWindow() {
-	if wruntime.WindowIsNormal(a.ctx) {
-		wruntime.WindowHide(a.ctx)
+	if a.isVisible() {
+		a.hideWindow()
 		return
 	}
 	a.showWindow()
@@ -74,8 +84,14 @@ func (a *App) toggleWindow() {
 func (a *App) showWindow() {
 	wruntime.WindowShow(a.ctx)
 	wruntime.WindowUnminimise(a.ctx)
+	a.setVisible(true)
 	// Note: no WindowSetAlwaysOnTop — removed per REVIEWS LOW to avoid visual jarring.
 	// WindowShow + WindowUnminimise is sufficient for raise-to-front on Windows.
+}
+
+func (a *App) hideWindow() {
+	wruntime.WindowHide(a.ctx)
+	a.setVisible(false)
 }
 
 // SetTrayError swaps the tray icon to the error variant and updates the tooltip.
