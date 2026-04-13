@@ -87,11 +87,31 @@ Write-Host "  Binary SHA256: $binaryHash"
 $vmName       = 'gomapi-ramgate-vm'
 $adminUser    = 'gomapiadmin'
 # Generate strong password (memory only, never persisted)
-Add-Type -AssemblyName System.Web
-$adminPass    = [System.Web.Security.Membership]::GeneratePassword(24, 6)
+# Cryptographic RNG; works on pwsh 7 (System.Web unavailable on .NET Core).
+function New-StrongPassword {
+    param([int]$Length = 20, [int]$MinSpecial = 5)
+    $upper   = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZ'
+    $lower   = [char[]]'abcdefghjkmnpqrstuvwxyz'
+    $digits  = [char[]]'23456789'
+    $special = [char[]]'!@#%^*()-_=+[]{}:,.?'
+    $rng     = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $buf     = [byte[]]::new(1)
+    $pick    = { param([char[]]$s) $rng.GetBytes($buf); $s[$buf[0] % $s.Length] }
+    $chars   = @(
+        & $pick $upper; & $pick $upper
+        & $pick $lower; & $pick $lower
+        & $pick $digits; & $pick $digits
+    )
+    for ($i = 0; $i -lt $MinSpecial; $i++) { $chars += & $pick $special }
+    $all = $upper + $lower + $digits + $special
+    while ($chars.Count -lt $Length) { $chars += & $pick $all }
+    -join ($chars | Sort-Object { $rng.GetBytes($buf); $buf[0] })
+}
+
+$adminPass    = New-StrongPassword -Length 24 -MinSpecial 6
 $userPasswords = @{}
 for ($i = 1; $i -le $N; $i++) {
-    $userPasswords["ramtest$i"] = [System.Web.Security.Membership]::GeneratePassword(20, 5)
+    $userPasswords["ramtest$i"] = New-StrongPassword -Length 20 -MinSpecial 5
 }
 
 try {
