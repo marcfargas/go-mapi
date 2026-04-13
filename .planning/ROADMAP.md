@@ -55,7 +55,11 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   3. The existing `%TEMP%\go-mapi\` file watcher runs in the background whether the window is visible or hidden; queue changes are reflected in the UI without polling
   4. Per-instance RAM measured at ≤ 80 MB idle in tray-only mode on a Windows Server session (lazy WebView2 init); result documented before Phase 8 begins
   5. App exits cleanly on Windows logoff/shutdown and has no dependency on Chrome or Edge browsers being installed
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 07-01-PLAN.md — Extract internal/mapi package + go.work + WatcherCallback (SHELL-06 foundation, QUAL-04)
+- [ ] 07-02-PLAN.md — Scaffold src/app Wails workspace + Svelte 5 frontend + tray icons (SHELL-01, SHELL-02, SHELL-03, SHELL-07)
+- [ ] 07-03-PLAN.md — Single-instance mutex + WM_QUERYENDSESSION + watcher fold-in (SHELL-04, SHELL-05, SHELL-06, QUAL-04)
+- [ ] 07-04-PLAN.md — RAM measurement gate on Hetzner VM + pass/fail decision (QUAL-01, QUAL-02)
 **UI hint**: yes
 
 ### Phase 8: OAuth + Credentials
