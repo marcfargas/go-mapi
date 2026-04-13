@@ -187,6 +187,7 @@ Write-Output 'BOOTSTRAP_OK'
         --command-id RunPowerShellScript `
         --scripts "@$bootstrapFile" `
         --output json 2>&1
+    $bootResult = ($bootResult | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail 4 "Bootstrap run-command failed: $bootResult" }
     if ($bootResult -notmatch 'BOOTSTRAP_OK') { Fail 4 "Bootstrap did not reach OK marker. Output:`n$bootResult" }
     Write-Host "  Bootstrap completed."
@@ -233,6 +234,7 @@ Write-Output "UPLOADED_SHA256=`$h"
         $upRes = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$sasFile" --output json 2>&1
         if ($LASTEXITCODE -ne 0) { Fail 4 "SAS download run-command failed: $upRes" }
     }
+    $upRes = ($upRes | Out-String)
 
     # Verify uploaded SHA matches
     if ($upRes -match 'UPLOADED_SHA256=([0-9A-Fa-f]{64})') {
@@ -291,6 +293,7 @@ Write-Output 'ORCHESTRATOR_STARTED'
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 60
         $pres = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$pollFile" --output json 2>&1
+        $pres = ($pres | Out-String)
         if ($pres -match 'DONE') { $complete = $true; break }
         Write-Host "  still measuring…  ($([math]::Round(($deadline - (Get-Date)).TotalMinutes,1)) min remaining)"
     }
@@ -309,6 +312,7 @@ Write-Output "CSV_B64_END"
     $pullFile = Join-Path $env:TEMP "ramgate-pull-$RgName.ps1"
     Set-Content -Path $pullFile -Value $pullScript -Encoding UTF8
     $pullRes = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$pullFile" --output json 2>&1
+    $pullRes = ($pullRes | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail 6 "CSV pull run-command failed: $pullRes" }
     $match = [regex]::Match($pullRes, 'CSV_B64_START\s*([A-Za-z0-9+/=\r\n\s]+?)\s*CSV_B64_END')
     if (-not $match.Success) { Fail 6 "Could not locate CSV_B64 block in output." }
@@ -324,6 +328,7 @@ Write-Output "CSV_B64_END"
     $wvFile = Join-Path $env:TEMP "ramgate-wv-$RgName.ps1"
     Set-Content -Path $wvFile -Value $wvPullScript -Encoding UTF8
     $wvRes = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$wvFile" --output json 2>&1
+    $wvRes = ($wvRes | Out-String)
     if ($wvRes -match '([\d]+\.[\d]+\.[\d]+\.[\d]+)') {
         Write-Host "  WebView2 runtime version on VM: $($Matches[1])"
     }
