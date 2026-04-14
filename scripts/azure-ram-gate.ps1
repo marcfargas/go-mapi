@@ -298,7 +298,7 @@ Write-Output 'ORCHESTRATOR_STARTED'
     if ($LASTEXITCODE -ne 0) { Fail 4 "Orchestrator start failed: $orchRes" }
 
     # -------- poll for completion --------
-    Write-Step "Polling for measurement-complete.flag (hard 30-min ceiling)"
+    Write-Step "Polling for measurement-complete.flag (hard ${PollTimeoutMinutes}-min ceiling)"
     $pollScript = "if (Test-Path 'C:\gomapi\measurement-complete.flag') { Write-Output 'DONE' } else { Write-Output 'PENDING' }"
     $pollFile = Join-Path $env:TEMP "ramgate-poll-$RgName.ps1"
     Set-Content -Path $pollFile -Value $pollScript -Encoding UTF8
@@ -316,33 +316,28 @@ Write-Output 'ORCHESTRATOR_STARTED'
 
     # -------- pull CSV --------
     Write-Step "Pulling CSV back from VM"
-    $pullScript = @"
-`$csv = Get-Content 'C:\gomapi\phase-07-ram-gate.csv' -Raw
-`$b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(`$csv))
-Write-Output "CSV_B64_START"
-Write-Output `$b64
-Write-Output "CSV_B64_END"
-"@
+    $pullScript = "Get-Content 'C:\gomapi\phase-07-ram-gate.csv' -Raw"
     $pullFile = Join-Path $env:TEMP "ramgate-pull-$RgName.ps1"
     Set-Content -Path $pullFile -Value $pullScript -Encoding UTF8
     $pullRes = az vm run-command invoke --resource-group $RgName --name $vmName --command-id RunPowerShellScript --scripts "@$pullFile" --output json 2>&1
     $pullRes = ($pullRes | Out-String)
     if ($LASTEXITCODE -ne 0) { Fail 6 "CSV pull run-command failed: $pullRes" }
-    # Parse JSON envelope; the StdOut message field has newlines as actual \n after ConvertFrom-Json.
+    # Always dump raw response to a diagnostic file so we can debug next failure.
+    $diagFile = Join-Path $env:TEMP "ramgate-pull-response-$RgName.json"
+    Set-Content -Path $diagFile -Value $pullRes -Encoding UTF8
     try {
         $pullJson = $pullRes | ConvertFrom-Json
-        $pullStdout = (($pullJson.value | Where-Object { $_.code -like '*StdOut*' } | Select-Object -First 1).message)
+        $csvText = (($pullJson.value | Where-Object { $_.code -like '*StdOut*' } | Select-Object -First 1).message)
     } catch {
-        Fail 6 "Could not parse pull run-command JSON: $_`nRaw: $pullRes"
+        Fail 6 "Could not parse pull run-command JSON: $_`nRaw saved at: $diagFile"
     }
-    $match = [regex]::Match($pullStdout, 'CSV_B64_START\s*([A-Za-z0-9+/=\r\n\s]+?)\s*CSV_B64_END')
-    if (-not $match.Success) { Fail 6 "Could not locate CSV_B64 block in output." }
-    $csvB64 = ($match.Groups[1].Value -replace '\s', '')
-    $csvText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($csvB64))
+    if (-not $csvText -or $csvText -notmatch 'iteration.*session_user') {
+        Fail 6 "Pulled CSV content looks wrong (no header row). Raw response saved at: $diagFile`nFirst 500 chars: $($csvText.Substring(0, [Math]::Min(500, $csvText.Length)))"
+    }
     $csvDir = Split-Path -Parent $CsvOut
     if (-not (Test-Path $csvDir)) { New-Item -ItemType Directory -Path $csvDir -Force | Out-Null }
-    Set-Content -Path $CsvOut -Value $csvText -Encoding UTF8
-    Write-Host "  CSV written to $CsvOut"
+    Set-Content -Path $CsvOut -Value $csvText -Encoding UTF8 -NoNewline
+    Write-Host "  CSV written to $CsvOut ($($csvText.Length) chars)"
 
     # Also pull webview2 version
     $wvPullScript = "Get-Content 'C:\gomapi\webview2-version.txt' -Raw"
