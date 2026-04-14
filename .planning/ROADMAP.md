@@ -37,8 +37,8 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 
 **Milestone Goal:** Replace the browser-extension + native-host split with a standalone Wails (Go + WebView2) desktop app. C++ MAPI interceptor and filesystem IPC stay unchanged; UI moves to system tray + native window, enabling automode, toast notifications, desktop OAuth, and autoupdate. Target RAM profile: ≤ 80 MB idle per instance (RDS constraint — measured in Phase 7).
 
-- [ ] **Phase 7: Wails Shell + RAM Gate** — Minimal tray app built and RAM measured; gate blocks all downstream feature work
-- [ ] **Phase 8: OAuth + Credentials** — Desktop OAuth (PKCE loopback) with Windows Credential Manager storage; Google verification submitted day 1
+- [x] **Phase 7: Wails Shell + RAM Gate** — Minimal tray app built and RAM measured (PASS: 43.24 MB mean per session vs 80 MB gate, 2026-04-14)
+- [ ] **Phase 8: OAuth + Credentials** — Desktop OAuth (PKCE loopback) with Windows Credential Manager storage; Google verification submitted day 1 [UNBLOCKED by Phase 7 PASS]
 - [ ] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
 - [ ] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, and uninstall
 - [ ] **Phase 11: Autoupdate + Release** — Notify-only autoupdate, GitHub release pipeline, extension store retirement, smoke test
@@ -56,10 +56,10 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   4. Per-instance RAM measured at ≤ 80 MB idle in tray-only mode on a Windows Server session (lazy WebView2 init); result documented before Phase 8 begins
   5. App exits cleanly on Windows logoff/shutdown and has no dependency on Chrome or Edge browsers being installed
 **Plans**: 4 plans
-- [ ] 07-01-PLAN.md — Extract internal/mapi package + go.work + WatcherCallback (SHELL-06 foundation, QUAL-04)
-- [ ] 07-02-PLAN.md — Scaffold src/app Wails workspace + Svelte 5 frontend + tray icons (SHELL-01, SHELL-02, SHELL-03, SHELL-07)
-- [ ] 07-03-PLAN.md — Single-instance mutex + WM_QUERYENDSESSION + watcher fold-in (SHELL-04, SHELL-05, SHELL-06, QUAL-04)
-- [ ] 07-04-PLAN.md — RAM measurement gate on Hetzner VM + pass/fail decision (QUAL-01, QUAL-02)
+- [x] 07-01-PLAN.md — Extract internal/mapi package + go.work + WatcherCallback (SHELL-06 foundation, QUAL-04)
+- [x] 07-02-PLAN.md — Scaffold src/app Wails workspace + Svelte 5 frontend + tray icons (SHELL-01, SHELL-02, SHELL-03, SHELL-07)
+- [x] 07-03-PLAN.md — Single-instance mutex + WM_QUERYENDSESSION + watcher fold-in (SHELL-04, SHELL-05, SHELL-06, QUAL-04)
+- [x] 07-04-PLAN.md — RAM measurement gate on Azure WS2022 VM + three-outcome verdict (QUAL-01, QUAL-02) — **PASS 43.24 MB mean 2026-04-14**
 **UI hint**: yes
 
 ### Phase 8: OAuth + Credentials
