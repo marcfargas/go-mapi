@@ -6,7 +6,7 @@
 <domain>
 ## Phase Boundary
 
-Deliver Google OAuth desktop sign-in (loopback + PKCE S256), refresh-token storage in Windows Credential Manager via `99designs/keyring`, transparent access-token refresh, clear re-auth UX on `invalid_grant`, and a sign-out control in the main window. Covers requirements: AUTH-01, AUTH-02, AUTH-03, AUTH-04, AUTH-05, AUTH-06, AUTH-07, QUAL-03.
+Deliver Google OAuth desktop sign-in (loopback + PKCE S256), refresh-token storage in Windows Credential Manager via `zalando/go-keyring`, transparent access-token refresh, clear re-auth UX on `invalid_grant`, and a sign-out control in the main window. Covers requirements: AUTH-01, AUTH-02, AUTH-03, AUTH-04, AUTH-05, AUTH-06, AUTH-07, QUAL-03.
 
 **Out of scope for Phase 8:** draft creation UI and per-email action buttons (Phase 9), Gmail API call path beyond what's needed to prove the token works (the sanity check is that a refresh + userinfo fetch succeed — no draft persistence yet), installer wiring (Phase 10).
 
@@ -37,7 +37,7 @@ Deliver Google OAuth desktop sign-in (loopback + PKCE S256), refresh-token stora
 
 ### Keyring + Storage
 - **D-11:** Keyring service name: `go-mapi`; key: `oauth-tokens`. Stored payload: JSON blob with `access_token`, `refresh_token`, `expiry` (RFC3339), `token_type`. Structure matches research ARCHITECTURE.md §5. Single entry — no per-account separation (multi-account is out of scope per PROJECT.md).
-- **D-12:** Keyring fallback: if `99designs/keyring` cannot open the Windows Credential Manager backend (permissions, locked credential store, etc.), **fail hard at sign-in time** with a clear error surfaced via the welcome screen / re-auth banner. Do NOT fall back to encrypted file — research explicitly rejects this (ARCH.md Anti-Pattern 4). Sign-out when no keyring entry exists is a no-op.
+- **D-12:** Keyring fallback: if `zalando/go-keyring` cannot reach the Windows Credential Manager (permissions, locked credential store, WinAPI error), **fail hard at sign-in time** with a clear error surfaced via the welcome screen / re-auth banner. Do NOT fall back to encrypted file — research explicitly rejects this (ARCH.md Anti-Pattern 4). `keyring.Get` returning `keyring.ErrNotFound` on sign-out or fresh install is a no-op, not an error.
 
 ### Token Refresh
 - **D-13:** Refresh is **proactive + reactive**: before each Gmail API call the App struct checks `tokens.Expiry.Before(time.Now().Add(5 * time.Minute))` and refreshes ahead of time; on an unexpected 401 from Gmail, refresh + retry once. Matches research ARCHITECTURE.md §5 exactly. Refresh is serialized via a mutex on the App struct's auth manager to prevent thundering-herd refresh if multiple calls race.
@@ -95,7 +95,7 @@ Deliver Google OAuth desktop sign-in (loopback + PKCE S256), refresh-token stora
 ### External specs (Google)
 - `https://developers.google.com/identity/protocols/oauth2/native-app` — loopback flow for desktop apps (authoritative)
 - `https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration` — confirms loopback stays supported
-- `https://github.com/99designs/keyring` — library docs, Windows Credential Manager backend
+- `https://github.com/zalando/go-keyring` — library docs, Windows Credential Manager backend
 - RFC 8252 — OAuth 2.0 for Native Apps (forbids embedded webviews, mandates loopback or custom URI schemes)
 
 </canonical_refs>
