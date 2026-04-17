@@ -21,7 +21,7 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 
 - [ ] **AUTH-01**: First-run prompts user to sign in via Google OAuth desktop flow (loopback redirect to `127.0.0.1` on ephemeral port, PKCE S256)
 - [ ] **AUTH-02**: System browser opens for consent; embedded webview is explicitly NOT used
-- [ ] **AUTH-03**: Refresh token stored via `99designs/keyring` (Windows Credential Manager backend) — no plaintext on disk
+- [x] **AUTH-03**: Refresh token stored via `99designs/keyring` (Windows Credential Manager backend) — no plaintext on disk
 - [ ] **AUTH-04**: Access token refreshes transparently when Gmail API returns 401; user is not prompted mid-action
 - [ ] **AUTH-05**: `invalid_grant` on refresh triggers re-auth flow (not retry loop); user sees a clear re-sign-in prompt
 - [x] **AUTH-06**: New GCP project / OAuth client registered for the desktop app flow; verification submission filed on Phase 2 day 1 (sensitive scopes: `gmail.compose`, `gmail.send`)
@@ -120,7 +120,7 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | SHELL-07 | Phase 7 | Pending |
 | AUTH-01 | Phase 8 | Pending |
 | AUTH-02 | Phase 8 | Pending |
-| AUTH-03 | Phase 8 | Pending |
+| AUTH-03 | Phase 8 | Complete |
 | AUTH-04 | Phase 8 | Pending |
 | AUTH-05 | Phase 8 | Pending |
 | AUTH-06 | Phase 8 | Complete |

@@ -74,7 +74,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   5. The user can sign out from the main window; signing out clears the stored token from Credential Manager
 **Plans**: 5 plans
 - [x] 08-01-PLAN.md — GCP prerequisites gate + -ldflags credential injection (AUTH-06, QUAL-03)
-- [ ] 08-02-PLAN.md — AuthManager scaffold + keyring round-trip + Wails bindings (AUTH-03, QUAL-03)
+- [x] 08-02-PLAN.md — AuthManager scaffold + keyring round-trip + Wails bindings (AUTH-03, QUAL-03)
 - [ ] 08-03-PLAN.md — SignIn flow: loopback + PKCE S256 + code exchange + userinfo (AUTH-01, AUTH-02, QUAL-03)
 - [ ] 08-04-PLAN.md — Token refresh + invalid_grant classification + SignOut + OnStartup wiring (AUTH-03, AUTH-04, AUTH-05, AUTH-07, QUAL-03)
 - [ ] 08-05-PLAN.md — Frontend: welcome screen + pre-auth modal + re-auth banner + signed-in header (AUTH-01, AUTH-02, AUTH-05, AUTH-07)
@@ -127,7 +127,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 5. Release Cut | v2.0.0 | 4/4 | Complete | 2026-04-12 |
 | 6. Changesets Monorepo Scaffold | v2.1.0 | 3/3 | Complete | 2026-04-12 |
 | 7. Wails Shell + RAM Gate | v3.0 | 0/? | Not started | - |
-| 8. OAuth + Credentials | v3.0 | 0/? | Not started | - |
+| 8. OAuth + Credentials | v3.0 | 2/5 | In Progress|  |
 | 9. Queue, Automode + Toasts | v3.0 | 0/? | Not started | - |
 | 10. Installer + Migration | v3.0 | 0/? | Not started | - |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
