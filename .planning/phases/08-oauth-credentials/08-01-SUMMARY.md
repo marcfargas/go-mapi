@@ -35,14 +35,16 @@ This plan begins with a blocking human-action checkpoint. The following prerequi
 1. Create a GCP Desktop OAuth client (Application type: Desktop app) in GCP Console -> APIs & Services -> Credentials
 2. Configure OAuth consent screen with scopes: gmail.compose, gmail.send, userinfo.email, userinfo.profile
 3. Submit Google OAuth verification request (4-8 week external review)
-4. Create `src/app/.env.local` with real GOMAPI_OAUTH_CLIENT_ID and GOMAPI_OAUTH_CLIENT_SECRET values
+4. Create `.env.local` at the REPO ROOT (not under src/app/) with real GOMAPI_OAUTH_CLIENT_ID and GOMAPI_OAUTH_CLIENT_SECRET values
 
 Once confirmed, the automated tasks will implement:
 - `src/app/auth_credentials.go` — ldflags injection targets + dev env-var fallback
-- `src/app/.env.local.example` — template
-- `.gitignore` update — gitignore rule for .env.local
+- `.env.local.example` (repo root) — template
+- `.gitignore` update — gitignore rule `/.env.local`
 - `src/app/main.go` — D-10 fatal guard before wails.Run
-- `scripts/dev-wails.ps1` — dev wrapper that loads .env.local
+- `scripts/dev-wails.ps1` — dev wrapper that loads `.env.local` from repo root
+
+Note (2026-04-17): path corrected from `src/app/.env.local` to repo-root `.env.local` per feedback; Marc keeps dev dotfiles at root for visibility (see memory feedback_env_files_at_repo_root).
 
 ## Deviations from Plan
 
