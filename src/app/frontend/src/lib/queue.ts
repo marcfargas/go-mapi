@@ -3,13 +3,13 @@ import { GetQueue } from '../../wailsjs/go/main/App';
 
 export interface MailMessageFrom { address: string; name?: string }
 export interface MailMessage {
-  version: string;
+  version: number;
   timestamp: string;
-  bodyFormat: 'plain' | 'html';
+  bodyFormat: string;
   subject?: string;
   from?: MailMessageFrom;
 }
-export interface EmailWithId { id: string; message: MailMessage }
+export interface EmailWithId { id: string; message?: MailMessage }
 
 export async function fetchQueue(): Promise<EmailWithId[]> {
   return (await GetQueue()) ?? [];

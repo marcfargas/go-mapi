@@ -1,6 +1,6 @@
 <script lang="ts">
   let { email, name, onSignOut }: { email: string; name: string; onSignOut: () => void } = $props();
-  const displayName = email || name || 'your Google account';
+  const displayName = $derived(email || name || 'your Google account');
 </script>
 
 <header class="hdr">
