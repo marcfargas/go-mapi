@@ -1,3 +1,24 @@
+export namespace main {
+	
+	export class AuthStatus {
+	    authenticated: boolean;
+	    email?: string;
+	    name?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AuthStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.authenticated = source["authenticated"];
+	        this.email = source["email"];
+	        this.name = source["name"];
+	    }
+	}
+
+}
+
 export namespace mapi {
 	
 	export class Attachment {

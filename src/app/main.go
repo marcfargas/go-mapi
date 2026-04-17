@@ -30,10 +30,10 @@ func main() {
 
 	// D-10: Fail fast if OAuth credentials were not injected. A release build
 	// with empty client_id silently cannot sign anyone in — louder now is kinder.
-	if oauthClientID == "" || oauthClientSecret == "" {
-		logError("FATAL: OAuth client credentials missing — build was not wired correctly (expected -ldflags -X main.oauthClientID / main.oauthClientSecret, or GOMAPI_OAUTH_CLIENT_ID / GOMAPI_OAUTH_CLIENT_SECRET env vars for wails dev)")
-		os.Exit(1)
-	}
+	// Guard is skipped under the `bindings` build tag (wailsbindings.exe) so that
+	// Wails can generate TypeScript bindings without needing real credentials at
+	// dev time. In production and wails dev, the guard is always active.
+	checkOAuthCredentials()
 
 	app := NewApp()
 
