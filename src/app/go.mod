@@ -1,16 +1,18 @@
 module github.com/marcfargas/go-mapi/app
 
-go 1.23
+go 1.25.0
 
 require (
 	fyne.io/systray v1.12.0
 	github.com/marcfargas/go-mapi/internal/mapi v0.0.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/zalando/go-keyring v0.2.8
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.30.0
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
