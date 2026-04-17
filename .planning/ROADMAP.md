@@ -73,7 +73,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   4. If the refresh token is invalidated (`invalid_grant`), the user sees a clear re-sign-in prompt rather than a silent failure or retry loop
   5. The user can sign out from the main window; signing out clears the stored token from Credential Manager
 **Plans**: 5 plans
-- [ ] 08-01-PLAN.md — GCP prerequisites gate + -ldflags credential injection (AUTH-06, QUAL-03)
+- [x] 08-01-PLAN.md — GCP prerequisites gate + -ldflags credential injection (AUTH-06, QUAL-03)
 - [ ] 08-02-PLAN.md — AuthManager scaffold + keyring round-trip + Wails bindings (AUTH-03, QUAL-03)
 - [ ] 08-03-PLAN.md — SignIn flow: loopback + PKCE S256 + code exchange + userinfo (AUTH-01, AUTH-02, QUAL-03)
 - [ ] 08-04-PLAN.md — Token refresh + invalid_grant classification + SignOut + OnStartup wiring (AUTH-03, AUTH-04, AUTH-05, AUTH-07, QUAL-03)

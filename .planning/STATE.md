@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
 status: executing
-stopped_at: Phase 7 complete — Phase 8 unblocked
-last_updated: "2026-04-17T21:08:31.524Z"
-last_activity: 2026-04-17 -- OAuth verification submitted (video demo pending until 08-05)
+stopped_at: Completed 08-01-PLAN.md — ready for 08-02
+last_updated: "2026-04-17T21:26:36.748Z"
+last_activity: 2026-04-17
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 9
-  completed_plans: 4
-  percent: 44
+  completed_plans: 5
+  percent: 56
 ---
 
 # Project State
@@ -27,9 +27,9 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 Milestone: v3.0 Wails Pivot
 Phase: 08 (oauth-credentials) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 08
-Last activity: 2026-04-15 -- Phase 08 execution started
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-04-17
 
 Progress: [██░░░░░░░░] 20%
 
@@ -57,6 +57,8 @@ Recent decisions carried into v3.0:
 - v3.0: Autoupdate notify-only via creativeprojects/go-selfupdate (no in-process binary replacement)
 - v3.0: NSIS installer (not Inno Setup) — AppUserModelID + Start Menu shortcut + WebView2 bootstrapper
 - Preserved: MAPI DLL, filesystem IPC, delete-on-process privacy model
+- [Phase 08]: D-08/D-09/D-10 realised: package-level var oauthClientID/_Secret with ldflags -X targets, env-var fallback for wails dev, fail-fast guard before wails.Run
+- [Phase 08]: Dev dotfiles at repo root: .env.local / .env.local.example live at C:\dev\go-mapi root, not under src/app/ (visibility preference)
 
 ### Pending Todos
 
@@ -74,6 +76,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-14
-Stopped at: Phase 7 complete — Phase 8 unblocked
+Last session: 2026-04-17T21:26:36.743Z
+Stopped at: Completed 08-01-PLAN.md — ready for 08-02
 Resume: run `/gsd-plan-phase 8` to begin planning OAuth + Credentials

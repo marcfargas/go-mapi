@@ -24,7 +24,7 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 - [ ] **AUTH-03**: Refresh token stored via `99designs/keyring` (Windows Credential Manager backend) — no plaintext on disk
 - [ ] **AUTH-04**: Access token refreshes transparently when Gmail API returns 401; user is not prompted mid-action
 - [ ] **AUTH-05**: `invalid_grant` on refresh triggers re-auth flow (not retry loop); user sees a clear re-sign-in prompt
-- [ ] **AUTH-06**: New GCP project / OAuth client registered for the desktop app flow; verification submission filed on Phase 2 day 1 (sensitive scopes: `gmail.compose`, `gmail.send`)
+- [x] **AUTH-06**: New GCP project / OAuth client registered for the desktop app flow; verification submission filed on Phase 2 day 1 (sensitive scopes: `gmail.compose`, `gmail.send`)
 - [ ] **AUTH-07**: "Sign out" control in the main window clears the stored token
 
 ### Queue, Actions & Automode
@@ -69,7 +69,7 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 
 - [ ] **QUAL-01**: Per-instance RAM measured under RDS-like load (5–10 concurrent sessions on Windows Server) before Phase 2 begins; target ≤ 80 MB idle; original aspiration ≤ 30 MB noted as stretch goal
 - [ ] **QUAL-02**: Wails app runs without Chrome or Edge browsers installed (only WebView2 runtime required)
-- [ ] **QUAL-03**: No telemetry, no content retention, no network calls outside Gmail API and GitHub Releases update check
+- [x] **QUAL-03**: No telemetry, no content retention, no network calls outside Gmail API and GitHub Releases update check
 - [ ] **QUAL-04**: `go test -race ./...` green on the Wails app Go code (carries forward the v2.0 race-safety posture)
 
 ## Future Requirements (post-v3.0)
@@ -123,7 +123,7 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | AUTH-03 | Phase 8 | Pending |
 | AUTH-04 | Phase 8 | Pending |
 | AUTH-05 | Phase 8 | Pending |
-| AUTH-06 | Phase 8 | Pending |
+| AUTH-06 | Phase 8 | Complete |
 | AUTH-07 | Phase 8 | Pending |
 | QUEUE-01 | Phase 9 | Pending |
 | QUEUE-02 | Phase 9 | Pending |
@@ -153,7 +153,7 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | REL-07 | Phase 11 | Pending |
 | QUAL-01 | Phase 7 | Pending |
 | QUAL-02 | Phase 7 | Pending |
-| QUAL-03 | Phase 8 | Pending |
+| QUAL-03 | Phase 8 | Complete |
 | QUAL-04 | Phase 7 | Pending |
 
 **Coverage:**
