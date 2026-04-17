@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
 status: executing
-stopped_at: Phase 7 complete — PASS verdict on RAM gate
-last_updated: "2026-04-14T11:00:00.000Z"
-last_activity: 2026-04-14 -- Phase 07 complete (RAM gate PASS, 43.24 MB mean at idle-post-webview vs 80 MB threshold)
+stopped_at: Phase 7 complete — Phase 8 unblocked
+last_updated: "2026-04-17T21:08:31.524Z"
+last_activity: 2026-04-17 -- OAuth verification submitted (video demo pending until 08-05)
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 4
+  total_plans: 9
   completed_plans: 4
-  percent: 20
+  percent: 44
 ---
 
 # Project State
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 07 — wails-shell-ram-gate
+**Current focus:** Phase 08 — oauth-credentials
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 07 (wails-shell-ram-gate) — COMPLETE ✓ (RAM gate PASS)
-Plan: 4 of 4
-Status: Phase 07 complete; Phase 08 unblocked
-Last activity: 2026-04-14 -- Phase 07 Plan 04 verdict PASS (43.24 MB mean, n=4 at idle-post-webview; full report in 07-VERIFICATION.md)
+Phase: 08 (oauth-credentials) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 08
+Last activity: 2026-04-15 -- Phase 08 execution started
 
 Progress: [██░░░░░░░░] 20%
 
@@ -60,7 +60,8 @@ Recent decisions carried into v3.0:
 
 ### Pending Todos
 
-- AUTH-06: Submit Google OAuth verification request on Phase 8 day 1 (4-8 week external review window)
+- AUTH-06: Google OAuth verification submitted 2026-04-17 (GCP client, consent screen, scope justifications done; 4-8 week review window running)
+- AUTH-06b: Record and upload YouTube demo video for OAuth verification — blocked until Plan 08-05 ships end-to-end sign-in + draft flow. See `.planning/todos/pending/2026-04-17-oauth-verification-youtube-demo-video.md`
 
 ### Blockers/Concerns
 
