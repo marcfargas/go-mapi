@@ -647,8 +647,14 @@ func (a *App) SignOut() error {
 	if a.auth == nil {
 		return errors.New("auth manager not initialized")
 	}
+	// Use a background context as fallback when a.ctx is nil (e.g. in tests
+	// without a live Wails runtime). revokeRefreshToken applies its own 5s timeout.
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	a.auth.refresh.Lock()
-	a.auth.revokeRefreshToken(a.ctx) // best-effort; logs on failure; 5s bounded
+	a.auth.revokeRefreshToken(ctx) // best-effort; logs on failure; 5s bounded
 	a.auth.tokens = nil
 	a.auth.email = ""
 	a.auth.name = ""

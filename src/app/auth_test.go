@@ -508,3 +508,77 @@ func TestMakeAuthenticatedGmailCall_DoubleFailClassifiesInvalidGrant(t *testing.
 		t.Fatalf("expected keyring cleared, got %v", gerr)
 	}
 }
+
+// ---- Task 2 (Plan 04): SignOut + bootstrapAuth tests ----
+
+func TestSignOutEmitsAndClears(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	revokeEndpointOverride = srv.URL
+	t.Cleanup(func() { revokeEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	app.auth.tokens = &OAuthTokens{AccessToken: "a", RefreshToken: "r"}
+	_ = app.auth.SaveToKeyring()
+
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	if app.auth.tokens != nil {
+		t.Fatal("expected tokens cleared")
+	}
+	_, err := keyring.Get(keyringService, keyringUser)
+	if !errors.Is(err, keyring.ErrNotFound) {
+		t.Fatalf("expected keyring cleared, got %v", err)
+	}
+}
+
+func TestSignOutIdempotent(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	// No tokens set.
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out on empty: %v", err)
+	}
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out again: %v", err)
+	}
+}
+
+func TestBootstrapAuthSignedOutPath(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	// No ctx — bootstrapAuth must not panic; emitAuthChanged guards nil ctx.
+	app.bootstrapAuth()
+	if app.auth.tokens != nil {
+		t.Fatal("expected tokens nil after bootstrap with no keyring entry")
+	}
+	if app.auth.Status().Authenticated {
+		t.Fatal("expected signed-out status")
+	}
+}
+
+func TestBootstrapAuthSignedInPath(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
+
+	seed := NewAuthManager()
+	seed.tokens = &OAuthTokens{
+		AccessToken:  "a",
+		RefreshToken: "r",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute), // fast path, no refresh
+	}
+	if err := seed.SaveToKeyring(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	app := NewApp()
+	app.bootstrapAuth()
+	if !app.auth.Status().Authenticated {
+		t.Fatal("expected authenticated after bootstrap with valid keyring entry")
+	}
+}
