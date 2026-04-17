@@ -39,3 +39,6 @@ experiments/
 TODO.txt
 PLANNING_AGENT.md
 /release/
+
+# Phase 8: OAuth credentials — must never be committed
+/.env.local
