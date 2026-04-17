@@ -7,9 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -421,10 +424,291 @@ func (a *App) SignIn() error {
 	return nil
 }
 
-// SignOut revokes + clears tokens. Stub — Plan 04 implements the full D-15 path.
+// tokenEndpointOverride / revokeEndpointOverride are empty in production
+// (the real Google endpoints are used); tests set these to point at httptest stubs.
+var (
+	tokenEndpointOverride  = ""
+	revokeEndpointOverride = ""
+)
+
+func tokenEndpoint() string {
+	if tokenEndpointOverride != "" {
+		return tokenEndpointOverride
+	}
+	return "https://oauth2.googleapis.com/token"
+}
+
+func revokeEndpoint() string {
+	if revokeEndpointOverride != "" {
+		return revokeEndpointOverride
+	}
+	return "https://oauth2.googleapis.com/revoke"
+}
+
+// refreshIfNeededLocked implements the D-13 proactive refresh.
+// Caller must hold am.refresh. Returns ErrNotAuthenticated when no tokens,
+// nil when the current access token is still valid >5 minutes out,
+// ErrInvalidGrant on 400 invalid_grant (tokens are cleared), or a wrapped
+// error for transient failures (tokens are retained).
+func (am *AuthManager) refreshIfNeededLocked(ctx context.Context) error {
+	if am.tokens == nil {
+		return ErrNotAuthenticated
+	}
+	if time.Until(am.tokens.Expiry) > 5*time.Minute {
+		return nil
+	}
+	if am.tokens.RefreshToken == "" {
+		return ErrInvalidGrant
+	}
+
+	form := url.Values{
+		"client_id":     {oauthClientID},
+		"client_secret": {oauthClientSecret},
+		"refresh_token": {am.tokens.RefreshToken},
+		"grant_type":    {"refresh_token"},
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenEndpoint(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("refresh: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("refresh: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 400 {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &e)
+		if e.Error == "invalid_grant" || e.Error == "invalid_client" {
+			// D-05 / D-12: clear tokens, clear keyring, bubble up classified error.
+			logError("oauth refresh: %s — clearing tokens", e.Error)
+			am.tokens = nil
+			am.email = ""
+			am.name = ""
+			_ = keyring.Delete(keyringService, keyringUser)
+			return ErrInvalidGrant
+		}
+		return fmt.Errorf("refresh: 400 %s", e.Error)
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("refresh: status %d", resp.StatusCode)
+	}
+
+	var r struct {
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		TokenType    string `json:"token_type"`
+		RefreshToken string `json:"refresh_token,omitempty"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return fmt.Errorf("refresh: decode: %w", err)
+	}
+	if r.AccessToken == "" {
+		return errors.New("refresh: empty access_token in response")
+	}
+
+	am.tokens.AccessToken = r.AccessToken
+	am.tokens.Expiry = time.Now().Add(time.Duration(r.ExpiresIn) * time.Second)
+	if r.TokenType != "" {
+		am.tokens.TokenType = r.TokenType
+	}
+	if r.RefreshToken != "" {
+		am.tokens.RefreshToken = r.RefreshToken
+	}
+	if err := am.saveToKeyringLocked(); err != nil {
+		logError("oauth refresh: keyring save: %v", err)
+		// Don't fail the refresh on keyring save error — in-memory token is good
+		// for this process. Next restart will re-refresh.
+	}
+	logInfo("oauth: access token refreshed, new expiry %s", am.tokens.Expiry.Format(time.RFC3339))
+	return nil
+}
+
+// revokeRefreshToken is best-effort per D-15 (5s timeout). Failures are
+// logged; caller (SignOut) clears the keyring regardless.
+func (am *AuthManager) revokeRefreshToken(parent context.Context) {
+	if am.tokens == nil || am.tokens.RefreshToken == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	body := "token=" + url.QueryEscape(am.tokens.RefreshToken)
+	req, err := http.NewRequestWithContext(ctx, "POST", revokeEndpoint(), strings.NewReader(body))
+	if err != nil {
+		logError("oauth revoke: build request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logError("oauth revoke: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	// 200 = revoked. 400 with invalid_token = already revoked (treat as success).
+	if resp.StatusCode == 200 {
+		logInfo("oauth: refresh token revoked")
+		return
+	}
+	if resp.StatusCode == 400 {
+		logInfo("oauth: revoke returned 400 (token likely already revoked) — treating as success")
+		return
+	}
+	logError("oauth revoke: status %d", resp.StatusCode)
+}
+
+// GmailCall is the signature Phase 9's draft-creation code will satisfy.
+// Returning a 401 signals to the wrapper "refresh and retry once".
+// Any other non-nil error is bubbled up verbatim.
+type GmailCall func(accessToken string) (statusCode int, err error)
+
+// MakeAuthenticatedGmailCall is the public helper Phase 9 uses. It ensures
+// a fresh access token (proactive D-13), invokes fn, and on a single 401
+// forces a refresh and retries once. A second 401 — or any refresh error
+// classifying as invalid_grant — triggers sign-out and emits auth-changed.
+func (a *App) MakeAuthenticatedGmailCall(ctx context.Context, fn GmailCall) error {
+	if a.auth == nil {
+		return ErrNotAuthenticated
+	}
+	// Proactive refresh.
+	a.auth.refresh.Lock()
+	if err := a.auth.refreshIfNeededLocked(ctx); err != nil {
+		a.auth.refresh.Unlock()
+		if errors.Is(err, ErrInvalidGrant) {
+			a.emitAuthChanged()
+			a.SetTrayError("sign-in expired")
+		}
+		return err
+	}
+	token := a.auth.tokens.AccessToken
+	a.auth.refresh.Unlock()
+
+	status, err := fn(token)
+	if err == nil && status != 401 {
+		return nil
+	}
+	if status != 401 {
+		return err
+	}
+
+	// Reactive: force refresh and retry once.
+	a.auth.refresh.Lock()
+	// Force refresh by backdating expiry.
+	if a.auth.tokens != nil {
+		a.auth.tokens.Expiry = time.Now().Add(-time.Minute)
+	}
+	if err := a.auth.refreshIfNeededLocked(ctx); err != nil {
+		a.auth.refresh.Unlock()
+		if errors.Is(err, ErrInvalidGrant) {
+			a.emitAuthChanged()
+			a.SetTrayError("sign-in expired")
+		}
+		return err
+	}
+	token = a.auth.tokens.AccessToken
+	a.auth.refresh.Unlock()
+
+	status, err = fn(token)
+	if status == 401 {
+		// Second 401 after fresh token — classify as invalid_grant path.
+		_ = a.auth.ClearTokens()
+		a.emitAuthChanged()
+		a.SetTrayError("sign-in expired")
+		return ErrInvalidGrant
+	}
+	return err
+}
+
+// emitAuthChanged pushes the current Status() to the frontend.
+func (a *App) emitAuthChanged() {
+	if a.ctx == nil || a.auth == nil {
+		return
+	}
+	wruntime.EventsEmit(a.ctx, "auth-changed", a.auth.Status())
+}
+
+// SignOut revokes the refresh token (best-effort, 5s), clears the keyring
+// entry unconditionally, clears in-memory userinfo, and emits auth-changed.
+// Does NOT quit the app (D-16) — watcher keeps running, tray stays.
+//
+// The revoke HTTP call is made under a.auth.refresh with a 5s bound
+// (see revokeRefreshToken). Intentional: per D-07 UI disables draft-
+// creating buttons while signing out, so no other caller can contend for
+// this mutex; holding it across revoke prevents any partial-state window.
 func (a *App) SignOut() error {
 	if a.auth == nil {
 		return errors.New("auth manager not initialized")
 	}
-	return errors.New("SignOut not implemented until Plan 04")
+	// Use a background context as fallback when a.ctx is nil (e.g. in tests
+	// without a live Wails runtime). revokeRefreshToken applies its own 5s timeout.
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.auth.refresh.Lock()
+	a.auth.revokeRefreshToken(ctx) // best-effort; logs on failure; 5s bounded
+	a.auth.tokens = nil
+	a.auth.email = ""
+	a.auth.name = ""
+	_ = keyring.Delete(keyringService, keyringUser) // ignore ErrNotFound
+	a.auth.refresh.Unlock()
+
+	a.emitAuthChanged()
+	a.SetTrayError("signed out")
+	logInfo("oauth: sign-out complete")
+	return nil
+}
+
+// bootstrapAuth loads any persisted tokens, triggers a proactive refresh if
+// needed, and emits the initial auth-changed event. Runs under App.startup.
+// On invalid_grant or any keyring error, proceeds as signed-out.
+// Safe to call once per startup.
+func (a *App) bootstrapAuth() {
+	if a.auth == nil {
+		return
+	}
+	if err := a.auth.LoadFromKeyring(); err != nil {
+		logError("oauth bootstrap: keyring load: %v", err)
+		a.SetTrayError("credential store unavailable")
+		a.emitAuthChanged()
+		return
+	}
+	if a.auth.tokens == nil {
+		logInfo("oauth bootstrap: no tokens, signed-out state")
+		a.SetTrayError("sign in required")
+		a.emitAuthChanged()
+		return
+	}
+	// Proactive refresh if within 5 minutes of expiry.
+	a.auth.refresh.Lock()
+	err := a.auth.refreshIfNeededLocked(a.ctx)
+	a.auth.refresh.Unlock()
+	if errors.Is(err, ErrInvalidGrant) {
+		logInfo("oauth bootstrap: invalid_grant — prompting re-sign-in")
+		a.SetTrayError("sign-in expired")
+		a.emitAuthChanged()
+		return
+	}
+	if err != nil {
+		// Transient: keep tokens (refreshIfNeededLocked did not clear them),
+		// surface as signed-in with a warning log. First Gmail call will retry.
+		logError("oauth bootstrap: refresh deferred: %v", err)
+	}
+	// Kick off async userinfo fetch (non-blocking — Status() already reflects auth).
+	go func() {
+		a.auth.refresh.Lock()
+		a.auth.fetchUserInfoLocked(a.ctx)
+		a.auth.refresh.Unlock()
+		a.emitAuthChanged() // re-emit with email/name populated
+	}()
+	logInfo("oauth bootstrap: signed in, token expires %s", a.auth.tokens.Expiry.Format(time.RFC3339))
+	a.emitAuthChanged()
 }

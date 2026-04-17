@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -268,3 +269,316 @@ func TestUserinfoResponseDecode(t *testing.T) {
 
 // Quiet unused-import guard if a future refactor drops errors.
 var _ = errors.Is
+
+// ---- Task 1 (Plan 04): refresh, revoke, MakeAuthenticatedGmailCall tests ----
+
+func TestRefreshIfNeededFastPath(t *testing.T) {
+	t.Parallel()
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{AccessToken: "A", RefreshToken: "R", Expiry: time.Now().Add(30 * time.Minute)}
+	if err := am.refreshIfNeededLocked(context.Background()); err != nil {
+		t.Fatalf("expected nil (fast path), got %v", err)
+	}
+	if am.tokens.AccessToken != "A" {
+		t.Fatal("expected unchanged access token")
+	}
+}
+
+func TestRefreshIfNeededNoTokens(t *testing.T) {
+	t.Parallel()
+	am := NewAuthManager()
+	if err := am.refreshIfNeededLocked(context.Background()); !errors.Is(err, ErrNotAuthenticated) {
+		t.Fatalf("expected ErrNotAuthenticated, got %v", err)
+	}
+}
+
+func TestRefreshInvalidGrantClears(t *testing.T) {
+	// Stub token endpoint returning 400 invalid_grant.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{AccessToken: "old", RefreshToken: "dead", Expiry: time.Now().Add(-time.Minute)}
+	_ = am.saveToKeyringLocked()
+
+	err := am.refreshIfNeededLocked(context.Background())
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+	if am.tokens != nil {
+		t.Fatal("expected tokens cleared")
+	}
+	// Keyring should also be empty now.
+	_, getErr := keyring.Get(keyringService, keyringUser)
+	if !errors.Is(getErr, keyring.ErrNotFound) {
+		t.Fatalf("expected keyring cleared, got %v", getErr)
+	}
+}
+
+func TestRefreshHappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+		}
+		if r.Form.Get("grant_type") != "refresh_token" {
+			t.Errorf("expected grant_type=refresh_token, got %q", r.Form.Get("grant_type"))
+		}
+		if r.Form.Get("refresh_token") != "my-refresh" {
+			t.Errorf("expected refresh_token=my-refresh, got %q", r.Form.Get("refresh_token"))
+		}
+		_, _ = w.Write([]byte(`{"access_token":"NEW","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
+
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{AccessToken: "old", RefreshToken: "my-refresh", TokenType: "Bearer", Expiry: time.Now().Add(1 * time.Minute)}
+	if err := am.refreshIfNeededLocked(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if am.tokens.AccessToken != "NEW" {
+		t.Fatalf("expected NEW access token, got %q", am.tokens.AccessToken)
+	}
+	if time.Until(am.tokens.Expiry) < 50*time.Minute {
+		t.Fatalf("expected expiry ~1h out, got %s", am.tokens.Expiry)
+	}
+}
+
+func TestRefreshTransient5xxRetainsTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{AccessToken: "A", RefreshToken: "R", Expiry: time.Now().Add(-time.Minute)}
+	err := am.refreshIfNeededLocked(context.Background())
+	if err == nil || errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("expected transient error (not invalid_grant), got %v", err)
+	}
+	if am.tokens == nil {
+		t.Fatal("expected tokens retained on transient failure")
+	}
+}
+
+func TestRevoke200IsSuccess(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			got = r.Form.Get("token")
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	revokeEndpointOverride = srv.URL
+	t.Cleanup(func() { revokeEndpointOverride = "" })
+
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{RefreshToken: "rt-abc"}
+	am.revokeRefreshToken(context.Background())
+	if got != "rt-abc" {
+		t.Fatalf("expected token=rt-abc in form, got %q", got)
+	}
+}
+
+func TestRevoke400InvalidTokenTreatedAsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+	}))
+	defer srv.Close()
+	revokeEndpointOverride = srv.URL
+	t.Cleanup(func() { revokeEndpointOverride = "" })
+
+	am := NewAuthManager()
+	am.tokens = &OAuthTokens{RefreshToken: "rt"}
+	// Should not panic, should return quickly.
+	am.revokeRefreshToken(context.Background())
+}
+
+// TestMakeAuthenticatedGmailCall_RetryOn401Succeeds covers the happy
+// retry path: first fn invocation returns HTTP 401, triggering a single
+// refresh; second invocation returns 200 and the helper returns success.
+func TestMakeAuthenticatedGmailCall_RetryOn401Succeeds(t *testing.T) {
+	// Stub token endpoint that succeeds with a NEW access token.
+	var refreshCount int
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCount++
+		_, _ = w.Write([]byte(`{"access_token":"NEW","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer tokenSrv.Close()
+	tokenEndpointOverride = tokenSrv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
+
+	app := NewApp()
+	// Seed signed-in, access token fresh-ish so the proactive refresh is a no-op.
+	app.auth.tokens = &OAuthTokens{
+		AccessToken:  "OLD",
+		RefreshToken: "my-refresh",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute),
+	}
+
+	var callCount int
+	var seenTokens []string
+	fn := func(accessToken string) (int, error) {
+		callCount++
+		seenTokens = append(seenTokens, accessToken)
+		if callCount == 1 {
+			return 401, nil
+		}
+		return 200, nil
+	}
+
+	if err := app.MakeAuthenticatedGmailCall(context.Background(), fn); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected fn called exactly 2 times, got %d", callCount)
+	}
+	if refreshCount != 1 {
+		t.Fatalf("expected exactly 1 refresh between calls, got %d", refreshCount)
+	}
+	if len(seenTokens) != 2 || seenTokens[0] != "OLD" || seenTokens[1] != "NEW" {
+		t.Fatalf("expected tokens [OLD, NEW] across the two calls, got %v", seenTokens)
+	}
+	if app.auth.tokens == nil || app.auth.tokens.AccessToken != "NEW" {
+		t.Fatalf("expected in-memory token updated to NEW")
+	}
+}
+
+// TestMakeAuthenticatedGmailCall_DoubleFailClassifiesInvalidGrant covers
+// the classification path: fn returns 401 twice AND the refresh endpoint
+// returns invalid_grant. Expect: ErrInvalidGrant returned, tokens cleared.
+func TestMakeAuthenticatedGmailCall_DoubleFailClassifiesInvalidGrant(t *testing.T) {
+	// Stub token endpoint: returns invalid_grant.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer tokenSrv.Close()
+	tokenEndpointOverride = tokenSrv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
+
+	app := NewApp()
+	app.auth.tokens = &OAuthTokens{
+		AccessToken:  "OLD",
+		RefreshToken: "dead",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute),
+	}
+	_ = app.auth.SaveToKeyring()
+
+	fn := func(accessToken string) (int, error) {
+		return 401, nil
+	}
+
+	err := app.MakeAuthenticatedGmailCall(context.Background(), fn)
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant, got %v", err)
+	}
+	// Status() is the same source of truth used by emitAuthChanged.
+	if app.auth.Status().Authenticated {
+		t.Fatal("expected Status().Authenticated == false after invalid_grant")
+	}
+	if app.auth.tokens != nil {
+		t.Fatal("expected in-memory tokens cleared")
+	}
+	// Keyring cleared.
+	if _, gerr := keyring.Get(keyringService, keyringUser); !errors.Is(gerr, keyring.ErrNotFound) {
+		t.Fatalf("expected keyring cleared, got %v", gerr)
+	}
+}
+
+// ---- Task 2 (Plan 04): SignOut + bootstrapAuth tests ----
+
+func TestSignOutEmitsAndClears(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	revokeEndpointOverride = srv.URL
+	t.Cleanup(func() { revokeEndpointOverride = "" })
+
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	app.auth.tokens = &OAuthTokens{AccessToken: "a", RefreshToken: "r"}
+	_ = app.auth.SaveToKeyring()
+
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out: %v", err)
+	}
+	if app.auth.tokens != nil {
+		t.Fatal("expected tokens cleared")
+	}
+	_, err := keyring.Get(keyringService, keyringUser)
+	if !errors.Is(err, keyring.ErrNotFound) {
+		t.Fatalf("expected keyring cleared, got %v", err)
+	}
+}
+
+func TestSignOutIdempotent(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	// No tokens set.
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out on empty: %v", err)
+	}
+	if err := app.SignOut(); err != nil {
+		t.Fatalf("sign out again: %v", err)
+	}
+}
+
+func TestBootstrapAuthSignedOutPath(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	app := NewApp()
+	// No ctx — bootstrapAuth must not panic; emitAuthChanged guards nil ctx.
+	app.bootstrapAuth()
+	if app.auth.tokens != nil {
+		t.Fatal("expected tokens nil after bootstrap with no keyring entry")
+	}
+	if app.auth.Status().Authenticated {
+		t.Fatal("expected signed-out status")
+	}
+}
+
+func TestBootstrapAuthSignedInPath(t *testing.T) {
+	_ = keyring.Delete(keyringService, keyringUser)
+	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
+
+	seed := NewAuthManager()
+	seed.tokens = &OAuthTokens{
+		AccessToken:  "a",
+		RefreshToken: "r",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute), // fast path, no refresh
+	}
+	if err := seed.SaveToKeyring(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	app := NewApp()
+	app.bootstrapAuth()
+	if !app.auth.Status().Authenticated {
+		t.Fatal("expected authenticated after bootstrap with valid keyring entry")
+	}
+}

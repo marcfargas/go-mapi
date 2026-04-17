@@ -96,6 +96,11 @@ func (a *App) startup(ctx context.Context) {
 		}
 	})
 
+	// Phase 8: load persisted OAuth tokens and emit initial auth-changed.
+	// Must run after a.ctx is cached (line 42) and after tray is started
+	// (line 47) because SetTrayError is called from bootstrapAuth.
+	a.bootstrapAuth()
+
 	logInfo("startup complete (version %s, watching %s)", Version, watchDir)
 }
 
