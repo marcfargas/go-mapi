@@ -28,6 +28,13 @@ func main() {
 	}
 	defer releaseSingleInstance()
 
+	// D-10: Fail fast if OAuth credentials were not injected. A release build
+	// with empty client_id silently cannot sign anyone in — louder now is kinder.
+	if oauthClientID == "" || oauthClientSecret == "" {
+		logError("FATAL: OAuth client credentials missing — build was not wired correctly (expected -ldflags -X main.oauthClientID / main.oauthClientSecret, or GOMAPI_OAUTH_CLIENT_ID / GOMAPI_OAUTH_CLIENT_SECRET env vars for wails dev)")
+		os.Exit(1)
+	}
+
 	app := NewApp()
 
 	// Note: HideWindowOnClose is intentionally NOT set. With it true, Wails routes the X
