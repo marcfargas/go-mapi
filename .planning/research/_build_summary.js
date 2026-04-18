@@ -1,0 +1,12 @@
+const fs = require('fs');
+let o = [];
+const p = s => o.push(s);
+const nl = () => o.push('');
+p('# Project Research Summary');
+nl();
+p('**Project:** go-mapi v3.0 Wails Pivot');
+p('**Domain:** Windows desktop tray app - MAPI-to-Gmail bridge');
+p('**Researched:** 2026-04-12');
+p('**Confidence:** MEDIUM-HIGH overall');
+fs.writeFileSync('C:/dev/go-mapi/.planning/research/SUMMARY.md', o.join('\n'), 'utf8');
+console.log('test ok');
