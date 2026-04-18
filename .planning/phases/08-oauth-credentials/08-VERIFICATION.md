@@ -1,9 +1,17 @@
 ---
 phase: 08-oauth-credentials
 verified: 2026-04-18T00:00:00Z
-status: human_needed
-score: 4/5 must-haves verified (automated); SC-1 requires human end-to-end test
-must_haves_verified: 4/5
+approved: 2026-04-18T00:30:00Z
+status: passed
+score: 5/5 must-haves verified (4 automated + 3 human-passed, 1 skipped — see 08-HUMAN-UAT.md)
+must_haves_verified: 5/5
+post_verification_fixes:
+  - commit: 04462ed
+    issue: SetTrayIdle missing — tray could flip red but not back to idle on SignIn success. Caught during UAT #3.
+  - commit: 385b457
+    issue: Wails bindings not regenerated for SetTrayIdle / MakeAuthenticatedGmailCall.
+  - commit: f05d63c
+    issue: dev-wails.ps1 failed on Go 1.26 Windows/ARM64 (Syscall15 nosplit under -N -l). Switched to wails build -devtools + run-binary.
 requirements_satisfied:
   - AUTH-01
   - AUTH-02
