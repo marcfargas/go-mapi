@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: phase-complete
-stopped_at: Phase 08 complete — ready for Phase 09 (Queue, Automode + Toasts)
-last_updated: "2026-04-18T00:30:00.000Z"
+status: completed
+stopped_at: Phase 08.1 context gathered
+last_updated: "2026-04-18T16:46:10.468Z"
 last_activity: 2026-04-18 -- Phase 08 human UAT approved; marked complete
 progress:
-  total_phases: 5
+  total_phases: 6
   completed_phases: 2
   total_plans: 9
   completed_plans: 9
@@ -82,6 +82,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-18T00:30:00.000Z
-Stopped at: Phase 08 complete (human UAT approved after tray-idle fix 04462ed + dev-wails.ps1 fix f05d63c)
+Last session: 2026-04-18T16:46:10.454Z
+Stopped at: Phase 08.1 context gathered
 Resume: run `/gsd-discuss-phase 8.1` to start the inserted cleanup/coverage phase before Phase 09
