@@ -38,7 +38,10 @@
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
 
-    unsubQueue = subscribeQueue((next) => { queue = next; });
+    unsubQueue = subscribeQueue(
+      (next) => { queue = next; },
+      (e) => { errorMsg = (e as Error)?.message ?? 'queue fetch failed'; },
+    );
     unsubQueueError = EventsOn('queue-error', (msg: string) => { errorMsg = msg; });
     unsubAuth = subscribeAuth((s) => {
       const becameSignedOut = wasAuthenticated && !s.authenticated;
