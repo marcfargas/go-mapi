@@ -13,7 +13,6 @@
     "tag": true
   },
   "$workspaces": [
-    "src/extension",
     "src/app"
   ]
 }
