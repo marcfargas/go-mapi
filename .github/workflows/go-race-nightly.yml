@@ -1,9 +1,10 @@
 name: Go Nightly Race Detector
 
-# GOTEST-03: Dedicated nightly job that runs `go test -race ./...` on
-# windows-latest with CGO_ENABLED=1. Kept separate from build.yml so the
-# per-PR Go test job stays fast — the race detector roughly doubles
-# execution time and is not needed on every push. The watcher race
+# GOTEST-03: Dedicated nightly job that runs `go test -race` against
+# ./internal/mapi/... and ./src/app/... on windows-latest with CGO_ENABLED=1.
+# As of Phase 8.1 (CONTEXT D-07), `-race` is ALSO a per-PR blocking gate in
+# build.yml's build-wails-app job; this nightly remains as defence-in-depth,
+# catching flaky races that didn't trip the per-PR run. The watcher race
 # (FOUND-01 in Phase 1) was fixed before this workflow was turned on.
 
 on:
@@ -25,8 +26,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
 
-      - name: go test -race ./...
-        working-directory: src/native-host
-        run: go test -race -v ./...
+      - name: go test -race ./internal/mapi/... ./src/app/...
+        run: go test -race -v ./internal/mapi/... ./src/app/...
