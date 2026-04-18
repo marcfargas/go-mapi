@@ -5,7 +5,8 @@
   "workspaces": [
     "src/extension",
     "src/native-host",
-    "src/app"
+    "src/app",
+    "src/app/frontend"
   ],
   "scripts": {
     "build": "npm run build:interceptor && npm run build:native-host && npm run build:extension",
