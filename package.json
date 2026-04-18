@@ -3,26 +3,17 @@
   "description": "MAPI to Gmail bridge for Windows - send emails via Gmail from any Windows application",
   "private": true,
   "workspaces": [
-    "src/extension",
     "src/app",
     "src/app/frontend"
   ],
   "scripts": {
-    "build": "npm run build:interceptor && npm run build:extension",
+    "build": "npm run build:interceptor",
     "build:interceptor": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Config Release",
     "build:interceptor:debug": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Config Debug -Tests",
-    "build:extension": "npm run -w go-mapi-extension build",
-    "package:extension": "powershell -ExecutionPolicy Bypass -File scripts/package-extension.ps1",
-    "dev:extension": "npm run -w go-mapi-extension dev",
-    "lint": "eslint src/extension/src/",
-    "test": "npm run test:extension",
-    "test:extension": "npm run -w go-mapi-extension test:run",
     "test:interceptor": "powershell -ExecutionPolicy Bypass -Command \"src/interceptor/build/bin/go-mapi-test-harness.exe src/interceptor/build/bin/go-mapi.dll\"",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
-    "test:coverage": "npm run -w go-mapi-extension test:coverage",
-    "clean": "npm run clean:interceptor && npm run clean:extension",
+    "clean": "npm run clean:interceptor",
     "clean:interceptor": "powershell -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force src/interceptor/build -ErrorAction SilentlyContinue\"",
-    "clean:extension": "powershell -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force src/extension/dist -ErrorAction SilentlyContinue\"",
     "install:mapi": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1",
     "uninstall:mapi": "powershell -ExecutionPolicy Bypass -File scripts/install.ps1 -Uninstall",
     "test:dll:sandbox": "powershell -ExecutionPolicy Bypass -File tests/sandbox/run-sandbox-test.ps1"
@@ -45,10 +36,6 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.30.0",
-    "@eslint/js": "^9.0.0",
-    "@playwright/test": "^1.58.0",
-    "eslint": "^9.0.0",
-    "sharp": "^0.34.5",
-    "typescript-eslint": "^8.55.0"
+    "@playwright/test": "^1.58.0"
   }
 }
