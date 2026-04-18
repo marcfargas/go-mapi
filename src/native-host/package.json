@@ -1,6 +1,0 @@
-{
-  "name": "go-mapi-host",
-  "version": "2.1.0",
-  "private": true,
-  "description": "go-mapi native messaging host (Windows binary - not published to npm)"
-}
