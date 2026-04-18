@@ -154,11 +154,11 @@ func (am *AuthManager) SaveToKeyring() error {
 	return am.saveToKeyringLocked()
 }
 
-// ClearTokens wipes in-memory state AND the keyring entry. keyring.ErrNotFound
-// on Delete is swallowed (signing out twice is a no-op — D-12).
-func (am *AuthManager) ClearTokens() error {
-	am.refresh.Lock()
-	defer am.refresh.Unlock()
+// clearTokensLocked wipes in-memory state AND the keyring entry. Caller must
+// hold am.refresh. keyring.ErrNotFound on Delete is swallowed (signing out
+// twice is a no-op — D-12). Mirrors the saveToKeyringLocked pattern so callers
+// inside a critical section can invoke the clear without re-locking.
+func (am *AuthManager) clearTokensLocked() error {
 	am.tokens = nil
 	am.email = ""
 	am.name = ""
@@ -166,6 +166,14 @@ func (am *AuthManager) ClearTokens() error {
 		return fmt.Errorf("keyring delete: %w", err)
 	}
 	return nil
+}
+
+// ClearTokens wipes in-memory state AND the keyring entry. keyring.ErrNotFound
+// on Delete is swallowed (signing out twice is a no-op — D-12).
+func (am *AuthManager) ClearTokens() error {
+	am.refresh.Lock()
+	defer am.refresh.Unlock()
+	return am.clearTokensLocked()
 }
 
 // newOAuthConfig builds a *oauth2.Config with the four required scopes and the
@@ -602,7 +610,10 @@ func (a *App) MakeAuthenticatedGmailCall(ctx context.Context, fn GmailCall) erro
 		return err
 	}
 
-	// Reactive: force refresh and retry once.
+	// Reactive: force refresh and retry once. We hold am.refresh across the
+	// retry fn() call AND the classify-and-clear that follows, so no concurrent
+	// caller can observe the stale access token between the refresh result and
+	// the clear. The retry is bounded by fn's own HTTP timeout.
 	a.auth.refresh.Lock()
 	// Force refresh by backdating expiry.
 	if a.auth.tokens != nil {
@@ -617,16 +628,18 @@ func (a *App) MakeAuthenticatedGmailCall(ctx context.Context, fn GmailCall) erro
 		return err
 	}
 	token = a.auth.tokens.AccessToken
-	a.auth.refresh.Unlock()
 
 	status, err = fn(token)
 	if status == 401 {
 		// Second 401 after fresh token — classify as invalid_grant path.
-		_ = a.auth.ClearTokens()
+		// Clear while still holding the lock to close the race window.
+		_ = a.auth.clearTokensLocked()
+		a.auth.refresh.Unlock()
 		a.emitAuthChanged()
 		a.SetTrayError("sign-in expired")
 		return ErrInvalidGrant
 	}
+	a.auth.refresh.Unlock()
 	return err
 }
 
