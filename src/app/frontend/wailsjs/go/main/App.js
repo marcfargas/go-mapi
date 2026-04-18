@@ -10,8 +10,16 @@ export function GetQueue() {
   return window['go']['main']['App']['GetQueue']();
 }
 
+export function MakeAuthenticatedGmailCall(arg1, arg2) {
+  return window['go']['main']['App']['MakeAuthenticatedGmailCall'](arg1, arg2);
+}
+
 export function SetTrayError(arg1) {
   return window['go']['main']['App']['SetTrayError'](arg1);
+}
+
+export function SetTrayIdle(arg1) {
+  return window['go']['main']['App']['SetTrayIdle'](arg1);
 }
 
 export function SignIn() {
