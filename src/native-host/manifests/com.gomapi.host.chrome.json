@@ -1,9 +1,0 @@
-{
-  "name": "com.gomapi.host",
-  "description": "go-mapi Native Messaging Host - bridges MAPI interceptor with browser extension",
-  "path": "C:\\Program Files\\go-mapi\\go-mapi-host.exe",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://EXTENSION_ID_PLACEHOLDER/"
-  ]
-}

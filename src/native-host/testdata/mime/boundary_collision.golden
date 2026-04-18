@@ -1,7 +1,0 @@
-To: security@example.com
-Subject: Boundary collision
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: base64
-
-V2F0Y2ggZm9yIC0tZ29fbWFwaV9QSUQgbWFya2VycyBpbiB0aGlzIGJvZHkg4oCUIHRoZXkgbXVz
-dCBiZSBiYXNlNjQtd3JhcHBlZC4=
