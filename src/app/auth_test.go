@@ -8,12 +8,60 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 )
+
+// fakeKeyringStore is an in-memory KeyringStore for cross-platform unit tests.
+// It mirrors zalando/go-keyring semantics: Get returns keyring.ErrNotFound when
+// an entry is absent. Concurrent-safe via mu. Zero value is NOT ready — use
+// newFakeKeyringStore.
+type fakeKeyringStore struct {
+	mu sync.Mutex
+	m  map[string]string
+	// getErr, if non-nil, is returned from Get for any non-ErrNotFound scenario.
+	// Used to exercise "credential store unavailable" branches (D-11).
+	getErr error
+}
+
+func newFakeKeyringStore() *fakeKeyringStore {
+	return &fakeKeyringStore{m: map[string]string{}}
+}
+
+func (f *fakeKeyringStore) key(service, user string) string {
+	return service + "\x00" + user
+}
+
+func (f *fakeKeyringStore) Get(service, user string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.getErr != nil {
+		return "", f.getErr
+	}
+	v, ok := f.m[f.key(service, user)]
+	if !ok {
+		return "", keyring.ErrNotFound
+	}
+	return v, nil
+}
+
+func (f *fakeKeyringStore) Set(service, user, secret string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[f.key(service, user)] = secret
+	return nil
+}
+
+func (f *fakeKeyringStore) Delete(service, user string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.m, f.key(service, user))
+	return nil
+}
 
 func TestOAuthTokensJSONRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -51,10 +99,13 @@ func TestAuthStatusZeroValueOmitsEmptyFields(t *testing.T) {
 	}
 }
 
-func TestAuthManagerKeyringRoundTrip(t *testing.T) {
-	// Uses the real Windows Credential Manager. Sequential (no t.Parallel)
-	// because we share a single service/user key. Cleanup on exit.
-	am := NewAuthManager()
+// TestAuthManagerKeyringRoundTrip_Fake exercises the cross-platform
+// round-trip against the in-memory fakeKeyringStore. The real Windows
+// Credential Manager round-trip is covered in auth_keyring_windows_test.go.
+func TestAuthManagerKeyringRoundTrip_Fake(t *testing.T) {
+	t.Parallel()
+	store := newFakeKeyringStore()
+	am := NewAuthManagerWithStore(store)
 	am.tokens = &OAuthTokens{
 		AccessToken:  "a",
 		RefreshToken: "r",
@@ -64,9 +115,8 @@ func TestAuthManagerKeyringRoundTrip(t *testing.T) {
 	if err := am.SaveToKeyring(); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	t.Cleanup(func() { _ = am.ClearTokens() })
 
-	am2 := NewAuthManager()
+	am2 := NewAuthManagerWithStore(store)
 	if err := am2.LoadFromKeyring(); err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -79,10 +129,8 @@ func TestAuthManagerKeyringRoundTrip(t *testing.T) {
 }
 
 func TestLoadFromKeyringNoEntryIsSignedOut(t *testing.T) {
-	// Ensure a fresh state.
-	_ = keyring.Delete(keyringService, keyringUser)
-
-	am := NewAuthManager()
+	t.Parallel()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	if err := am.LoadFromKeyring(); err != nil {
 		t.Fatalf("expected nil on ErrNotFound, got: %v", err)
 	}
@@ -92,9 +140,9 @@ func TestLoadFromKeyringNoEntryIsSignedOut(t *testing.T) {
 }
 
 func TestClearTokensIsIdempotent(t *testing.T) {
-	am := NewAuthManager()
+	t.Parallel()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	// First call on an already-empty keyring must not error.
-	_ = keyring.Delete(keyringService, keyringUser)
 	if err := am.ClearTokens(); err != nil {
 		t.Fatalf("clear on empty: %v", err)
 	}
@@ -106,7 +154,7 @@ func TestClearTokensIsIdempotent(t *testing.T) {
 
 func TestStatusReflectsInMemoryFields(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	if am.Status().Authenticated {
 		t.Fatal("fresh AuthManager should be signed out")
 	}
@@ -185,7 +233,7 @@ func TestRandomStateUnique(t *testing.T) {
 
 func TestRunLoopbackStateMismatchRejected(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -211,7 +259,7 @@ func TestRunLoopbackStateMismatchRejected(t *testing.T) {
 
 func TestRunLoopbackHappyPath(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -239,7 +287,7 @@ func TestRunLoopbackHappyPath(t *testing.T) {
 
 func TestRunLoopbackContextCancel(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	ctx, cancel := context.WithCancel(context.Background())
 	_, wait, cleanup, err := am.prepareLoopback(ctx, "s2")
 	if err != nil {
@@ -274,7 +322,7 @@ var _ = errors.Is
 
 func TestRefreshIfNeededFastPath(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	am.tokens = &OAuthTokens{AccessToken: "A", RefreshToken: "R", Expiry: time.Now().Add(30 * time.Minute)}
 	if err := am.refreshIfNeededLocked(context.Background()); err != nil {
 		t.Fatalf("expected nil (fast path), got %v", err)
@@ -286,7 +334,7 @@ func TestRefreshIfNeededFastPath(t *testing.T) {
 
 func TestRefreshIfNeededNoTokens(t *testing.T) {
 	t.Parallel()
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	if err := am.refreshIfNeededLocked(context.Background()); !errors.Is(err, ErrNotAuthenticated) {
 		t.Fatalf("expected ErrNotAuthenticated, got %v", err)
 	}
@@ -303,8 +351,8 @@ func TestRefreshInvalidGrantClears(t *testing.T) {
 	tokenEndpointOverride = srv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
-	_ = keyring.Delete(keyringService, keyringUser)
-	am := NewAuthManager()
+	store := newFakeKeyringStore()
+	am := NewAuthManagerWithStore(store)
 	am.tokens = &OAuthTokens{AccessToken: "old", RefreshToken: "dead", Expiry: time.Now().Add(-time.Minute)}
 	_ = am.saveToKeyringLocked()
 
@@ -316,7 +364,7 @@ func TestRefreshInvalidGrantClears(t *testing.T) {
 		t.Fatal("expected tokens cleared")
 	}
 	// Keyring should also be empty now.
-	_, getErr := keyring.Get(keyringService, keyringUser)
+	_, getErr := store.Get(keyringService, keyringUser)
 	if !errors.Is(getErr, keyring.ErrNotFound) {
 		t.Fatalf("expected keyring cleared, got %v", getErr)
 	}
@@ -339,10 +387,7 @@ func TestRefreshHappyPath(t *testing.T) {
 	tokenEndpointOverride = srv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
-	_ = keyring.Delete(keyringService, keyringUser)
-	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
-
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	am.tokens = &OAuthTokens{AccessToken: "old", RefreshToken: "my-refresh", TokenType: "Bearer", Expiry: time.Now().Add(1 * time.Minute)}
 	if err := am.refreshIfNeededLocked(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
@@ -363,7 +408,7 @@ func TestRefreshTransient5xxRetainsTokens(t *testing.T) {
 	tokenEndpointOverride = srv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	am.tokens = &OAuthTokens{AccessToken: "A", RefreshToken: "R", Expiry: time.Now().Add(-time.Minute)}
 	err := am.refreshIfNeededLocked(context.Background())
 	if err == nil || errors.Is(err, ErrInvalidGrant) {
@@ -386,7 +431,7 @@ func TestRevoke200IsSuccess(t *testing.T) {
 	revokeEndpointOverride = srv.URL
 	t.Cleanup(func() { revokeEndpointOverride = "" })
 
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	am.tokens = &OAuthTokens{RefreshToken: "rt-abc"}
 	am.revokeRefreshToken(context.Background())
 	if got != "rt-abc" {
@@ -403,7 +448,7 @@ func TestRevoke400InvalidTokenTreatedAsSuccess(t *testing.T) {
 	revokeEndpointOverride = srv.URL
 	t.Cleanup(func() { revokeEndpointOverride = "" })
 
-	am := NewAuthManager()
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
 	am.tokens = &OAuthTokens{RefreshToken: "rt"}
 	// Should not panic, should return quickly.
 	am.revokeRefreshToken(context.Background())
@@ -423,10 +468,8 @@ func TestMakeAuthenticatedGmailCall_RetryOn401Succeeds(t *testing.T) {
 	tokenEndpointOverride = tokenSrv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
-	_ = keyring.Delete(keyringService, keyringUser)
-	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
-
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
 	// Seed signed-in, access token fresh-ish so the proactive refresh is a no-op.
 	app.auth.tokens = &OAuthTokens{
 		AccessToken:  "OLD",
@@ -476,10 +519,9 @@ func TestMakeAuthenticatedGmailCall_DoubleFailClassifiesInvalidGrant(t *testing.
 	tokenEndpointOverride = tokenSrv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
-	_ = keyring.Delete(keyringService, keyringUser)
-	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
-
+	store := newFakeKeyringStore()
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(store)
 	app.auth.tokens = &OAuthTokens{
 		AccessToken:  "OLD",
 		RefreshToken: "dead",
@@ -504,7 +546,7 @@ func TestMakeAuthenticatedGmailCall_DoubleFailClassifiesInvalidGrant(t *testing.
 		t.Fatal("expected in-memory tokens cleared")
 	}
 	// Keyring cleared.
-	if _, gerr := keyring.Get(keyringService, keyringUser); !errors.Is(gerr, keyring.ErrNotFound) {
+	if _, gerr := store.Get(keyringService, keyringUser); !errors.Is(gerr, keyring.ErrNotFound) {
 		t.Fatalf("expected keyring cleared, got %v", gerr)
 	}
 }
@@ -519,8 +561,9 @@ func TestSignOutEmitsAndClears(t *testing.T) {
 	revokeEndpointOverride = srv.URL
 	t.Cleanup(func() { revokeEndpointOverride = "" })
 
-	_ = keyring.Delete(keyringService, keyringUser)
+	store := newFakeKeyringStore()
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(store)
 	app.auth.tokens = &OAuthTokens{AccessToken: "a", RefreshToken: "r"}
 	_ = app.auth.SaveToKeyring()
 
@@ -530,15 +573,15 @@ func TestSignOutEmitsAndClears(t *testing.T) {
 	if app.auth.tokens != nil {
 		t.Fatal("expected tokens cleared")
 	}
-	_, err := keyring.Get(keyringService, keyringUser)
+	_, err := store.Get(keyringService, keyringUser)
 	if !errors.Is(err, keyring.ErrNotFound) {
 		t.Fatalf("expected keyring cleared, got %v", err)
 	}
 }
 
 func TestSignOutIdempotent(t *testing.T) {
-	_ = keyring.Delete(keyringService, keyringUser)
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
 	// No tokens set.
 	if err := app.SignOut(); err != nil {
 		t.Fatalf("sign out on empty: %v", err)
@@ -549,8 +592,8 @@ func TestSignOutIdempotent(t *testing.T) {
 }
 
 func TestBootstrapAuthSignedOutPath(t *testing.T) {
-	_ = keyring.Delete(keyringService, keyringUser)
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
 	// No ctx — bootstrapAuth must not panic; emitAuthChanged guards nil ctx.
 	app.bootstrapAuth()
 	if app.auth.tokens != nil {
@@ -562,10 +605,9 @@ func TestBootstrapAuthSignedOutPath(t *testing.T) {
 }
 
 func TestBootstrapAuthSignedInPath(t *testing.T) {
-	_ = keyring.Delete(keyringService, keyringUser)
-	t.Cleanup(func() { _ = keyring.Delete(keyringService, keyringUser) })
-
-	seed := NewAuthManager()
+	// Seed a fake keyring with a valid token payload and share it with the App.
+	store := newFakeKeyringStore()
+	seed := NewAuthManagerWithStore(store)
 	seed.tokens = &OAuthTokens{
 		AccessToken:  "a",
 		RefreshToken: "r",
@@ -577,8 +619,277 @@ func TestBootstrapAuthSignedInPath(t *testing.T) {
 	}
 
 	app := NewApp()
+	app.auth = NewAuthManagerWithStore(store)
 	app.bootstrapAuth()
 	if !app.auth.Status().Authenticated {
 		t.Fatal("expected authenticated after bootstrap with valid keyring entry")
+	}
+}
+
+// ---- Plan 08.1-03 Task 2: gap-fill scenarios per D-05 risk ----
+
+// TestRefresh_InvalidClient_ReturnsError asserts that a 400 invalid_client
+// from the token endpoint surfaces as ErrInvalidGrant (auth.go classifies
+// invalid_grant and invalid_client identically — both trigger sign-out).
+func TestRefresh_InvalidClient_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	store := newFakeKeyringStore()
+	am := NewAuthManagerWithStore(store)
+	am.tokens = &OAuthTokens{
+		AccessToken:  "old",
+		RefreshToken: "some-rt",
+		Expiry:       time.Now().Add(-time.Minute),
+	}
+	_ = am.saveToKeyringLocked()
+
+	err := am.refreshIfNeededLocked(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid_client, got nil")
+	}
+	// Classified the same as invalid_grant per auth.go branch line ~538.
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Fatalf("expected ErrInvalidGrant (invalid_client classified the same), got %v", err)
+	}
+	if am.tokens != nil {
+		t.Fatal("expected tokens cleared after invalid_client")
+	}
+	if _, gerr := store.Get(keyringService, keyringUser); !errors.Is(gerr, keyring.ErrNotFound) {
+		t.Fatalf("expected keyring cleared, got %v", gerr)
+	}
+}
+
+// TestRefresh_RotatedRefreshToken_PersistsNew asserts that when the refresh
+// response includes a new refresh_token, it is persisted to the keyring.
+func TestRefresh_RotatedRefreshToken_PersistsNew(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"new-at","refresh_token":"rotated-rt","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	store := newFakeKeyringStore()
+	am := NewAuthManagerWithStore(store)
+	am.tokens = &OAuthTokens{
+		AccessToken:  "old-at",
+		RefreshToken: "original-rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(-time.Minute),
+	}
+	if err := am.refreshIfNeededLocked(context.Background()); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if am.tokens.RefreshToken != "rotated-rt" {
+		t.Fatalf("expected in-memory refresh_token=rotated-rt, got %q", am.tokens.RefreshToken)
+	}
+	// Verify the rotated refresh token was persisted to the fake keyring.
+	raw, err := store.Get(keyringService, keyringUser)
+	if err != nil {
+		t.Fatalf("keyring Get: %v", err)
+	}
+	var persisted OAuthTokens
+	if err := json.Unmarshal([]byte(raw), &persisted); err != nil {
+		t.Fatalf("decode persisted: %v", err)
+	}
+	if persisted.RefreshToken != "rotated-rt" {
+		t.Fatalf("expected persisted refresh_token=rotated-rt, got %q", persisted.RefreshToken)
+	}
+}
+
+// TestRefresh_EmptyAccessToken_ReturnsError asserts that a 200 response with
+// an empty access_token surfaces "refresh: empty access_token in response".
+func TestRefresh_EmptyAccessToken_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"","expires_in":3600,"token_type":"Bearer"}`))
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
+	am.tokens = &OAuthTokens{
+		AccessToken:  "old",
+		RefreshToken: "rt",
+		Expiry:       time.Now().Add(-time.Minute),
+	}
+	err := am.refreshIfNeededLocked(context.Background())
+	if err == nil {
+		t.Fatal("expected error on empty access_token, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty access_token") {
+		t.Fatalf("expected error mentioning 'empty access_token', got %v", err)
+	}
+	// Tokens remain (refresh did not succeed, so in-memory state is unchanged).
+	if am.tokens == nil {
+		t.Fatal("expected tokens retained on empty-access-token response")
+	}
+}
+
+// TestMakeAuthenticatedGmailCall_HappyPath asserts that a fresh token +
+// fn returning (200, nil) calls fn exactly once, does not refresh, and
+// returns nil.
+func TestMakeAuthenticatedGmailCall_HappyPath(t *testing.T) {
+	// Fail-loud token endpoint: tests should never hit this path.
+	var refreshHits int
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshHits++
+		w.WriteHeader(500)
+	}))
+	defer tokenSrv.Close()
+	tokenEndpointOverride = tokenSrv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	app := NewApp()
+	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
+	app.auth.tokens = &OAuthTokens{
+		AccessToken:  "fresh-at",
+		RefreshToken: "rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute),
+	}
+
+	var calls int
+	var seen string
+	fn := func(accessToken string) (int, error) {
+		calls++
+		seen = accessToken
+		return 200, nil
+	}
+	if err := app.MakeAuthenticatedGmailCall(context.Background(), fn); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected fn called exactly once, got %d", calls)
+	}
+	if seen != "fresh-at" {
+		t.Fatalf("expected fn to see fresh-at, got %q", seen)
+	}
+	if refreshHits != 0 {
+		t.Fatalf("expected zero refresh attempts, got %d", refreshHits)
+	}
+}
+
+// TestMakeAuthenticatedGmailCall_NonUnauthorizedErrorBubbles asserts that
+// a fresh token + fn returning (500, err) surfaces err verbatim (no retry,
+// no refresh).
+func TestMakeAuthenticatedGmailCall_NonUnauthorizedErrorBubbles(t *testing.T) {
+	app := NewApp()
+	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
+	app.auth.tokens = &OAuthTokens{
+		AccessToken: "fresh-at",
+		RefreshToken: "rt",
+		TokenType: "Bearer",
+		Expiry:   time.Now().Add(30 * time.Minute),
+	}
+
+	sentinel := errors.New("gmail 500: boom")
+	var calls int
+	fn := func(accessToken string) (int, error) {
+		calls++
+		return 500, sentinel
+	}
+	err := app.MakeAuthenticatedGmailCall(context.Background(), fn)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error bubbled, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected no retry on non-401, fn called %d times", calls)
+	}
+}
+
+// TestBootstrapAuth_TransientErrorKeepsTokens asserts that when the refresh
+// endpoint returns a transient error (5xx) during bootstrap, the in-memory
+// tokens are retained and the user stays signed-in (per auth.go lines 716-719).
+func TestBootstrapAuth_TransientErrorKeepsTokens(t *testing.T) {
+	// Token endpoint returns 503 on every call → transient refresh error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+	}))
+	defer srv.Close()
+	tokenEndpointOverride = srv.URL
+	t.Cleanup(func() { tokenEndpointOverride = "" })
+
+	store := newFakeKeyringStore()
+	// Seed the fake keyring with tokens that are about to expire so bootstrap
+	// triggers a refresh attempt (which 503s — transient).
+	seed := NewAuthManagerWithStore(store)
+	seed.tokens = &OAuthTokens{
+		AccessToken:  "about-to-expire",
+		RefreshToken: "rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(1 * time.Minute), // inside 5-min window
+	}
+	if err := seed.SaveToKeyring(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	app := NewApp()
+	app.auth = NewAuthManagerWithStore(store)
+	app.bootstrapAuth()
+	if app.auth.tokens == nil {
+		t.Fatal("expected tokens retained on transient refresh error")
+	}
+	if !app.auth.Status().Authenticated {
+		t.Fatal("expected signed-in status on transient error (tokens retained)")
+	}
+}
+
+// TestBootstrapAuth_KeyringGetHardError_SetsErrorState asserts that when
+// keyring.Get returns a non-ErrNotFound error during bootstrap, tokens
+// remain nil and Status reports signed-out (auth.go lines 694-699).
+func TestBootstrapAuth_KeyringGetHardError_SetsErrorState(t *testing.T) {
+	store := newFakeKeyringStore()
+	store.getErr = errors.New("windows credential manager unavailable")
+
+	app := NewApp()
+	app.auth = NewAuthManagerWithStore(store)
+	app.bootstrapAuth()
+
+	if app.auth.tokens != nil {
+		t.Fatal("expected tokens nil after keyring hard error")
+	}
+	if app.auth.Status().Authenticated {
+		t.Fatal("expected signed-out status after keyring hard error")
+	}
+}
+
+// TestFetchUserInfoLocked_HappyPath asserts that a 200 response from the
+// userinfo endpoint populates am.email and am.name (auth.go ~lines 333-336).
+func TestFetchUserInfoLocked_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("expected Authorization: Bearer ..., got %q", auth)
+		}
+		_, _ = w.Write([]byte(`{"email":"marc@example.com","name":"Marc"}`))
+	}))
+	defer srv.Close()
+	userinfoEndpointOverride = srv.URL
+	t.Cleanup(func() { userinfoEndpointOverride = "" })
+
+	am := NewAuthManagerWithStore(newFakeKeyringStore())
+	am.tokens = &OAuthTokens{
+		AccessToken:  "valid-at",
+		RefreshToken: "rt",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(30 * time.Minute),
+	}
+	// fetchUserInfoLocked expects the caller to hold am.refresh.
+	am.refresh.Lock()
+	am.fetchUserInfoLocked(context.Background())
+	am.refresh.Unlock()
+
+	if am.email != "marc@example.com" {
+		t.Errorf("expected email populated, got %q", am.email)
+	}
+	if am.name != "Marc" {
+		t.Errorf("expected name populated, got %q", am.name)
 	}
 }

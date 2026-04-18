@@ -33,7 +33,11 @@ func main() {
 	// Guard is skipped under the `bindings` build tag (wailsbindings.exe) so that
 	// Wails can generate TypeScript bindings without needing real credentials at
 	// dev time. In production and wails dev, the guard is always active.
-	checkOAuthCredentials()
+	// The check itself returns an error (testable); main owns the os.Exit(1).
+	if err := checkOAuthCredentials(); err != nil {
+		logError("FATAL: %s", err.Error())
+		os.Exit(1)
+	}
 
 	app := NewApp()
 
