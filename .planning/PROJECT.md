@@ -150,7 +150,7 @@ Seed: `.planning/notes/2026-04-12-architecture-reeval-wails.md`
 | Extension links directly to installer download (not a GitHub release page) | Non-technical users get confused by GitHub UI; want a single "click here to install" button | — Pending |
 | Single-click installer + auto-detect success toast (no multi-step guide) | Simpler UX; installer does the work, extension just watches for the host to appear | — Pending |
 | Host auto-update deferred to a future milestone | Not a priority; re-running the installer is acceptable until update volume justifies the complexity | — Pending |
-| Test completeness = risk-based gap filling, not numeric coverage target | Coverage numbers can be gamed; blast-radius prioritization matches the project's pragmatic-over-perfect philosophy | — Pending |
+| Test completeness = risk-based gap filling, not numeric coverage target | Coverage numbers can be gamed; blast-radius prioritization matches the project's pragmatic-over-perfect philosophy | ✓ Good — extended to v3.0 Wails codebase in Phase 8.1 |
 | E2E test covers happy path only, not exhaustive scenarios | Regression safety on the main flow is the priority; edge cases stay in unit/integration tests | — Pending |
 | Code signing via free OSS service if available (SignPath.io), unsigned otherwise | Solo FOSS project budget; paid EV certs are out of scope | — Pending |
 | Outlook / multi-account / SMTP / queue mgmt deferred to future milestones | Keep v2.0.0 scope tight; install UX + reliability first, then expand | — Pending |
