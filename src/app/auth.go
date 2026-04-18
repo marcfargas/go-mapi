@@ -28,6 +28,32 @@ const (
 	keyringUser    = "oauth-tokens"
 )
 
+// KeyringStore abstracts the OS credential store so tests can inject a fake.
+// The real implementation wraps zalando/go-keyring; the in-memory fake lives
+// in auth_test.go. Methods must mirror zalando/go-keyring semantics:
+// Get returns keyring.ErrNotFound when the entry is absent.
+type KeyringStore interface {
+	Get(service, user string) (string, error)
+	Set(service, user, secret string) error
+	Delete(service, user string) error
+}
+
+// realKeyringStore delegates to zalando/go-keyring package-level functions.
+// Production code (via NewAuthManager) uses this; tests inject fakeKeyringStore.
+type realKeyringStore struct{}
+
+func (realKeyringStore) Get(service, user string) (string, error) {
+	return keyring.Get(service, user)
+}
+
+func (realKeyringStore) Set(service, user, secret string) error {
+	return keyring.Set(service, user, secret)
+}
+
+func (realKeyringStore) Delete(service, user string) error {
+	return keyring.Delete(service, user)
+}
+
 // OAuth scopes (D-17 userinfo + AUTH-01 gmail).
 const (
 	scopeGmailCompose    = "https://www.googleapis.com/auth/gmail.compose"
@@ -83,11 +109,24 @@ type AuthManager struct {
 	// cancelFlow is set by SignIn while the loopback listener is running,
 	// so a UI Cancel button can abort the flow. Plan 03 wires this.
 	cancelFlow context.CancelFunc
+
+	// keyring is the credential-store backend. Production uses realKeyringStore
+	// (zalando/go-keyring); tests inject fakeKeyringStore for cross-platform
+	// unit tests. Always non-nil — constructors set it.
+	keyring KeyringStore
 }
 
-// NewAuthManager constructs a fresh, signed-out AuthManager.
+// NewAuthManager constructs a fresh, signed-out AuthManager backed by the
+// real Windows Credential Manager (via zalando/go-keyring).
 func NewAuthManager() *AuthManager {
-	return &AuthManager{}
+	return NewAuthManagerWithStore(realKeyringStore{})
+}
+
+// NewAuthManagerWithStore constructs an AuthManager with a custom keyring
+// backend. Tests use this to inject an in-memory fakeKeyringStore; production
+// code should use NewAuthManager. The store must not be nil.
+func NewAuthManagerWithStore(store KeyringStore) *AuthManager {
+	return &AuthManager{keyring: store}
 }
 
 // Status returns the current in-memory auth view. Safe to call concurrently.
@@ -111,7 +150,7 @@ func (am *AuthManager) LoadFromKeyring() error {
 	am.refresh.Lock()
 	defer am.refresh.Unlock()
 
-	raw, err := keyring.Get(keyringService, keyringUser)
+	raw, err := am.keyring.Get(keyringService, keyringUser)
 	if errors.Is(err, keyring.ErrNotFound) {
 		am.tokens = nil
 		return nil
@@ -139,7 +178,7 @@ func (am *AuthManager) saveToKeyringLocked() error {
 	if err != nil {
 		return fmt.Errorf("keyring encode: %w", err)
 	}
-	if err := keyring.Set(keyringService, keyringUser, string(data)); err != nil {
+	if err := am.keyring.Set(keyringService, keyringUser, string(data)); err != nil {
 		return fmt.Errorf("keyring save: %w", err)
 	}
 	return nil
@@ -162,7 +201,7 @@ func (am *AuthManager) clearTokensLocked() error {
 	am.tokens = nil
 	am.email = ""
 	am.name = ""
-	if err := keyring.Delete(keyringService, keyringUser); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+	if err := am.keyring.Delete(keyringService, keyringUser); err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("keyring delete: %w", err)
 	}
 	return nil
@@ -502,7 +541,7 @@ func (am *AuthManager) refreshIfNeededLocked(ctx context.Context) error {
 			am.tokens = nil
 			am.email = ""
 			am.name = ""
-			_ = keyring.Delete(keyringService, keyringUser)
+			_ = am.keyring.Delete(keyringService, keyringUser)
 			return ErrInvalidGrant
 		}
 		return fmt.Errorf("refresh: 400 %s", e.Error)
@@ -674,7 +713,7 @@ func (a *App) SignOut() error {
 	a.auth.tokens = nil
 	a.auth.email = ""
 	a.auth.name = ""
-	_ = keyring.Delete(keyringService, keyringUser) // ignore ErrNotFound
+	_ = a.auth.keyring.Delete(keyringService, keyringUser) // ignore ErrNotFound
 	a.auth.refresh.Unlock()
 
 	a.emitAuthChanged()
