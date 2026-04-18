@@ -27,7 +27,21 @@ if (-not $env:GOMAPI_OAUTH_CLIENT_ID -or -not $env:GOMAPI_OAUTH_CLIENT_SECRET) {
 
 Push-Location (Join-Path $repoRoot 'src' 'app')
 try {
-    wails dev
+    # Go 1.26 Windows/ARM64 + `wails dev` / `wails build -debug` triggers a
+    # `syscall.Syscall15: nosplit stack over 792 byte limit` compile error under
+    # `-gcflags "all=-N -l"`. Build production with devtools instead — same
+    # env-var credential fallback (auth_credentials.go init()) drives both paths.
+    # Trade-off: no hot reload; rerun this script after editing Go/Svelte code.
+    Write-Host 'Building go-mapi (production + devtools)...'
+    wails build -devtools
+    if ($LASTEXITCODE -ne 0) { throw 'wails build failed' }
+
+    $binary = Join-Path (Get-Location) 'build' 'bin' 'go-mapi.exe'
+    if (-not (Test-Path $binary)) { throw "Binary not produced at $binary" }
+
+    Write-Host "Launching $binary..."
+    & $binary
+    if ($LASTEXITCODE -ne 0) { throw "go-mapi exited with code $LASTEXITCODE" }
 } finally {
     Pop-Location
 }
