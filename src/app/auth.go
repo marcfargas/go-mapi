@@ -708,13 +708,16 @@ func (a *App) bootstrapAuth() {
 	// Tokens present and valid (or transient-error kept) — tray should show idle
 	// regardless of the async userinfo fetch outcome.
 	a.SetTrayIdle("watching for emails")
-	// Kick off async userinfo fetch (non-blocking — Status() already reflects auth).
+	logInfo("oauth bootstrap: signed in, token expires %s", a.auth.tokens.Expiry.Format(time.RFC3339))
+	// Kick off async userinfo fetch and emit auth-changed ONCE after it settles.
+	// We deliberately do NOT emit synchronously here — a pre-userinfo emission
+	// would flash an authenticated header with empty email/name. The Svelte
+	// frontend renders the queue view from the initial GetAuthStatus() pull
+	// on mount, and updates email/name via this single async emit.
 	go func() {
 		a.auth.refresh.Lock()
 		a.auth.fetchUserInfoLocked(a.ctx)
 		a.auth.refresh.Unlock()
-		a.emitAuthChanged() // re-emit with email/name populated
+		a.emitAuthChanged() // single emission, email/name populated
 	}()
-	logInfo("oauth bootstrap: signed in, token expires %s", a.auth.tokens.Expiry.Format(time.RFC3339))
-	a.emitAuthChanged()
 }
