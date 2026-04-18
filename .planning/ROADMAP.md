@@ -99,7 +99,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] 08.1-04-PLAN.md — Cleanup wave 1: drop src/native-host/, trim go.work + package.json + .changeset/config.json (D-02 wave 1, D-21)
 - [x] 08.1-05-PLAN.md — Cleanup wave 2+3: drop src/extension/, src/installer/, ESLint config + devDeps, installer CI workflows, sharp devDep, generate-icons.js (D-02 waves 2-3, D-19)
 - [x] 08.1-06-PLAN.md — Cleanup wave 4+5+6: drop tests/e2e/, tests/fixtures/, e2e.yml, release.yml, v2.x scripts + docs, TODO.txt, AGENTS.md / PLANNING_AGENT.md / CONTRIBUTING.md inspect-and-decide, drop @playwright/test (D-13, D-14, D-16, D-18)
-- [ ] 08.1-07-PLAN.md — Rewrite build.yml for Wails app + per-PR -race + coverage + svelte-check + Vitest (D-07, D-08, D-10, D-17, QUAL-04)
+- [x] 08.1-07-PLAN.md — Rewrite build.yml for Wails app + per-PR -race + coverage + svelte-check + Vitest (D-07, D-08, D-10, D-17, QUAL-04)
 - [ ] 08.1-08-PLAN.md — Finalize root package.json shape: description, repo URL, Wails-era aggregator scripts (D-22)
 - [ ] 08.1-09-PLAN.md — Rewrite CLAUDE.md + README.md for v3.0 Wails architecture; update PROJECT.md D-05 outcome (D-04, D-05)
 **UI hint**: no
