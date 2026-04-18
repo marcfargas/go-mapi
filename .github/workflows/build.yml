@@ -51,9 +51,11 @@ jobs:
           path: src/interceptor/build/bin/go-mapi-test-harness.exe
           if-no-files-found: warn
 
-  build-native-host:
-    name: Build Native Host (Go)
+  build-wails-app:
+    name: Build Wails App (Go + Svelte)
     runs-on: windows-latest
+    env:
+      CGO_ENABLED: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -61,52 +63,62 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
-
-      - name: Run Go Tests
-        working-directory: src/native-host
-        run: go test -v ./...
-
-      - name: Build Native Messaging Host
-        working-directory: src/native-host
-        run: |
-          go mod tidy
-          go build -ldflags "-s -w" -o build/go-mapi-host.exe .
-
-      - name: Upload Native Host Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-native-host
-          path: src/native-host/build/go-mapi-host.exe
-          if-no-files-found: warn
-
-  build-extension:
-    name: Build Extension (React)
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
+          go-version: '1.25'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install Dependencies
+      # CRITICAL: npm ci + frontend build MUST run before any 'go test' or
+      # 'go vet' on ./src/app/... because src/app/main.go has
+      # //go:embed all:frontend/dist. On a clean checkout, src/app/frontend/dist/
+      # does not exist yet — it's produced here.
+      - name: Install npm workspace dependencies
         run: npm ci
 
-      - name: Type Check
-        run: npm run -w go-mapi-extension typecheck
+      - name: Build frontend (produces src/app/frontend/dist for go:embed)
+        run: npm run -w @marcfargas/go-mapi-app-frontend build
 
-      - name: Run Extension Tests
-        run: npm run -w go-mapi-extension test:run
+      - name: go vet
+        run: go vet ./internal/mapi/... ./src/app/...
 
-      - name: Build Extension
-        run: npm run build:extension
+      - name: go test -race with coverage (internal/mapi)
+        run: go test -race -coverprofile=coverage-internal-mapi.out -v ./internal/mapi/...
 
-      - name: Upload Extension Artifact
+      - name: go test -race with coverage (src/app)
+        run: go test -race -coverprofile=coverage-src-app.out -v ./src/app/...
+
+      - name: Upload Go coverage (internal/mapi)
         uses: actions/upload-artifact@v4
         with:
-          name: go-mapi-extension
-          path: src/extension/dist/
+          name: coverage-internal-mapi
+          path: coverage-internal-mapi.out
+          if-no-files-found: warn
+
+      - name: Upload Go coverage (src/app)
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-src-app
+          path: coverage-src-app.out
+          if-no-files-found: warn
+
+      - name: svelte-check (blocking)
+        run: npm run -w @marcfargas/go-mapi-app-frontend check
+
+      - name: Vitest frontend tests (blocking)
+        run: npm run -w @marcfargas/go-mapi-app-frontend test:run
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: wails build (sanity)
+        working-directory: src/app
+        run: wails build -platform windows/amd64
+
+      - name: Upload Wails app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-wails-app
+          path: src/app/build/bin/
           if-no-files-found: warn
