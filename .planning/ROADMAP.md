@@ -93,9 +93,9 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   6. `.github/workflows/build.yml` has a single `build-wails-app` job that runs `go vet` + `go test -race -coverprofile` + `svelte-check` + Vitest + `wails build`; `build-interceptor` job preserved; `go-race-nightly.yml` updated to Go 1.25 + new module scope
   7. `CLAUDE.md` + `README.md` rewritten to describe the Wails v3.0 architecture with no v2.x references; `.planning/PROJECT.md` Key Decisions row for "risk-based gap filling" marked ✓ Good — extended to v3.0 Wails codebase in Phase 8.1
 **Plans**: 9 plans
-- [ ] 08.1-01-PLAN.md — Port gmail_test.go + mime_golden_test.go + testdata/mime fixtures into internal/mapi (pre-deletion landmine fix)
-- [ ] 08.1-02-PLAN.md — Stand up Vitest + @testing-library/svelte + jsdom for src/app/frontend; 7 test files covering lib + components + App smoke (D-09, D-10)
-- [ ] 08.1-03-PLAN.md — Extend src/app Go coverage: KeyringStore interface, fake + real keyring tests, 8 auth gap-fills, app_test, paths_test, credentials_check refactor (D-11, D-12, D-05, QUAL-03)
+- [x] 08.1-01-PLAN.md — Port gmail_test.go + mime_golden_test.go + testdata/mime fixtures into internal/mapi (pre-deletion landmine fix)
+- [x] 08.1-02-PLAN.md — Stand up Vitest + @testing-library/svelte + jsdom for src/app/frontend; 7 test files covering lib + components + App smoke (D-09, D-10)
+- [x] 08.1-03-PLAN.md — Extend src/app Go coverage: KeyringStore interface, fake + real keyring tests, 8 auth gap-fills, app_test, paths_test, credentials_check refactor (D-11, D-12, D-05, QUAL-03)
 - [ ] 08.1-04-PLAN.md — Cleanup wave 1: drop src/native-host/, trim go.work + package.json + .changeset/config.json (D-02 wave 1, D-21)
 - [ ] 08.1-05-PLAN.md — Cleanup wave 2+3: drop src/extension/, src/installer/, ESLint config + devDeps, installer CI workflows, sharp devDep, generate-icons.js (D-02 waves 2-3, D-19)
 - [ ] 08.1-06-PLAN.md — Cleanup wave 4+5+6: drop tests/e2e/, tests/fixtures/, e2e.yml, release.yml, v2.x scripts + docs, TODO.txt, AGENTS.md / PLANNING_AGENT.md / CONTRIBUTING.md inspect-and-decide, drop @playwright/test (D-13, D-14, D-16, D-18)
