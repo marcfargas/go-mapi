@@ -60,9 +60,20 @@ const (
 	scopeGmailSend       = "https://www.googleapis.com/auth/gmail.send"
 	scopeUserinfoEmail   = "https://www.googleapis.com/auth/userinfo.email"
 	scopeUserinfoProfile = "https://www.googleapis.com/auth/userinfo.profile"
-	userinfoEndpoint     = "https://www.googleapis.com/oauth2/v3/userinfo"
 	loopbackFlowTimeout  = 5 * time.Minute // Claude discretion per CONTEXT
 )
+
+// userinfoEndpointOverride is empty in production (the real Google endpoint is
+// used); tests set this to point at an httptest stub. Mirrors the
+// tokenEndpointOverride / revokeEndpointOverride pattern.
+var userinfoEndpointOverride = ""
+
+func userinfoEndpoint() string {
+	if userinfoEndpointOverride != "" {
+		return userinfoEndpointOverride
+	}
+	return "https://www.googleapis.com/oauth2/v3/userinfo"
+}
 
 // ErrNotAuthenticated is returned when an auth-requiring operation runs
 // against an AuthManager that has no tokens loaded.
@@ -348,7 +359,7 @@ func (am *AuthManager) fetchUserInfoLocked(ctx context.Context) {
 	if am.tokens == nil {
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", userinfoEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", userinfoEndpoint(), nil)
 	if err != nil {
 		logError("oauth userinfo: build request: %v", err)
 		return
