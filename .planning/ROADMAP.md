@@ -83,9 +83,26 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 ### Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)
 **Goal**: The repository contains no residue of the v2.x native-host + browser-extension architecture, and every component of the Wails desktop app has test coverage appropriate to its risk — so Phase 9 feature work starts from a clean, coherent, well-tested baseline
 **Depends on**: Phase 8
-**Requirements**: TBD (to be derived during `/gsd-discuss-phase 8.1`)
-**Success Criteria** (what must be TRUE): TBD (to be derived during `/gsd-discuss-phase 8.1`)
-**Plans**: TBD
+**Requirements**: QUAL-03 (carry-forward via D-05), QUAL-04 (closed by per-PR `-race` gate via D-07)
+**Success Criteria** (what must be TRUE):
+  1. `src/native-host/`, `src/extension/`, `src/installer/`, `tests/e2e/` do not exist; v2.x CI workflows (`e2e.yml`, `installer-release.yml`, `installer-smoke.yml`, `release.yml`) are removed
+  2. `go.work` uses only `./internal/mapi` and `./src/app`; root `package.json` workspaces is `["src/app"]`; `.changeset/config.json` `$workspaces` is `["src/app"]`
+  3. `internal/mapi/` retains the Gmail HTTP stub tests and MIME golden tests ported from `src/native-host/` before deletion (no silent loss of business-logic coverage)
+  4. `src/app/frontend/` has a running Vitest + @testing-library/svelte harness with ≥ 7 test files covering `lib/auth.ts`, `lib/queue.ts` (incl. WR-03 regression), and the four existing components + an App smoke test
+  5. `src/app/` Go coverage is extended: `KeyringStore` interface seam for cross-platform unit tests, Windows-only keyring integration test, eight gap-fill scenarios in `auth_test.go`, plus `app_test.go` / `paths_test.go` / `credentials_check_test.go`
+  6. `.github/workflows/build.yml` has a single `build-wails-app` job that runs `go vet` + `go test -race -coverprofile` + `svelte-check` + Vitest + `wails build`; `build-interceptor` job preserved; `go-race-nightly.yml` updated to Go 1.25 + new module scope
+  7. `CLAUDE.md` + `README.md` rewritten to describe the Wails v3.0 architecture with no v2.x references; `.planning/PROJECT.md` Key Decisions row for "risk-based gap filling" marked ✓ Good — extended to v3.0 Wails codebase in Phase 8.1
+**Plans**: 9 plans
+- [ ] 08.1-01-PLAN.md — Port gmail_test.go + mime_golden_test.go + testdata/mime fixtures into internal/mapi (pre-deletion landmine fix)
+- [ ] 08.1-02-PLAN.md — Stand up Vitest + @testing-library/svelte + jsdom for src/app/frontend; 7 test files covering lib + components + App smoke (D-09, D-10)
+- [ ] 08.1-03-PLAN.md — Extend src/app Go coverage: KeyringStore interface, fake + real keyring tests, 8 auth gap-fills, app_test, paths_test, credentials_check refactor (D-11, D-12, D-05, QUAL-03)
+- [ ] 08.1-04-PLAN.md — Cleanup wave 1: drop src/native-host/, trim go.work + package.json + .changeset/config.json (D-02 wave 1, D-21)
+- [ ] 08.1-05-PLAN.md — Cleanup wave 2+3: drop src/extension/, src/installer/, ESLint config + devDeps, installer CI workflows, sharp devDep, generate-icons.js (D-02 waves 2-3, D-19)
+- [ ] 08.1-06-PLAN.md — Cleanup wave 4+5+6: drop tests/e2e/, tests/fixtures/, e2e.yml, release.yml, v2.x scripts + docs, TODO.txt, AGENTS.md / PLANNING_AGENT.md / CONTRIBUTING.md inspect-and-decide, drop @playwright/test (D-13, D-14, D-16, D-18)
+- [ ] 08.1-07-PLAN.md — Rewrite build.yml for Wails app + per-PR -race + coverage + svelte-check + Vitest (D-07, D-08, D-10, D-17, QUAL-04)
+- [ ] 08.1-08-PLAN.md — Finalize root package.json shape: description, repo URL, Wails-era aggregator scripts (D-22)
+- [ ] 08.1-09-PLAN.md — Rewrite CLAUDE.md + README.md for v3.0 Wails architecture; update PROJECT.md D-05 outcome (D-04, D-05)
+**UI hint**: no
 
 ### Phase 9: Queue, Automode + Toasts
 **Goal**: Users can view queued emails in the main window, act on them individually, set an automatic draft mode, and receive Windows toast notifications when new emails arrive
@@ -134,12 +151,12 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 4. Test-Suite Completeness + E2E | v2.0.0 | 4/4 | Complete | 2026-04-10 |
 | 5. Release Cut | v2.0.0 | 4/4 | Complete | 2026-04-12 |
 | 6. Changesets Monorepo Scaffold | v2.1.0 | 3/3 | Complete | 2026-04-12 |
-| 7. Wails Shell + RAM Gate | v3.0 | 0/? | Not started | - |
-| 8. OAuth + Credentials | v3.0 | 2/5 | In Progress|  |
-| 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 0/? | Not started | - |
+| 7. Wails Shell + RAM Gate | v3.0 | 4/4 | Complete | 2026-04-14 |
+| 8. OAuth + Credentials | v3.0 | 5/5 | Complete | 2026-04-18 |
+| 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 0/9 | Not started | - |
 | 9. Queue, Automode + Toasts | v3.0 | 0/? | Not started | - |
 | 10. Installer + Migration | v3.0 | 0/? | Not started | - |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
 
 ---
-*Roadmap updated: 2026-04-12 — v3.0 Wails Pivot phases 7-11 defined*
+*Roadmap updated: 2026-04-18 — Phase 8.1 planned (9 plans)*
