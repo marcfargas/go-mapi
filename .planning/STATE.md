@@ -21,7 +21,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 09 — Queue, Automode + Toasts (next)
+**Current focus:** Phase 8.1 — Post-pivot cleanup and test coverage review (INSERTED, next)
 
 ## Current Position
 
@@ -62,6 +62,10 @@ Recent decisions carried into v3.0:
 - [Phase 08]: Build-tag split pattern required for wails build compatibility: any fatal startup guard in main.go must be extracted to a !bindings-tagged file so wailsbindings.exe can introspect types without triggering os.Exit
 - [Phase 08]: D-11/D-12 realised: zalando/go-keyring v0.2.8 wired for Windows Credential Manager; keyring.ErrNotFound on Get/Delete is signed-out state (not error); service=go-mapi user=oauth-tokens
 
+### Roadmap Evolution
+
+- Phase 8.1 inserted after Phase 8 (2026-04-18): Post-pivot cleanup and test coverage review (URGENT) — purge v2.x native-host + browser-extension leftovers and shore up Wails codebase test coverage before Phase 9 feature work resumes
+
 ### Pending Todos
 
 - AUTH-06: Google OAuth verification submitted 2026-04-17 (GCP client, consent screen, scope justifications done; 4-8 week review window running)
@@ -80,4 +84,4 @@ Recent decisions carried into v3.0:
 
 Last session: 2026-04-18T00:30:00.000Z
 Stopped at: Phase 08 complete (human UAT approved after tray-idle fix 04462ed + dev-wails.ps1 fix f05d63c)
-Resume: run `/gsd-discuss-phase 9` to start Phase 09 (Queue, Automode + Toasts)
+Resume: run `/gsd-discuss-phase 8.1` to start the inserted cleanup/coverage phase before Phase 09

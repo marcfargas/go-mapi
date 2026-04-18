@@ -39,6 +39,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 
 - [x] **Phase 7: Wails Shell + RAM Gate** — Minimal tray app built and RAM measured (PASS: 43.24 MB mean per session vs 80 MB gate, 2026-04-14)
 - [x] **Phase 8: OAuth + Credentials** — Desktop OAuth (PKCE loopback) with Windows Credential Manager storage shipped; human UAT approved 2026-04-18
+- [ ] **Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)** — Purge v2.x leftovers from the native-host + browser-extension era and shore up test coverage across the Wails codebase before Phase 9 feature work resumes
 - [ ] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
 - [ ] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, and uninstall
 - [ ] **Phase 11: Autoupdate + Release** — Notify-only autoupdate, GitHub release pipeline, extension store retirement, smoke test
@@ -79,9 +80,16 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] 08-04-PLAN.md — Token refresh + invalid_grant classification + SignOut + OnStartup wiring (AUTH-03, AUTH-04, AUTH-05, AUTH-07, QUAL-03)
 - [x] 08-05-PLAN.md — Frontend: welcome screen + pre-auth modal + re-auth banner + signed-in header (AUTH-01, AUTH-02, AUTH-05, AUTH-07)
 
+### Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)
+**Goal**: The repository contains no residue of the v2.x native-host + browser-extension architecture, and every component of the Wails desktop app has test coverage appropriate to its risk — so Phase 9 feature work starts from a clean, coherent, well-tested baseline
+**Depends on**: Phase 8
+**Requirements**: TBD (to be derived during `/gsd-discuss-phase 8.1`)
+**Success Criteria** (what must be TRUE): TBD (to be derived during `/gsd-discuss-phase 8.1`)
+**Plans**: TBD
+
 ### Phase 9: Queue, Automode + Toasts
 **Goal**: Users can view queued emails in the main window, act on them individually, set an automatic draft mode, and receive Windows toast notifications when new emails arrive
-**Depends on**: Phase 8
+**Depends on**: Phase 8.1
 **Requirements**: QUEUE-01, QUEUE-02, QUEUE-03, QUEUE-04, QUEUE-05, QUEUE-06, QUEUE-07, NOTIF-01, NOTIF-02, NOTIF-03, NOTIF-04, NOTIF-05
 **Success Criteria** (what must be TRUE):
   1. The main window lists all pending emails showing sender, subject, attachment count, and timestamp; the list updates live when files appear in `%TEMP%\go-mapi\` without requiring a window refresh
@@ -128,6 +136,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 6. Changesets Monorepo Scaffold | v2.1.0 | 3/3 | Complete | 2026-04-12 |
 | 7. Wails Shell + RAM Gate | v3.0 | 0/? | Not started | - |
 | 8. OAuth + Credentials | v3.0 | 2/5 | In Progress|  |
+| 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 0/? | Not started | - |
 | 9. Queue, Automode + Toasts | v3.0 | 0/? | Not started | - |
 | 10. Installer + Migration | v3.0 | 0/? | Not started | - |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
