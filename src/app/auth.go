@@ -415,6 +415,9 @@ func (a *App) SignIn() error {
 		logError("oauth sign-in failed: %v", err)
 		return err
 	}
+	// Flip tray to idle — sign-in clears the "sign in required" / expired state
+	// the tray has been carrying since bootstrap or a previous sign-out.
+	a.SetTrayIdle("watching for emails")
 	// Emit auth-changed so the Svelte frontend drops the welcome screen.
 	wruntime.EventsEmit(a.ctx, "auth-changed", AuthStatus{
 		Authenticated: true,
@@ -702,6 +705,9 @@ func (a *App) bootstrapAuth() {
 		// surface as signed-in with a warning log. First Gmail call will retry.
 		logError("oauth bootstrap: refresh deferred: %v", err)
 	}
+	// Tokens present and valid (or transient-error kept) — tray should show idle
+	// regardless of the async userinfo fetch outcome.
+	a.SetTrayIdle("watching for emails")
 	// Kick off async userinfo fetch (non-blocking — Status() already reflects auth).
 	go func() {
 		a.auth.refresh.Lock()

@@ -100,3 +100,11 @@ func (a *App) SetTrayError(msg string) {
 	systray.SetIcon(trayErrorIcon)
 	systray.SetTooltip("go-mapi — " + msg)
 }
+
+// SetTrayIdle restores the tray icon to the idle variant. Called after a
+// successful sign-in or a successful bootstrap so the tray reflects the
+// "all good, signed-in" state (must-have from Plan 04).
+func (a *App) SetTrayIdle(msg string) {
+	systray.SetIcon(trayIdleIcon)
+	systray.SetTooltip("go-mapi — " + msg)
+}
