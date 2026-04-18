@@ -11,11 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pkg/browser"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -196,11 +196,11 @@ func randomState() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// openBrowser launches the user's default browser via rundll32 (D-02, AUTH-02).
-// Start() is intentional — the browser is a separate detached process.
+// openBrowser launches the user's default browser via github.com/pkg/browser
+// (D-02, AUTH-02). This avoids passing the auth URL as a rundll32 positional
+// argument, removing a command-injection surface on Windows.
 func openBrowser(authURL string) error {
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", authURL)
-	return cmd.Start()
+	return browser.OpenURL(authURL)
 }
 
 // prepareLoopback binds a single-shot HTTP listener on 127.0.0.1:<ephemeral>,
