@@ -11,6 +11,13 @@
   --c-text: #1A1A1A;
   --c-text-muted: #616161;
   --c-border: #E5E5E5;
+  /* Phase 9 additions — .planning/phases/09-queue-automode-toasts/09-UI-SPEC.md */
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-btn-x: 12px;
+  --c-error-bg: #FEF0EE;       /* error-row tint — #C42B1C @ 6% on white */
+  --c-success-flash: #E6F4EA;   /* drafted-flash tint — Windows-safe green-50 */
+  --c-success-text: #188038;    /* drafted-flash label — Google green */
 }
 html, body, main { margin: 0; padding: 0; height: 100%; font-family: var(--font); color: var(--c-text); background: var(--c-surface); }
 main { padding: var(--space-md); font-size: 14px; line-height: 1.5; }

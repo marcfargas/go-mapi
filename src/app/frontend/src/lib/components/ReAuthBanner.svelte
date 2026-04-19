@@ -9,13 +9,13 @@
 
 <style>
   .banner {
-    background: #d93025; color: white;
+    background: var(--c-destructive); color: white;
     display: flex; align-items: center; justify-content: space-between;
     padding: 0.5rem 1rem; gap: 1rem;
   }
   .msg { font-weight: 500; }
   button {
-    background: white; color: #d93025; border: 0;
+    background: white; color: var(--c-destructive); border: 0;
     padding: 0.35rem 0.75rem; border-radius: 4px; font-weight: 600; cursor: pointer;
   }
 </style>
