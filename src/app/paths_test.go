@@ -6,6 +6,39 @@ import (
 	"testing"
 )
 
+// TestAppDataDir_EnvPrecedence — mirrors TestWatcherDir_EnvPrecedence shape.
+// Subtests cannot t.Parallel — they mutate process-wide env vars.
+func TestAppDataDir_EnvPrecedence(t *testing.T) {
+	t.Run("GOMAPI_APPDATA_DIR wins", func(t *testing.T) {
+		tmp := t.TempDir()
+		t.Setenv("GOMAPI_APPDATA_DIR", tmp)
+		t.Setenv("APPDATA", "C:\\Users\\other\\AppData\\Roaming")
+		got := appDataDir()
+		if got != tmp {
+			t.Errorf("GOMAPI_APPDATA_DIR should win: got %q, want %q", got, tmp)
+		}
+	})
+	t.Run("APPDATA used when override empty", func(t *testing.T) {
+		t.Setenv("GOMAPI_APPDATA_DIR", "")
+		t.Setenv("APPDATA", "C:\\Users\\test\\AppData\\Roaming")
+		got := appDataDir()
+		want := filepath.Join("C:\\Users\\test\\AppData\\Roaming", "go-mapi")
+		if got != want {
+			t.Errorf("APPDATA path: got %q, want %q", got, want)
+		}
+	})
+	t.Run("fallback when no env", func(t *testing.T) {
+		t.Setenv("GOMAPI_APPDATA_DIR", "")
+		t.Setenv("APPDATA", "")
+		got := appDataDir()
+		if got == "" {
+			t.Error("appDataDir() returned empty string with no env vars set")
+		}
+		// We don't assert the exact fallback path — os.UserConfigDir is
+		// platform-dependent; just ensure it's non-empty.
+	})
+}
+
 // TestWatcherDir_EnvPrecedence covers the override order in paths.go:
 //
 //	1. GOMAPI_WATCH_DIR  → used as-is (no "go-mapi" suffix)
