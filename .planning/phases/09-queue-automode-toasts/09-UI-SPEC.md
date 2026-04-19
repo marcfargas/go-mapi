@@ -1,10 +1,11 @@
 ---
 phase: 9
 slug: queue-automode-toasts
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-04-19
+reviewed_at: 2026-04-19
 ---
 
 # Phase 9 — UI Design Contract
