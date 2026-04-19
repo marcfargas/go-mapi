@@ -158,6 +158,12 @@ wails build -clean
 
 **Resume signal:** Reply `approved` if checks 1–5 pass. Describe any failing check with observed vs expected behavior.
 
+### Status (2026-04-19): DEFERRED
+
+Manual QA intentionally deferred per user decision during Phase 9 execution. See `.planning/todos/pending/2026-04-19-automate-tray-visual-qa-windows-sandbox.md` for the automation plan that will replace this manual checklist (Windows Sandbox + FlaUI / UI Automation). The checks above remain valid until that harness lands.
+
+Acceptance: code is approved as-written. Manual visual QA reclassified as outstanding UAT — will surface in `/gsd-progress` and `/gsd-audit-uat` until closed by the automation todo or a future manual pass.
+
 ## Known Stubs
 
 None. All behavior is fully implemented. The `tray-has-queue.ico` is a real asset, not a placeholder. `computeTrayVisual` is a complete pure function tested across all combinations.
