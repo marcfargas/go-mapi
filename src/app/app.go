@@ -117,13 +117,14 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		a.watcher = w
 		a.bridge.setSnapshotSource(a.watcher.Snapshot)
-		go func() {
-			if startErr := a.watcher.Start(); startErr != nil {
-				logError("watcher start: %v", startErr)
-				a.SetTrayError("watcher start failed")
-				wruntime.EventsEmit(a.ctx, "queue-error", startErr.Error())
-			}
-		}()
+		// Start synchronously so processExistingFiles completes before we seed
+		// knownIds below — prevents spurious arrival toasts for pre-existing
+		// emails on app restart (WR-02 / NOTIF-04).
+		if startErr := a.watcher.Start(); startErr != nil {
+			logError("watcher start: %v", startErr)
+			a.SetTrayError("watcher start failed")
+			wruntime.EventsEmit(a.ctx, "queue-error", startErr.Error())
+		}
 	}
 
 	// Bounded async drain — runs on shutdownCtx cancel (session end or normal shutdown).
