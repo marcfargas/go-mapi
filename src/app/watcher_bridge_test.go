@@ -218,3 +218,62 @@ func TestBridgeConcurrentCallsAndClose(t *testing.T) {
 	// Final close to drain any remaining goroutines.
 	b.Close()
 }
+
+// Test 8: TestAutomodeWakeCoalesces — same 1-slot semantic as the dispatcher.
+// Mirrors TestDispatcherCoalesces and enforces the same loose guarantee
+// ("at least one, at most N for a burst of N") on the automodeWake channel.
+// The automode goroutine consumes it identically to the dispatcher's pending channel.
+func TestAutomodeWakeCoalesces(t *testing.T) {
+	ctx := context.Background()
+	b := newWatcherBridgeWithEmitter(ctx, nil, noopEmitter)
+	defer b.Close()
+
+	const burst = 50
+	for i := 0; i < burst; i++ {
+		b.OnQueueChanged(nil)
+	}
+
+	// Drain all signals the bridge parked in automodeWake.
+	drained := 0
+	timeout := time.After(100 * time.Millisecond)
+drainLoop:
+	for {
+		select {
+		case <-b.AutomodeWake():
+			drained++
+		case <-timeout:
+			break drainLoop
+		}
+	}
+	if drained < 1 || drained > burst {
+		t.Errorf("automodeWake drains out of range [1, %d]: got %d", burst, drained)
+	}
+	// Coalesce canary: real-world runs should resolve to 1 drainable signal per burst.
+	// The 1-slot channel holds at most 1 at a time. Log (not fail) if more than expected.
+	if drained > 5 {
+		t.Logf("warning: more wake signals than expected — got %d for burst of %d", drained, burst)
+	}
+}
+
+// Test 9: TestOnQueueChangedFeedsBothChannels — a single OnQueueChanged call
+// populates both the pending channel (for the dispatcher) and the automodeWake
+// channel (for the automode goroutine).
+func TestOnQueueChangedFeedsBothChannels(t *testing.T) {
+	ctx := context.Background()
+	b := newWatcherBridgeWithEmitter(ctx, nil, noopEmitter)
+	defer b.Close()
+
+	b.OnQueueChanged(nil)
+
+	// automodeWake should have a signal waiting.
+	select {
+	case <-b.AutomodeWake():
+		// ok — automode channel received a signal
+	case <-time.After(100 * time.Millisecond):
+		t.Error("automodeWake did not receive a signal after OnQueueChanged")
+	}
+	// Note: pending is consumed by the dispatcher goroutine; verifying it here
+	// would race against the running dispatcher loop. Dispatcher channel behaviour
+	// is covered by TestDispatcherCoalesces. This test's sole assertion is that
+	// automodeWake received a signal.
+}
