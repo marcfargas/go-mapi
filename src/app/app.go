@@ -580,8 +580,13 @@ func (a *App) handleToastAction(args string) {
 		// on failure emitErrorToast already fired. Nothing more to do here.
 		a.showWindow()
 	case "dismiss":
+		// Dismiss is a silent background action (NOTIF-05): no showWindow call.
+		// On failure the row remains visible if the user opens the app; the error
+		// is not actionable from the notification itself, so we only log it.
 		if err := a.DismissEmail(id); err != nil {
 			logError("toast: DismissEmail %s: %v", safeIDPrefix(id), err)
+			// Intentionally not calling showWindow on dismiss failure —
+			// the row will be visible when the user opens the app.
 		}
 		// clearToastForEmail already called inside DismissEmail on success.
 	case "open":
