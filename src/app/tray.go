@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
 	"runtime"
 
 	"fyne.io/systray"
@@ -13,6 +14,52 @@ var trayIdleIcon []byte
 
 //go:embed assets/tray/tray-error.ico
 var trayErrorIcon []byte
+
+//go:embed assets/tray/tray-has-queue.ico
+var trayHasQueueIcon []byte
+
+// trayState captures every input that determines tray icon + tooltip. A pure
+// helper (computeTrayVisual) maps this to visuals; callers ONLY mutate state
+// and signal the tray goroutine — they never touch systray.* directly.
+//
+// Design: D-16 tray icon priority + D-17 tooltip format + T-9-10 Win32 HWND
+// affinity (systray.* must run on the tray goroutine that called systray.Run).
+type trayState struct {
+	Mode     string // "manual" | "auto-draft"
+	Paused   bool
+	SignedIn bool
+	ErrorMsg string // non-empty → error state overrides everything (D-16)
+	Count    int
+}
+
+// computeTrayVisual is a pure function — testable without a live systray.
+//
+// Priority per D-16: error > has-queue > idle.
+// Tooltip per D-17: "go-mapi — {segment} — N pending" (error overrides to "go-mapi — <msg>").
+//
+// Segment priority (highest first): error > paused > signed-out > mode.
+func computeTrayVisual(s trayState) (icon []byte, tooltip string) {
+	if s.ErrorMsg != "" {
+		return trayErrorIcon, "go-mapi — " + s.ErrorMsg
+	}
+	// D-17 segment selection: paused > signed-out > mode.
+	segment := "Manual"
+	switch {
+	case s.Paused:
+		segment = "Paused"
+	case !s.SignedIn:
+		segment = "Signed out"
+	case s.Mode == "auto-draft":
+		segment = "Auto-draft"
+	}
+	tooltip = fmt.Sprintf("go-mapi — %s — %d pending", segment, s.Count)
+	// D-16 icon selection: has-queue only when signed in AND count > 0.
+	// Paused/signed-out states remain on idle icon (tooltip carries the state).
+	if s.Count > 0 && s.SignedIn && !s.Paused {
+		return trayHasQueueIcon, tooltip
+	}
+	return trayIdleIcon, tooltip
+}
 
 // startTray launches the system tray on a dedicated OS thread.
 //
@@ -36,24 +83,40 @@ func (a *App) startTray() {
 }
 
 func (a *App) onTrayReady() {
-	systray.SetIcon(trayIdleIcon)
-	systray.SetTooltip("go-mapi — watching for emails")
+	// Initial visuals — start with signed-out idle state; refreshTrayVisual will
+	// reconcile once startup settles (auth bootstrap, settings load, watcher start).
+	icon, tip := computeTrayVisual(trayState{Mode: "manual", SignedIn: false, Count: 0})
+	systray.SetIcon(icon)
+	systray.SetTooltip(tip)
 
 	// Left-click toggles window visibility (D-06).
 	// fyne.io/systray v1.12.0 exposes SetOnTapped for left-click on Windows.
 	systray.SetOnTapped(a.toggleWindow)
 
 	mShow := systray.AddMenuItem("Show", "Open main window")
+	// Pause watching (D-14): suppresses toasts + halts automode; watcher keeps running.
+	// Session-only (D-15): label resets on restart. Placed between Show and Quit.
+	mPause := systray.AddMenuItem("Pause watching", "Silences toasts and auto-draft; queue still collecting")
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit", "Exit go-mapi")
 
-	logInfo("tray ready: menu items registered (Show, Quit)")
+	logInfo("tray ready: menu items registered (Show, Pause watching, Quit)")
 
 	go func() {
 		for {
 			select {
 			case <-mShow.ClickedCh:
 				a.showWindow()
+			case <-mPause.ClickedCh:
+				// Toggle pause state. Both paths emit pause-changed → signalTrayRefresh
+				// → refresh loop updates tooltip. Label flip here is view-only (T-7).
+				if a.isPaused() {
+					a.ResumeWatching()
+					mPause.SetTitle("Pause watching")
+				} else {
+					a.PauseWatching()
+					mPause.SetTitle("Resume watching")
+				}
 			case <-mQuit.ClickedCh:
 				// requestQuit sets intentionalQuit=true so beforeClose lets Wails
 				// terminate (instead of routing back through hide-to-tray). Plan 03
@@ -62,9 +125,36 @@ func (a *App) onTrayReady() {
 				logInfo("quit requested via tray menu")
 				a.requestQuit()
 				return
+			case <-a.trayRefreshCh:
+				// Signal from app goroutine — refresh icon + tooltip on this
+				// LockOSThread-ed goroutine (T-9-10: Win32 HWND affinity).
+				a.refreshTrayVisual()
+			case <-a.shutdownCtx.Done():
+				return
 			}
 		}
 	}()
+}
+
+// refreshTrayVisual reads current app state and updates systray icon + tooltip.
+//
+// MUST run only on the tray goroutine (triggered by trayRefreshCh receive in the
+// onTrayReady goroutine loop). Any other caller violates LockOSThread / Win32
+// HWND affinity — see T-9-10 in the plan threat model.
+func (a *App) refreshTrayVisual() {
+	state := trayState{
+		Mode:     a.getMode(),
+		Paused:   a.isPaused(),
+		SignedIn: a.auth != nil && a.auth.Status().Authenticated,
+		ErrorMsg: a.getLastError(),
+		Count:    0,
+	}
+	if a.watcher != nil {
+		state.Count = len(a.watcher.Snapshot())
+	}
+	icon, tip := computeTrayVisual(state)
+	systray.SetIcon(icon)
+	systray.SetTooltip(tip)
 }
 
 // toggleWindow shows the window if hidden, hides it if visible.
@@ -94,17 +184,20 @@ func (a *App) hideWindow() {
 	a.setVisible(false)
 }
 
-// SetTrayError swaps the tray icon to the error variant and updates the tooltip.
-// Called by Plan 03 (watcher startup failure) to signal a fatal pre-ready error.
+// SetTrayError signals a fatal error that overrides other tray state (D-16 priority 1).
+// Thread-safe — fans out via trayRefreshCh; actual systray update runs on the tray
+// goroutine via refreshTrayVisual (T-9-10 HWND affinity fix).
+//
+// Replaces the old direct systray.SetIcon/SetTooltip calls (which violated the
+// LockOSThread invariant when called from app goroutines).
 func (a *App) SetTrayError(msg string) {
-	systray.SetIcon(trayErrorIcon)
-	systray.SetTooltip("go-mapi — " + msg)
+	a.setLastError(msg)
 }
 
-// SetTrayIdle restores the tray icon to the idle variant. Called after a
-// successful sign-in or a successful bootstrap so the tray reflects the
-// "all good, signed-in" state (must-have from Plan 04).
-func (a *App) SetTrayIdle(msg string) {
-	systray.SetIcon(trayIdleIcon)
-	systray.SetTooltip("go-mapi — " + msg)
+// SetTrayIdle clears the error state. Icon + tooltip revert to computed values
+// based on mode/paused/signed-in/count. The `msg` argument is kept in the
+// signature to avoid breaking existing call sites; it is intentionally unused —
+// the tooltip is now fully computed by refreshTrayVisual via computeTrayVisual.
+func (a *App) SetTrayIdle(_ string) {
+	a.setLastError("")
 }
