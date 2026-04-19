@@ -50,6 +50,12 @@ Exceptions:
 - Row action buttons: minimum touch/click target height `32px` (desktop WebView2 — mouse-driven; 44px touch-target rule does not apply but 32px floor prevents misclicks)
 - Mode-toggle segments: minimum height `28px`, minimum width `72px` per segment
 - Error badge: `20px × 20px` circle (not on the 8-point scale — sized to fit `!` glyph at 11px)
+- Row action button horizontal padding: `--space-btn-x: 12px` (named token; 12px is grid-aligned but intentionally compact so buttons fit within the actions column without crowding the subject column; 16px would push sender/subject columns too narrow at typical window widths). Add to `styles.css` `:root`.
+
+**Add to `styles.css` `:root`:**
+```css
+--space-btn-x: 12px;
+```
 
 ---
 
@@ -65,6 +71,10 @@ All sizes are px; weights map to the CSS `font-weight` property.
 | Micro | 11px | 600 (semibold) | 1.0 | Error badge glyph (`!`), `✓ Drafted` flash label |
 
 **Only two weights in use: 400 and 600.**
+
+**Maximum four type sizes in use: 11px, 12px, 14px, 16px.** No intermediate sizes (e.g. 13px) are permitted — every text element must map to one of these four roles.
+
+Action buttons (`Create draft`, `Dismiss`) and mode-toggle segments use `14px` (Body role) at `font-weight: 600`. This matches body text size and ensures buttons are readable without adding a fifth size to the scale.
 
 Ellipsis truncation: subject column truncates with `overflow: hidden; text-overflow: ellipsis; white-space: nowrap` — already in `.queue-row .subject` in `styles.css`. Extend to the mode-toggle label if it ever wraps.
 
@@ -93,6 +103,8 @@ Existing tokens from `src/app/frontend/src/lib/styles.css`:
 Accent is reserved exclusively for the three elements listed above. Do not use `--c-accent` on text links, hover highlights, or secondary buttons.
 
 The `ReAuthBanner` currently hard-codes `#d93025` — Phase 9 should align it to `var(--c-destructive)` for consistency, but this is a one-line change, not a rework.
+
+**Primary focal point:** The queue list is the primary visual surface. Within it, the filled-accent `Create draft` button on each row is the primary interactive draw — its `--c-accent` fill makes it the strongest color signal in the window and directs the user's eye to the per-row action.
 
 ---
 
@@ -144,13 +156,13 @@ Columns match the existing `.queue-row` grid in `styles.css`. Add a fourth impli
 
 **"Create draft" button:**
 - Visual: filled, `background: var(--c-accent)`, `color: white`, `border: none`, `border-radius: 4px`
-- Size: `padding: 4px 12px`, min-height `28px`, `font-size: 13px`, `font-weight: 600`
+- Size: `padding: 4px var(--space-btn-x)`, min-height `28px`, `font-size: 14px`, `font-weight: 600`
 - States: default / hover (`filter: brightness(0.9)`) / disabled (`opacity: 0.5; cursor: not-allowed`)
 - Label: `Create draft` (default), `Creating…` (in-flight)
 
 **"Dismiss" button:**
 - Visual: ghost/outlined, `background: transparent`, `color: var(--c-destructive)`, `border: 1px solid var(--c-destructive)`, `border-radius: 4px`
-- Size: same as Create draft button
+- Size: same as Create draft button (`padding: 4px var(--space-btn-x)`, min-height `28px`, `font-size: 14px`, `font-weight: 600`)
 - States: default / hover (`background: var(--c-error-bg)`) / disabled (`opacity: 0.5; cursor: not-allowed`)
 - Label: `Dismiss` (never changes)
 - No confirmation dialog — single-click dismisses immediately. (Source: no destructive confirmation required per D-03; Dismiss is low-stakes — queue JSON just deleted from temp dir)
@@ -175,8 +187,8 @@ Columns match the existing `.queue-row` grid in `styles.css`. Add a fourth impli
 ```
 
 - Container: `display: inline-flex`, `border: 1px solid var(--c-border)`, `border-radius: 4px`, `overflow: hidden`
-- Active segment: `background: var(--c-accent)`, `color: white`, `font-weight: 600`, `font-size: 13px`
-- Inactive segment: `background: var(--c-surface-alt)`, `color: var(--c-text)`, `font-weight: 400`, `font-size: 13px`
+- Active segment: `background: var(--c-accent)`, `color: white`, `font-weight: 600`, `font-size: 14px`
+- Inactive segment: `background: var(--c-surface-alt)`, `color: var(--c-text)`, `font-weight: 400`, `font-size: 14px`
 - Each segment: `padding: 4px 16px`, min-height `28px`, min-width `72px`, `border: none`, `cursor: pointer`
 - Active segment hover: no change (already selected)
 - Inactive segment hover: `background: var(--c-border)`
@@ -245,6 +257,8 @@ Existing `.state.state--error` block. Copy confirmed below.
 | Tray menu — Pause item (unpaused state) | `Pause watching` | D-14; CONTEXT.md §Claude's Discretion pick |
 | Tray menu — Pause item tooltip / sub-label | `Silences toasts and auto-draft; queue still collecting` | D-14; CONTEXT.md §Claude's Discretion pick |
 | Tray menu — Pause item (paused state label) | `Resume watching` | D-14 natural inverse |
+
+**"Dismiss" single-word rationale:** The `Dismiss` button sits on a named queue row whose sender and subject are already visible; the noun (the email) is contextually present. Single-word `Dismiss` matches Windows Mail, Outlook, and Gmail's mobile conventions for inline inbox-row actions where the target object is obvious from position. Adding `email` ("Dismiss email") would be redundant and inconsistent with the `Create draft` label which also omits "email" as object.
 
 **Destructive actions in this phase:** The `Dismiss` action on a queue row permanently removes the email JSON from `%TEMP%\go-mapi\` without creating a draft. This is technically destructive (irreversible in the session). Decision: **no confirmation dialog** (D-03; the email is a MAPI event not a composed email; the user explicitly triggered the dismiss; the risk of accidental loss is low in manual mode). The button's outlined red appearance provides sufficient visual warning. In Auto-draft mode, `Dismiss` is equally available — same no-confirm rule.
 
@@ -366,6 +380,7 @@ Append to the `:root` block in `src/app/frontend/src/lib/styles.css`:
 /* Phase 9 additions */
 --space-xl: 32px;
 --space-2xl: 48px;
+--space-btn-x: 12px;
 --c-error-bg: #FEF0EE;
 --c-success-flash: #E6F4EA;
 --c-success-text: #188038;
@@ -415,6 +430,10 @@ No third-party component registries are used in this phase. All components are h
 | Error badge size 20×20 | Claude's default (fits `!` at 11px comfortably) |
 | ICO dual-frame 16×16 + 32×32 | CONTEXT.md §Claude's Discretion |
 | `tray-has-queue.ico` amber dot #E8A600 | Claude's Discretion (Windows amber, distinct from error red) |
+| Button/toggle font-size 14px (Body role) | Checker revision — replaced 13px to stay within 4-size typography cap |
+| `--space-btn-x: 12px` named token | Checker revision — promotes unlisted 12px button padding to named spacing exception |
+| "Dismiss" single-word rationale | Checker revision — inline copy note added to Copywriting section |
+| Primary focal point statement | Checker revision — added to Color section |
 
 ---
 
