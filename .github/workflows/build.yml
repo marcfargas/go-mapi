@@ -84,9 +84,12 @@ jobs:
         run: go vet ./internal/mapi/... ./src/app/...
 
       - name: go test -race with coverage (internal/mapi)
+        # shell: bash — pwsh mis-splits `-coverprofile=x.out` at the `.`, passing `.out` as a package arg
+        shell: bash
         run: go test -race -coverprofile=coverage-internal-mapi.out -v ./internal/mapi/...
 
       - name: go test -race with coverage (src/app)
+        shell: bash
         run: go test -race -coverprofile=coverage-src-app.out -v ./src/app/...
 
       - name: Upload Go coverage (internal/mapi)
