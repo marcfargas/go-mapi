@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { EventsOn } from '../wailsjs/runtime/runtime';
+  import { CreateDraftForID, DismissEmail } from '../wailsjs/go/main/App';
   import { subscribeQueue, fetchQueue, type EmailWithId } from './lib/queue';
   import {
     fetchAuthStatus,
@@ -11,39 +12,91 @@
     markPreAuthExplainerSeen,
     type AuthStatus,
   } from './lib/auth';
+  import {
+    fetchSettings,
+    setMode as persistMode,
+    getPausedState,
+    subscribeAutoDraftResult,
+    subscribePauseChanged,
+    type Mode,
+    type ErrorCategory,
+    type AutoDraftResult,
+  } from './lib/settings';
   import SignInScreen from './lib/components/SignInScreen.svelte';
   import PreAuthModal from './lib/components/PreAuthModal.svelte';
   import ReAuthBanner from './lib/components/ReAuthBanner.svelte';
   import SignedInHeader from './lib/components/SignedInHeader.svelte';
+  import QueueRow from './lib/components/QueueRow.svelte';
   import './lib/styles.css';
 
+  // Existing state
   let queue = $state<EmailWithId[]>([]);
   let errorMsg = $state<string | null>(null);
   let auth = $state<AuthStatus>({ authenticated: false });
   let showPreAuthModal = $state(false);
   let showReAuthBanner = $state(false);
-  let wasAuthenticated = false; // tracks previous state to trigger banner on transition
+  let wasAuthenticated = false;
 
-  let unsubQueue: (() => void) | null = null;
-  let unsubQueueError: (() => void) | null = null;
-  let unsubAuth: (() => void) | null = null;
+  // Phase 9 state
+  let mode = $state<Mode>('manual');
+  let paused = $state(false);
+  let autoDraftErrors = $state(new Map<string, ErrorCategory>());
+  let flashingIds = $state(new Set<string>());
+  let inflightIds = $state(new Set<string>());
+
+  // Collect all unsub functions for cleanup
+  const unsubs: Array<() => void> = [];
 
   onMount(async () => {
     // Fetch initial state in parallel.
-    const [initialAuth, initialQueue] = await Promise.all([
+    const [initialAuth, initialQueue, initialSettings, initialPaused] = await Promise.all([
       fetchAuthStatus(),
       fetchQueue().catch((e) => { errorMsg = (e as Error).message; return []; }),
+      fetchSettings().catch(() => ({ mode: 'manual' as Mode })),
+      getPausedState().catch(() => false),
     ]);
-    auth = initialAuth;
+
+    auth = initialAuth as AuthStatus;
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
+    mode = ((initialSettings as { mode: string }).mode === 'auto-draft' ? 'auto-draft' : 'manual');
+    paused = initialPaused as boolean;
 
-    unsubQueue = subscribeQueue(
-      (next) => { queue = next; },
+    // Subscribe to queue updates — prune stale state entries on each update.
+    unsubs.push(subscribeQueue(
+      (next) => {
+        queue = next;
+        // Reassign Maps/Sets to guarantee Svelte 5 detects the change when pruning.
+        const ids = new Set(next.map((e) => e.id));
+        const nextErrors = new Map(autoDraftErrors);
+        let errChanged = false;
+        for (const id of nextErrors.keys()) {
+          if (!ids.has(id)) { nextErrors.delete(id); errChanged = true; }
+        }
+        if (errChanged) autoDraftErrors = nextErrors;
+
+        const nextFlashing = new Set(flashingIds);
+        let flashChanged = false;
+        for (const id of nextFlashing) {
+          if (!ids.has(id)) { nextFlashing.delete(id); flashChanged = true; }
+        }
+        if (flashChanged) flashingIds = nextFlashing;
+
+        const nextInflight = new Set(inflightIds);
+        let inflightChanged = false;
+        for (const id of nextInflight) {
+          if (!ids.has(id)) { nextInflight.delete(id); inflightChanged = true; }
+        }
+        if (inflightChanged) inflightIds = nextInflight;
+      },
       (e) => { errorMsg = (e as Error)?.message ?? 'queue fetch failed'; },
-    );
-    unsubQueueError = EventsOn('queue-error', (msg: string) => { errorMsg = msg; });
-    unsubAuth = subscribeAuth((s) => {
+    ));
+
+    // Queue error events from Go
+    unsubs.push(EventsOn('queue-error', (msg: string) => { errorMsg = msg; }));
+
+    // Auth state changes — trigger re-auth banner on sign-out.
+    unsubs.push(subscribeAuth((s) => {
       const becameSignedOut = wasAuthenticated && !s.authenticated;
       auth = s;
       if (becameSignedOut) {
@@ -52,15 +105,78 @@
         showReAuthBanner = false;
       }
       wasAuthenticated = s.authenticated;
-    });
+    }));
+
+    // Auto-draft result (fires for both manual CreateDraftForID and automode).
+    unsubs.push(subscribeAutoDraftResult((r: AutoDraftResult) => {
+      // Reassign to guarantee Svelte 5 fine-grained reactivity detects the change.
+      inflightIds = new Set([...inflightIds].filter((id) => id !== r.emailId));
+      if (r.success) {
+        const next = new Map(autoDraftErrors);
+        next.delete(r.emailId);
+        autoDraftErrors = next;
+        // D-04: only flash in-window when visible + focused; Go fires toast when hidden.
+        if (isWindowVisibleAndFocused()) {
+          flashingIds = new Set([...flashingIds, r.emailId]);
+          setTimeout(() => {
+            flashingIds = new Set([...flashingIds].filter((id) => id !== r.emailId));
+          }, 1600);
+        }
+      } else if (r.errorCategory) {
+        const next = new Map(autoDraftErrors);
+        next.set(r.emailId, r.errorCategory);
+        autoDraftErrors = next;
+      }
+    }));
+
+    // Pause state changes from Go (tray menu or PauseWatching/ResumeWatching calls).
+    unsubs.push(subscribePauseChanged((p: boolean) => { paused = p; }));
   });
 
   onDestroy(() => {
-    unsubQueue?.();
-    unsubQueueError?.();
-    unsubAuth?.();
+    for (const u of unsubs) u();
   });
 
+  /** D-04: visible + focused proxy using web platform APIs supported by WebView2. */
+  function isWindowVisibleAndFocused(): boolean {
+    return document.visibilityState === 'visible' && document.hasFocus();
+  }
+
+  /** Compute per-row UI state from the three tracking sets/maps. */
+  function rowStateFor(id: string): 'idle' | 'in-flight' | 'drafted-flash' | 'error' {
+    if (flashingIds.has(id)) return 'drafted-flash';
+    if (inflightIds.has(id)) return 'in-flight';
+    if (autoDraftErrors.has(id)) return 'error';
+    return 'idle';
+  }
+
+  /** Manual draft: put row in-flight, call binding; auto-draft-result event resolves state. */
+  async function handleCreateDraft(id: string) {
+    inflightIds = new Set([...inflightIds, id]);
+    try {
+      await CreateDraftForID(id);
+      // auto-draft-result event will handle success/failure state update.
+    } catch {
+      // Binding threw (network/IPC error) — clear in-flight, show generic gmail error.
+      inflightIds = new Set([...inflightIds].filter((x) => x !== id));
+      const next = new Map(autoDraftErrors);
+      next.set(id, 'gmail');
+      autoDraftErrors = next;
+    }
+  }
+
+  /** Dismiss: call binding; queue-update handles row removal. */
+  async function handleDismiss(id: string) {
+    try { await DismissEmail(id); } catch { /* ignore dismiss errors */ }
+  }
+
+  /** Mode toggle: persist then update local state. */
+  async function handleModeChange(next: Mode) {
+    await persistMode(next);
+    mode = next;
+  }
+
+  // Auth flow handlers — unchanged from Phase 8.
   async function handleSignInClick() {
     if (!hasSeenPreAuthExplainer()) {
       showPreAuthModal = true;
@@ -80,21 +196,12 @@
   }
 
   async function handleReAuthClick() {
-    // D-06: re-auth skips the pre-auth modal (user has already seen it).
     showReAuthBanner = false;
     await signIn();
   }
 
   async function handleSignOutClick() {
     await signOut();
-  }
-
-  function formatTimestamp(iso: string): string {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
 </script>
 
@@ -107,6 +214,8 @@
     email={auth.email ?? ''}
     name={auth.name ?? ''}
     onSignOut={handleSignOutClick}
+    {mode}
+    onModeChange={handleModeChange}
   />
 {/if}
 
@@ -124,13 +233,16 @@
       <p>When a Windows app sends to mail, it will appear here.</p>
     </section>
   {:else}
-    <ul class="queue">
+    <ul class="queue" aria-live="polite">
       {#each queue as item (item.id)}
-        <li class="queue-row" tabindex="0">
-          <span class="sender">{item.message?.from?.address ?? '(unknown sender)'}</span>
-          <span class="subject">{item.message?.subject ?? '(no subject)'}</span>
-          <span class="meta">{item.message ? formatTimestamp(item.message.timestamp) : ''}</span>
-        </li>
+        <QueueRow
+          {item}
+          state={rowStateFor(item.id)}
+          authenticated={auth.authenticated}
+          errorCategory={autoDraftErrors.get(item.id)}
+          onCreateDraft={handleCreateDraft}
+          onDismiss={handleDismiss}
+        />
       {/each}
     </ul>
   {/if}
