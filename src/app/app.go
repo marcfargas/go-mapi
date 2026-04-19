@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,6 +142,13 @@ func (a *App) startup(ctx context.Context) {
 	// (line 47) because SetTrayError is called from bootstrapAuth.
 	a.bootstrapAuth()
 
+	// Phase 9: initialize toast notification stack (Windows only; no-op on other platforms).
+	// Must run after bootstrapAuth so initToasts can reference ctx. Errors are non-fatal —
+	// toasts are best-effort; the app functions without them.
+	if err := initToasts(a); err != nil {
+		logError("toast: init failed: %v", err)
+	}
+
 	// Phase 9: load persisted settings (mode field, D-13).
 	a.settingsMu.Lock()
 	a.settings = loadSettings()
@@ -154,6 +162,14 @@ func (a *App) startup(ctx context.Context) {
 		a.automode.start()
 		logInfo("automode started")
 
+		// knownIds seeds to the current queue at startup to prevent stale emails
+		// from triggering arrival toasts (NOTIF-04: no spam on app restart).
+		initialSnap := a.watcher.Snapshot()
+		knownIds := make(map[string]struct{}, len(initialSnap))
+		for _, e := range initialSnap {
+			knownIds[e.Id] = struct{}{}
+		}
+
 		a.bridge.SetAfterDispatch(func() {
 			if a.watcher == nil {
 				return
@@ -162,6 +178,22 @@ func (a *App) startup(ctx context.Context) {
 			currentIds := make(map[string]struct{}, len(snap))
 			for _, e := range snap {
 				currentIds[e.Id] = struct{}{}
+			}
+			// Detect newly arrived emails (present now but not in knownIds) and
+			// fire arrival toasts. Only emails that arrive while the app is running
+			// get toasts — seeded IDs are silently absorbed (NOTIF-04).
+			for _, e := range snap {
+				if _, seen := knownIds[e.Id]; !seen {
+					emitArrivalToast(a, e)
+					knownIds[e.Id] = struct{}{}
+				}
+			}
+			// Prune knownIds for emails that left the queue (drafted / dismissed)
+			// to avoid unbounded memory growth in long-running sessions.
+			for id := range knownIds {
+				if _, ok := currentIds[id]; !ok {
+					delete(knownIds, id)
+				}
 			}
 			a.pruneBacklogSkip(currentIds)
 			// Signal tray to refresh icon + tooltip (queue count may have changed).
@@ -445,11 +477,20 @@ func (a *App) CreateDraftForID(id string) error {
 				"errorCategory": category,
 			})
 		}
+		// Error toast fires regardless of window state (D-11: errors always surface).
+		emitErrorToast(a, category, id)
 		return callErr
 	}
 	if err := a.watcher.MarkProcessed(id); err != nil {
 		logError("CreateDraftForID: MarkProcessed %s: %v", safeIDPrefix(id), err)
 	}
+	// Draft-success toast: only when window is hidden (D-11). Subject is safe to
+	// include per UI-SPEC; privacy is preserved (no body text, no recipient email).
+	if target.Message != nil {
+		emitDraftSuccessToast(a, target.Message.Subject, id)
+	}
+	// Clear the arrival + error toasts for this email from Action Center (NOTIF-05).
+	clearToastForEmail(id)
 	if a.ctx != nil {
 		wruntime.EventsEmit(a.ctx, "auto-draft-result", map[string]any{
 			"emailId": id,
@@ -473,6 +514,8 @@ func (a *App) DismissEmail(id string) error {
 	if err := a.watcher.Delete(id); err != nil {
 		return fmt.Errorf("dismiss %s: %w", safeIDPrefix(id), err)
 	}
+	// Clear arrival + error toasts for this email from Action Center (NOTIF-05).
+	clearToastForEmail(id)
 	return nil
 }
 
@@ -511,3 +554,39 @@ func (a *App) ResumeWatching() { a.SetPaused(false) }
 
 // GetPausedState returns the current session pause state.
 func (a *App) GetPausedState() bool { return a.isPaused() }
+
+// handleToastAction dispatches a toast click or button tap to the appropriate
+// App binding. Called from the COM activation callback (initToasts) on a
+// goroutine — safe to call Wails bindings from here.
+//
+// args format: URL query string, e.g. "action=open&emailId=<id>"
+// Recognised actions: "create-draft", "dismiss", "open" (default: open).
+func (a *App) handleToastAction(args string) {
+	q, err := url.ParseQuery(args)
+	if err != nil {
+		logError("toast: bad activation args: %s", safeIDPrefix(args))
+		a.showWindow()
+		return
+	}
+	op := q.Get("action")
+	id := q.Get("emailId")
+	switch op {
+	case "create-draft":
+		if err := a.CreateDraftForID(id); err != nil {
+			logError("toast: CreateDraftForID %s: %v", safeIDPrefix(id), err)
+		}
+		// clearToastForEmail already called inside CreateDraftForID on success;
+		// on failure emitErrorToast already fired. Nothing more to do here.
+		a.showWindow()
+	case "dismiss":
+		if err := a.DismissEmail(id); err != nil {
+			logError("toast: DismissEmail %s: %v", safeIDPrefix(id), err)
+		}
+		// clearToastForEmail already called inside DismissEmail on success.
+	case "open":
+		a.showWindow()
+	default:
+		logError("toast: unknown action %q", op)
+		a.showWindow()
+	}
+}
