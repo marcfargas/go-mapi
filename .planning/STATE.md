@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: executing
-stopped_at: Phase 08.1 executing (9 plans, 7 waves)
-last_updated: "2026-04-18T20:30:00.000Z"
-last_activity: 2026-04-18 -- Phase 08.1 execution started
+status: ready
+stopped_at: Phase 08.1 complete — ready for Phase 09
+last_updated: "2026-04-19T00:30:00.000Z"
+last_activity: 2026-04-19 -- Phase 08.1 verified passed (7/7 must-haves)
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 27
-  completed_plans: 9
-  percent: 33
+  completed_plans: 18
+  percent: 67
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 8.1 — Post-pivot cleanup and test coverage review (INSERTED, next)
+**Current focus:** Phase 9 — Queue, Automode + Toasts (next)
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 08.1 (post-pivot-cleanup-and-test-coverage-review) — EXECUTING
-Plan: 0 of 9
-Status: Executing (7 waves)
-Last activity: 2026-04-18 -- Phase 08.1 execution started
+Phase: 08.1 (post-pivot-cleanup-and-test-coverage-review) — COMPLETE
+Plan: 9 of 9
+Status: Ready (next phase: 09 queue/automode/toasts)
+Last activity: 2026-04-19 -- Phase 08.1 verified passed (7/7 must-haves)
 
-Progress: [████████░░] 40% (2/5 phases complete — 7, 8; 8.1 in progress)
+Progress: [████████████████░░] 60% (3/5 phases complete — 7, 8, 8.1)
 
 ## Performance Metrics
 
@@ -61,10 +61,16 @@ Recent decisions carried into v3.0:
 - [Phase 08]: Dev dotfiles at repo root: .env.local / .env.local.example live at C:\dev\go-mapi root, not under src/app/ (visibility preference)
 - [Phase 08]: Build-tag split pattern required for wails build compatibility: any fatal startup guard in main.go must be extracted to a !bindings-tagged file so wailsbindings.exe can introspect types without triggering os.Exit
 - [Phase 08]: D-11/D-12 realised: zalando/go-keyring v0.2.8 wired for Windows Credential Manager; keyring.ErrNotFound on Get/Delete is signed-out state (not error); service=go-mapi user=oauth-tokens
+- [Phase 8.1]: KeyringStore interface seam in src/app/auth.go for cross-platform unit tests (fakeKeyringStore for non-Windows; realKeyringStore wraps zalando/go-keyring on Windows)
+- [Phase 8.1]: Root npm workspaces empirically confirmed as ["src/app", "src/app/frontend"] — npm workspaces is flat, frontend sub-workspace cannot be auto-discovered from src/app/package.json
+- [Phase 8.1]: Vitest + @testing-library/svelte 5 requires svelteTesting() Vite plugin (not documented in PATTERNS but mandated by the library's README for runes mount() to pick the browser entry)
+- [Phase 8.1]: CI convention — build-wails-app job on windows-latest, CGO_ENABLED=1, Go 1.25, per-PR -race + coverage for internal/mapi and src/app, svelte-check + Vitest blocking, wails build sanity
+- [Phase 8.1]: Test hygiene debts carried forward (recorded in 08.1-REVIEW.md): WR-01 TestAuthCodeURLHasPKCE t.Parallel + package-var mutation pattern; WR-02 bootstrap-auth tests leak a goroutine to the real Google userinfo endpoint — both to fix in Phase 9 test pass
 
 ### Roadmap Evolution
 
 - Phase 8.1 inserted after Phase 8 (2026-04-18): Post-pivot cleanup and test coverage review (URGENT) — purge v2.x native-host + browser-extension leftovers and shore up Wails codebase test coverage before Phase 9 feature work resumes
+- Phase 8.1 completed 2026-04-19 (7/7 must-haves; 9 plans / 7 waves; 2 warnings routed as non-blocking test-hygiene follow-ups for Phase 9)
 
 ### Pending Todos
 
@@ -82,6 +88,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-18T16:46:10.454Z
-Stopped at: Phase 08.1 context gathered
-Resume: run `/gsd-discuss-phase 8.1` to start the inserted cleanup/coverage phase before Phase 09
+Last session: 2026-04-19T00:30:00.000Z
+Stopped at: Phase 08.1 complete (7/7 verified, REVIEW + VERIFICATION committed)
+Resume: run `/gsd-discuss-phase 9` to start queue/automode/toasts phase, or `/gsd-plan-phase 9` to skip discuss

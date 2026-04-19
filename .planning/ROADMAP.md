@@ -80,7 +80,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] 08-04-PLAN.md — Token refresh + invalid_grant classification + SignOut + OnStartup wiring (AUTH-03, AUTH-04, AUTH-05, AUTH-07, QUAL-03)
 - [x] 08-05-PLAN.md — Frontend: welcome screen + pre-auth modal + re-auth banner + signed-in header (AUTH-01, AUTH-02, AUTH-05, AUTH-07)
 
-### Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)
+### Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED) — ✓ COMPLETE 2026-04-19
 **Goal**: The repository contains no residue of the v2.x native-host + browser-extension architecture, and every component of the Wails desktop app has test coverage appropriate to its risk — so Phase 9 feature work starts from a clean, coherent, well-tested baseline
 **Depends on**: Phase 8
 **Requirements**: QUAL-03 (carry-forward via D-05), QUAL-04 (closed by per-PR `-race` gate via D-07)

@@ -70,7 +70,7 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 - [ ] **QUAL-01**: Per-instance RAM measured under RDS-like load (5–10 concurrent sessions on Windows Server) before Phase 2 begins; target ≤ 80 MB idle; original aspiration ≤ 30 MB noted as stretch goal
 - [ ] **QUAL-02**: Wails app runs without Chrome or Edge browsers installed (only WebView2 runtime required)
 - [x] **QUAL-03**: No telemetry, no content retention, no network calls outside Gmail API and GitHub Releases update check
-- [ ] **QUAL-04**: `go test -race ./...` green on the Wails app Go code (carries forward the v2.0 race-safety posture)
+- [x] **QUAL-04**: `go test -race ./...` green on the Wails app Go code (carries forward the v2.0 race-safety posture) — closed Phase 8.1 via per-PR -race gate in build-wails-app (D-07)
 
 ## Future Requirements (post-v3.0)
 
@@ -154,7 +154,7 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | QUAL-01 | Phase 7 | Pending |
 | QUAL-02 | Phase 7 | Pending |
 | QUAL-03 | Phase 8 | Complete |
-| QUAL-04 | Phase 7 | Pending |
+| QUAL-04 | Phase 8.1 | Complete |
 
 **Coverage:**
 - v3.0 requirements: 44 total (note: original count of 43 was off by one — all categories re-counted from requirements text)
