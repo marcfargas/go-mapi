@@ -178,7 +178,9 @@ func TestGenerateVerifierLength(t *testing.T) {
 }
 
 func TestAuthCodeURLHasPKCE(t *testing.T) {
-	t.Parallel()
+	// NOTE: NOT t.Parallel — mutates oauthClientID/oauthClientSecret package
+	// vars which are ldflags-injected globals. See STATE.md WR-01. Matches
+	// paths_test.go line 16 precedent for env-mutating tests.
 	// Populate ldflags vars for the test — normally empty in source tree.
 	oauthClientID = "test-client.apps.googleusercontent.com"
 	oauthClientSecret = "test-secret"
@@ -605,6 +607,16 @@ func TestBootstrapAuthSignedOutPath(t *testing.T) {
 }
 
 func TestBootstrapAuthSignedInPath(t *testing.T) {
+	// WR-02 fix: stub userinfo endpoint so the async goroutine does not escape
+	// to the real Google endpoint under -race. Wait on the returned channel for
+	// deterministic completion instead of relying on process-exit timing.
+	userinfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"email":"test@example.com","name":"Test"}`))
+	}))
+	defer userinfoSrv.Close()
+	userinfoEndpointOverride = userinfoSrv.URL
+	t.Cleanup(func() { userinfoEndpointOverride = "" })
+
 	// Seed a fake keyring with a valid token payload and share it with the App.
 	store := newFakeKeyringStore()
 	seed := NewAuthManagerWithStore(store)
@@ -620,7 +632,12 @@ func TestBootstrapAuthSignedInPath(t *testing.T) {
 
 	app := NewApp()
 	app.auth = NewAuthManagerWithStore(store)
-	app.bootstrapAuth()
+	select {
+	case <-app.bootstrapAuth(): // deterministic wait — WR-02 fix
+		// ok
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrapAuth did not complete within 2s")
+	}
 	if !app.auth.Status().Authenticated {
 		t.Fatal("expected authenticated after bootstrap with valid keyring entry")
 	}
@@ -816,6 +833,16 @@ func TestBootstrapAuth_TransientErrorKeepsTokens(t *testing.T) {
 	tokenEndpointOverride = srv.URL
 	t.Cleanup(func() { tokenEndpointOverride = "" })
 
+	// WR-02 fix: stub userinfo endpoint so the async goroutine (spawned on the
+	// transient-error path — tokens retained → signed-in → userinfo fetch fires)
+	// does not escape to real Google endpoints under -race.
+	userinfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"email":"test@example.com","name":"Test"}`))
+	}))
+	defer userinfoSrv.Close()
+	userinfoEndpointOverride = userinfoSrv.URL
+	t.Cleanup(func() { userinfoEndpointOverride = "" })
+
 	store := newFakeKeyringStore()
 	// Seed the fake keyring with tokens that are about to expire so bootstrap
 	// triggers a refresh attempt (which 503s — transient).
@@ -832,7 +859,12 @@ func TestBootstrapAuth_TransientErrorKeepsTokens(t *testing.T) {
 
 	app := NewApp()
 	app.auth = NewAuthManagerWithStore(store)
-	app.bootstrapAuth()
+	select {
+	case <-app.bootstrapAuth(): // deterministic wait — WR-02 fix
+		// ok
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrapAuth did not complete within 2s")
+	}
 	if app.auth.tokens == nil {
 		t.Fatal("expected tokens retained on transient refresh error")
 	}
