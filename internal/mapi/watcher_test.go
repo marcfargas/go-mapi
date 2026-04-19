@@ -435,6 +435,10 @@ func TestEmailWatcher_GetEmails_Empty_Mapi(t *testing.T) {
 	}
 }
 
+// TestEmailWatcher_MarkProcessed_NotFound_Mapi verifies that MarkProcessed
+// on an unknown id returns nil (idempotent — changed in Phase 9 Plan 03).
+// Previously this tested for an error; the behaviour was made idempotent to
+// support toast activation + automode double-signal tolerance (RESEARCH §7).
 func TestEmailWatcher_MarkProcessed_NotFound_Mapi(t *testing.T) {
 	tmpDir := t.TempDir()
 	watchDir := filepath.Join(tmpDir, "watch")
@@ -447,11 +451,13 @@ func TestEmailWatcher_MarkProcessed_NotFound_Mapi(t *testing.T) {
 	defer ew.Stop()
 
 	err = ew.MarkProcessed("nonexistent-id")
-	if err == nil {
-		t.Error("MarkProcessed() expected error for nonexistent ID")
+	if err != nil {
+		t.Errorf("MarkProcessed() should return nil for unknown id (idempotent), got: %v", err)
 	}
 }
 
+// TestEmailWatcher_Delete_NotFound_Mapi verifies that Delete on an unknown id
+// returns nil (idempotent — changed in Phase 9 Plan 03).
 func TestEmailWatcher_Delete_NotFound_Mapi(t *testing.T) {
 	tmpDir := t.TempDir()
 	watchDir := filepath.Join(tmpDir, "watch")
@@ -464,8 +470,113 @@ func TestEmailWatcher_Delete_NotFound_Mapi(t *testing.T) {
 	defer ew.Stop()
 
 	err = ew.Delete("nonexistent-id")
-	if err == nil {
-		t.Error("Delete() expected error for nonexistent ID")
+	if err != nil {
+		t.Errorf("Delete() should return nil for unknown id (idempotent), got: %v", err)
+	}
+}
+
+// TestMarkProcessedIdempotent: process an email, MarkProcessed it (removes the
+// file), MarkProcessed again with same id — second call must return nil.
+func TestMarkProcessedIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	data := makeValidEmail(t, "Idempotent Test", "2024-01-01T00:00:00Z")
+	filePath := filepath.Join(watchDir, "idempotent.json")
+	writeFile(t, filePath, data)
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	// Wait for the email to be registered in the watcher.
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	// First MarkProcessed: removes the file and cleans up state.
+	if err := ew.MarkProcessed(id); err != nil {
+		t.Fatalf("first MarkProcessed(%q) error = %v", id, err)
+	}
+
+	// File must be gone.
+	if _, statErr := os.Stat(filePath); !os.IsNotExist(statErr) {
+		t.Error("file still exists after MarkProcessed — expected removal")
+	}
+
+	// Second MarkProcessed with the same id — must return nil (idempotent).
+	if err := ew.MarkProcessed(id); err != nil {
+		t.Errorf("second MarkProcessed(%q) should return nil (idempotent), got: %v", id, err)
+	}
+}
+
+// TestDeleteIdempotent: delete an email, Delete it again with same id — second
+// call must return nil.
+func TestDeleteIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	data := makeValidEmail(t, "Delete Idempotent Test", "2024-01-02T00:00:00Z")
+	filePath := filepath.Join(watchDir, "delete-idempotent.json")
+	writeFile(t, filePath, data)
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	// First Delete: removes the file.
+	if err := ew.Delete(id); err != nil {
+		t.Fatalf("first Delete(%q) error = %v", id, err)
+	}
+
+	// File must be gone.
+	if _, statErr := os.Stat(filePath); !os.IsNotExist(statErr) {
+		t.Error("file still exists after Delete — expected removal")
+	}
+
+	// Second Delete with the same id — must return nil (idempotent).
+	if err := ew.Delete(id); err != nil {
+		t.Errorf("second Delete(%q) should return nil (idempotent), got: %v", id, err)
+	}
+}
+
+// TestMarkProcessedUnknownIdReturnsNil: call MarkProcessed with a never-seen id
+// on an empty watcher — must return nil.
+func TestMarkProcessedUnknownIdReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	defer ew.Stop()
+
+	if err := ew.MarkProcessed("bogus-id-12345"); err != nil {
+		t.Errorf("MarkProcessed(bogus-id) should return nil, got: %v", err)
 	}
 }
 

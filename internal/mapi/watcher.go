@@ -134,7 +134,13 @@ func (ew *EmailWatcher) GetEmails() map[string]*MailMessage {
 	return result
 }
 
-// MarkProcessed deletes a processed email file (privacy-first: no retention)
+// MarkProcessed deletes the email's JSON file from watchDir. Idempotent:
+// calling with an unknown id (already-processed, never-existed, or raced with
+// a concurrent Delete) returns nil. Caller does not need to pre-check.
+//
+// Privacy-first: no retention — the file is removed immediately on success.
+// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
+// depend on this; see 09-RESEARCH.md §7 for the full rationale.
 func (ew *EmailWatcher) MarkProcessed(id string) error {
 	ew.mu.Lock()
 	defer ew.mu.Unlock()
@@ -147,7 +153,10 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 		}
 	}
 	if filename == "" {
-		return fmt.Errorf("email not found: %s", id)
+		// Idempotent: unknown id → already-processed (or never-existed) → success.
+		// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
+		// depend on this; see 09-RESEARCH.md §7 for the full rationale.
+		return nil
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
@@ -160,7 +169,13 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 	return nil
 }
 
-// Delete removes an email file
+// Delete removes an email file from the queue without creating a draft. Idempotent:
+// calling with an unknown id (already-deleted, never-existed, or raced with
+// a concurrent MarkProcessed) returns nil. Caller does not need to pre-check.
+//
+// Privacy-first: no retention — the file is removed immediately on success.
+// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
+// depend on this; see 09-RESEARCH.md §7 for the full rationale.
 func (ew *EmailWatcher) Delete(id string) error {
 	ew.mu.Lock()
 	defer ew.mu.Unlock()
@@ -173,7 +188,10 @@ func (ew *EmailWatcher) Delete(id string) error {
 		}
 	}
 	if filename == "" {
-		return fmt.Errorf("email not found: %s", id)
+		// Idempotent: unknown id → already-deleted (or never-existed) → success.
+		// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
+		// depend on this; see 09-RESEARCH.md §7 for the full rationale.
+		return nil
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
