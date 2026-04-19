@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: "Ready (next phase: 09 queue/automode/toasts)"
-stopped_at: Phase 9 UI-SPEC approved
-last_updated: "2026-04-19T11:06:02.065Z"
-last_activity: 2026-04-19 -- Phase 08.1 verified passed (7/7 must-haves)
+status: "Ready to execute Phase 9 (9 plans, 6 waves)"
+stopped_at: Phase 9 planned — plan-checker PASSED
+last_updated: "2026-04-19T12:00:00.000Z"
+last_activity: 2026-04-19 -- Phase 9 planned (9 plans, 6 waves; plan-checker PASSED)
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 18
+  total_plans: 27
   completed_plans: 18
-  percent: 100
+  percent: 67
 ---
 
 # Project State
@@ -26,10 +26,10 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 08.1 (post-pivot-cleanup-and-test-coverage-review) — COMPLETE
-Plan: 9 of 9
-Status: Ready (next phase: 09 queue/automode/toasts)
-Last activity: 2026-04-19 -- Phase 08.1 verified passed (7/7 must-haves)
+Phase: 09 (queue-automode-toasts) — PLANNED (ready to execute)
+Plan: 0 of 9
+Status: Ready to execute Phase 9
+Last activity: 2026-04-19 -- Phase 9 planned (9 plans, 6 waves; plan-checker PASSED, zero blockers)
 
 Progress: [████████████████░░] 60% (3/5 phases complete — 7, 8, 8.1)
 
@@ -73,6 +73,7 @@ Recent decisions carried into v3.0:
 
 - Phase 8.1 inserted after Phase 8 (2026-04-18): Post-pivot cleanup and test coverage review (URGENT) — purge v2.x native-host + browser-extension leftovers and shore up Wails codebase test coverage before Phase 9 feature work resumes
 - Phase 8.1 completed 2026-04-19 (7/7 must-haves; 9 plans / 7 waves; 2 warnings routed as non-blocking test-hygiene follow-ups for Phase 9)
+- Phase 9 planned 2026-04-19 (9 plans / 6 waves; plan-checker PASSED zero blockers). 09-01 closes WR-01/02/03 to green-up develop CI BEFORE 09-03 watcher_bridge fan-out lands. Toast plan 09-06 carries the NOTIF-05 wintoast shim (~150 LOC, go-ole + x/sys/windows) as the highest-risk item; flagged `autonomous: false` with manual-QA checkpoint.
 
 ### Pending Todos
 
@@ -90,6 +91,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-19T11:06:02.057Z
-Stopped at: Phase 9 UI-SPEC approved
-Resume: run `/gsd-discuss-phase 9` to start queue/automode/toasts phase, or `/gsd-plan-phase 9` to skip discuss
+Last session: 2026-04-19T12:00:00.000Z
+Stopped at: Phase 9 planned — plan-checker PASSED
+Resume: run `/gsd-execute-phase 9` (prefer `/clear` first for fresh context)
