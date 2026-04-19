@@ -52,14 +52,29 @@ type App struct {
 	// release memory for emails the user manually drafted or dismissed.
 	backlogSkipMu sync.Mutex
 	backlogSkip   map[string]struct{}
+
+	// lastErrorMsg holds the most recent error message for tray display (D-16 priority 1).
+	// Set by: watcher init/start failure, SetTrayError caller paths.
+	// Cleared on: successful sign-in (SetTrayIdle), or explicit clear.
+	// Guarded by errorMsgMu.
+	errorMsgMu   sync.Mutex
+	lastErrorMsg string
+
+	// trayRefreshCh is a 1-slot signal channel (T-9-11: coalesced, drop-if-full).
+	// Any app goroutine that changes state relevant to the tray (queue, auth, pause,
+	// mode, error) sends here. The tray goroutine drains and calls refreshTrayVisual()
+	// on its LockOSThread-ed context — keeping systray.* Win32 HWND affinity intact
+	// (T-9-10 mitigation).
+	trayRefreshCh chan struct{}
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
 	return &App{
-		auth:        NewAuthManager(),
-		backlogSkip: make(map[string]struct{}),
-		settings:    AppSettings{Mode: defaultMode},
+		auth:          NewAuthManager(),
+		backlogSkip:   make(map[string]struct{}),
+		settings:      AppSettings{Mode: defaultMode},
+		trayRefreshCh: make(chan struct{}, 1),
 	}
 }
 
@@ -149,6 +164,8 @@ func (a *App) startup(ctx context.Context) {
 				currentIds[e.Id] = struct{}{}
 			}
 			a.pruneBacklogSkip(currentIds)
+			// Signal tray to refresh icon + tooltip (queue count may have changed).
+			a.signalTrayRefresh()
 		})
 	}
 
@@ -249,8 +266,43 @@ func (a *App) SetPaused(v bool) {
 	changed := a.paused != v
 	a.paused = v
 	a.pauseMu.Unlock()
-	if changed && a.ctx != nil {
-		wruntime.EventsEmit(a.ctx, "pause-changed", v)
+	if changed {
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "pause-changed", v)
+		}
+		// Signal tray goroutine to refresh icon + tooltip (T-9-10: must run on tray thread).
+		a.signalTrayRefresh()
+	}
+}
+
+// setLastError updates the last error message for tray display (D-16 priority 1).
+// Only signals the tray refresh channel when the message actually changes, to avoid
+// wake storms when multiple error paths converge on the same message (T-9-11).
+func (a *App) setLastError(msg string) {
+	a.errorMsgMu.Lock()
+	changed := a.lastErrorMsg != msg
+	a.lastErrorMsg = msg
+	a.errorMsgMu.Unlock()
+	if changed {
+		a.signalTrayRefresh()
+	}
+}
+
+// getLastError returns the current error message for tray display.
+func (a *App) getLastError() string {
+	a.errorMsgMu.Lock()
+	defer a.errorMsgMu.Unlock()
+	return a.lastErrorMsg
+}
+
+// signalTrayRefresh is the single entry point for all app-goroutine code that
+// wants the tray icon/tooltip to refresh. Non-blocking — drops the signal if
+// the 1-slot channel is already full (T-9-11: burst coalescing). The tray goroutine
+// reads the latest snapshot on each wake, so no state is lost by dropping signals.
+func (a *App) signalTrayRefresh() {
+	select {
+	case a.trayRefreshCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -288,6 +340,8 @@ func (a *App) setMode(mode string) error {
 		default:
 		}
 	}
+	// Signal tray to refresh tooltip (mode segment in D-17 changes on mode flip).
+	a.signalTrayRefresh()
 	return nil
 }
 

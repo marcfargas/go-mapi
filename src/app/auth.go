@@ -798,7 +798,8 @@ func (a *App) bootstrapAuth() <-chan struct{} {
 		a.auth.refresh.Lock()
 		a.auth.fetchUserInfoLocked(a.ctx)
 		a.auth.refresh.Unlock()
-		a.emitAuthChanged() // single emission, email/name populated
+		a.emitAuthChanged()    // single emission, email/name populated
+		a.signalTrayRefresh() // tray reads SignedIn from auth.Status() — refresh after auth settles
 	}()
 	return done
 }
