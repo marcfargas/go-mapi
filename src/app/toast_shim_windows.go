@@ -343,7 +343,7 @@ func createToastNotificationFromDoc(doc *ole.IUnknown) (*toastNotification, erro
 	var outPtr *ole.IUnknown
 	hr, _, _ := syscall.SyscallN(
 		vtbl.CreateToastNotification,
-		0,                                // static factory: no this ptr
+		uintptr(unsafe.Pointer(f)),       // this: IToastNotificationFactory instance pointer
 		uintptr(unsafe.Pointer(doc)),     // in: IXmlDocument
 		uintptr(unsafe.Pointer(&outPtr)), // out: IToastNotification
 	)
