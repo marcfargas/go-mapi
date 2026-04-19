@@ -359,9 +359,10 @@ func (ew *EmailWatcher) moveToErrors(filename, reason string) {
 		return
 	}
 
-	// Write error log
+	// Write error log — best-effort; ignore the error explicitly so that
+	// go vet / errcheck linters stay clean if added in a future phase.
 	logFile := dst + ".error"
-	os.WriteFile(logFile, []byte(reason), 0644)
+	_ = os.WriteFile(logFile, []byte(reason), 0644)
 }
 
 func (ew *EmailWatcher) dispatchQueueChanged(snap []EmailWithId) {
