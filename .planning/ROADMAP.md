@@ -136,7 +136,13 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   3. Toasts persist in the Windows Action Center (require AppUserModelID + Start Menu shortcut — both registered by installer)
   4. Running the uninstaller removes the Wails binary, MAPI handler, registry keys, AppUserModelID shortcut, and temp directory; nothing of go-mapi remains after uninstall
   5. A Pester 5 smoke test verifies install and uninstall round-trip on a fresh `windows-latest` CI runner without manual intervention
-**Plans**: TBD
+**Plans**: 6 plans
+- [ ] 10-01-PLAN.md — NSIS scaffold + MAPI handler + previous-client backup + ApplicationID plugin vendoring + v2.0 artifact cleanup (INST-01, INST-03, INST-04)
+- [ ] 10-02-PLAN.md — WebView2 bootstrap in installer + Wails app runtime-missing recovery via MessageBoxW (INST-02)
+- [ ] 10-03-PLAN.md — AUMID + Start Menu shortcut + firewall rule (INST-01, INST-06)
+- [ ] 10-04-PLAN.md — Uninstall 10-step scrub + Default Mail restore + README multi-user caveat (INST-05)
+- [ ] 10-05-PLAN.md — Pester 5 smoke tests + CI smoke workflow + inline-C# AUMID reader (INST-07)
+- [ ] 10-06-PLAN.md — Release workflow + SignPath v2 + wails.json info.productVersion (INST-01, INST-03)
 
 ### Phase 11: Autoupdate + Release
 **Goal**: Users are notified of new versions via tray notification and can download them with one click; the v3.0 binary is released to a stable URL, the extension is retired from browser stores, and the end-to-end flow is smoke-tested on a clean machine
