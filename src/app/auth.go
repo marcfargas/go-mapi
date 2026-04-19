@@ -627,14 +627,23 @@ func (am *AuthManager) revokeRefreshToken(parent context.Context) {
 }
 
 // GmailCall is the signature Phase 9's draft-creation code will satisfy.
-// Returning a 401 signals to the wrapper "refresh and retry once".
-// Any other non-nil error is bubbled up verbatim.
+// The statusCode return is ONLY inspected for 401 — it is the caller's signal
+// that the access token was rejected and a refresh + retry should be attempted.
+// Any other status with a non-nil err is bubbled up verbatim (no retry).
+// Callers that return (non-401, nil) are treated as success regardless of the
+// numeric status; callers must therefore always pair a failed HTTP response with
+// a non-nil err. The (0, someErr) case (transport failure before any HTTP status
+// is known) is safely handled: status 0 != 401, so the error is returned directly.
 type GmailCall func(accessToken string) (statusCode int, err error)
 
 // MakeAuthenticatedGmailCall is the public helper Phase 9 uses. It ensures
 // a fresh access token (proactive D-13), invokes fn, and on a single 401
 // forces a refresh and retries once. A second 401 — or any refresh error
 // classifying as invalid_grant — triggers sign-out and emits auth-changed.
+//
+// Contract: fn must return (401, non-nil-err) to trigger the retry path.
+// Any other (status, err) combination where err != nil is returned as-is.
+// Any (status, nil) combination where status != 401 is treated as success.
 func (a *App) MakeAuthenticatedGmailCall(ctx context.Context, fn GmailCall) error {
 	if a.auth == nil {
 		return ErrNotAuthenticated
