@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: "Ready to execute Phase 9 (9 plans, 6 waves)"
-stopped_at: Phase 9 planned — plan-checker PASSED
-last_updated: "2026-04-19T12:00:00.000Z"
-last_activity: 2026-04-19 -- Phase 9 planned (9 plans, 6 waves; plan-checker PASSED)
+status: "Phase 9 complete (9/9 plans; verification human_needed — deferred to sandbox automation todo)"
+stopped_at: Phase 9 complete — ready for Phase 10 (Installer + Migration)
+last_updated: "2026-04-19T19:30:00.000Z"
+last_activity: 2026-04-19 -- Phase 9 complete (9 plans, 6 waves; 5/5 must-haves verified; 3 UAT items deferred to sandbox automation todo; 6 code-review findings fixed)
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 27
-  completed_plans: 18
-  percent: 67
+  completed_phases: 4
+  total_plans: 36
+  completed_plans: 27
+  percent: 75
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 9 — Queue, Automode + Toasts (next)
+**Current focus:** Phase 10 — Installer + Migration (next)
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 09 (queue-automode-toasts) — PLANNED (ready to execute)
-Plan: 0 of 9
-Status: Ready to execute Phase 9
-Last activity: 2026-04-19 -- Phase 9 planned (9 plans, 6 waves; plan-checker PASSED, zero blockers)
+Phase: 09 (queue-automode-toasts) — ✓ COMPLETE 2026-04-19 (5/5 must-haves; 9 plans; 6 review findings fixed; 3 UAT items deferred)
+Plan: 9 of 9
+Status: Phase 9 complete — ready for Phase 10
+Last activity: 2026-04-19 -- Phase 9 complete (9 plans, 6 waves; 5/5 must-haves verified; human UAT deferred to sandbox automation todo; 6 code-review findings CR-01 + WR-01..05 closed)
 
-Progress: [████████████████░░] 60% (3/5 phases complete — 7, 8, 8.1)
+Progress: [██████████████████░░] 80% (4/5 phases complete — 7, 8, 8.1, 9)
 
 ## Performance Metrics
 
@@ -68,12 +68,19 @@ Recent decisions carried into v3.0:
 - [Phase 8.1]: Test hygiene debts carried forward (recorded in 08.1-REVIEW.md and surfaced on first CI run 2026-04-19): WR-01 TestAuthCodeURLHasPKCE t.Parallel + package-var mutation pattern; WR-02 bootstrap-auth tests leak a goroutine to the real Google userinfo endpoint; WR-03 TestDispatcherCoalesces (src/app/watcher_bridge_test.go:93, originated in Phase 7 commit 36ca9e8) flakes under -race on windows/amd64 — asserts count==1 but legal outcomes under the 1-slot pending channel design are count ∈ {1,2} when the dispatcher drains the first value before OnQueueChanged burst completes. All three to fix in Phase 9 test-hygiene pass.
 - [Phase 8.1]: CI pwsh arg-parsing gotcha: default shell on windows-latest is pwsh, which splits `-coverprofile=file.ext` at the `.` and hands `.ext` to go test as a package arg. Fix: `shell: bash` on `go test -race -coverprofile=…` steps (commit 9ef064d). Alternative: wrap value in single quotes.
 - [Phase 8.1]: Develop branch CI remains RED after phase closure until Phase 9 fixes WR-03 — user-accepted tradeoff; scope discipline kept test-hygiene work out of Phase 8.1's files_modified.
+- [Phase 9]: WinRT `IToastNotificationFactory.CreateToastNotification` is an instance method — must pass the factory `*IUnknown` as `this`, not `0`. Passing `0` compiles but nil-derefs on `.Release()`. Mirror `showToast`/`setTagGroup` pattern. (CR-01, commit `5f7f46a`)
+- [Phase 9]: AUMID must be ldflags-injectable — use `var aumidOverride string` + `activeAUMID()` fallback pattern (mirrors `oauthClientID`/`oauthClientSecret` from Phase 8). Do NOT ship a release build with `com.marcfargas.gomapi.dev` hardcoded — it would permanently persist under that identity in every user's Action Center. (WR-01, commit `269fc25`; Phase 10 populates `-X github.com/marcfargas/go-mapi/app.aumidOverride=com.marcfargas.gomapi`)
+- [Phase 9]: `watcher.Start()` must complete synchronously (i.e. `processExistingFiles` done) BEFORE seeding `knownIds` via `Snapshot()` — otherwise every pre-existing JSON fires a spurious arrival toast. The arrival-detection pattern is: snapshot-after-start seeds the baseline, then `SetAfterDispatch` detects genuinely-new IDs by set diff. (WR-02, commit `e7daf14`)
+- [Phase 9]: Svelte 5 reactive `Map`/`Set` mutations via `.set()`/`.delete()` do NOT trigger re-renders from callbacks registered in `onMount` — must reassign (`autoDraftErrors = new Map(autoDraftErrors)`). Signal-driven reactivity needs a new reference, not in-place mutation, when the write happens outside the synchronous component scope.
+- [Phase 9]: Toast shim uses `QueryInterface` (returns `(*IUnknown, error)`), NOT `MustQueryInterface` (panics on failure). In Go test runners outside a real WinRT host, `MustQueryInterface` panics cascade through the test runner even with recover. Propagate errors via Go's normal error path.
+- [Phase 9]: Manual QA gate pattern for Windows shell features (tray, toast, live UI): DEFERRED in favor of Windows Sandbox + FlaUI automation todo (`.planning/todos/pending/2026-04-19-automate-tray-visual-qa-windows-sandbox.md`). Surfaces in `09-HUMAN-UAT.md`. All 3 deferred checks are tracked for closure by either a manual pass or the automation harness.
 
 ### Roadmap Evolution
 
 - Phase 8.1 inserted after Phase 8 (2026-04-18): Post-pivot cleanup and test coverage review (URGENT) — purge v2.x native-host + browser-extension leftovers and shore up Wails codebase test coverage before Phase 9 feature work resumes
 - Phase 8.1 completed 2026-04-19 (7/7 must-haves; 9 plans / 7 waves; 2 warnings routed as non-blocking test-hygiene follow-ups for Phase 9)
 - Phase 9 planned 2026-04-19 (9 plans / 6 waves; plan-checker PASSED zero blockers). 09-01 closes WR-01/02/03 to green-up develop CI BEFORE 09-03 watcher_bridge fan-out lands. Toast plan 09-06 carries the NOTIF-05 wintoast shim (~150 LOC, go-ole + x/sys/windows) as the highest-risk item; flagged `autonomous: false` with manual-QA checkpoint.
+- Phase 9 completed 2026-04-19 (5/5 must-haves; 9 plans / 6 waves). Code-review found 1 critical + 5 warnings — all closed in the REVIEW-FIX pass. Verification status `human_needed` — 3 UAT items (tray visual, toast E2E, full user-flow) deferred to the Windows Sandbox + FlaUI automation todo. Develop CI green again after 09-01 landed WR-01/02/03 fixes.
 
 ### Pending Todos
 
@@ -91,6 +98,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-19T12:00:00.000Z
-Stopped at: Phase 9 planned — plan-checker PASSED
-Resume: run `/gsd-execute-phase 9` (prefer `/clear` first for fresh context)
+Last session: 2026-04-19T19:30:00.000Z
+Stopped at: Phase 9 complete — ready for Phase 10 (Installer + Migration)
+Resume: run `/gsd-discuss-phase 10` (prefer `/clear` first for fresh context)

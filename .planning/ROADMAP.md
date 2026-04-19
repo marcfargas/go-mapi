@@ -39,8 +39,8 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 
 - [x] **Phase 7: Wails Shell + RAM Gate** — Minimal tray app built and RAM measured (PASS: 43.24 MB mean per session vs 80 MB gate, 2026-04-14)
 - [x] **Phase 8: OAuth + Credentials** — Desktop OAuth (PKCE loopback) with Windows Credential Manager storage shipped; human UAT approved 2026-04-18
-- [ ] **Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)** — Purge v2.x leftovers from the native-host + browser-extension era and shore up test coverage across the Wails codebase before Phase 9 feature work resumes
-- [ ] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
+- [x] **Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)** — Purge v2.x leftovers from the native-host + browser-extension era and shore up test coverage across the Wails codebase before Phase 9 feature work resumes
+- [x] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
 - [ ] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, and uninstall
 - [ ] **Phase 11: Autoupdate + Release** — Notify-only autoupdate, GitHub release pipeline, extension store retirement, smoke test
 
@@ -104,7 +104,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] 08.1-09-PLAN.md — Rewrite CLAUDE.md + README.md for v3.0 Wails architecture; update PROJECT.md D-05 outcome (D-04, D-05)
 **UI hint**: no
 
-### Phase 9: Queue, Automode + Toasts
+### Phase 9: Queue, Automode + Toasts — ✓ COMPLETE 2026-04-19
 **Goal**: Users can view queued emails in the main window, act on them individually, set an automatic draft mode, and receive Windows toast notifications when new emails arrive
 **Depends on**: Phase 8.1
 **Requirements**: QUEUE-01, QUEUE-02, QUEUE-03, QUEUE-04, QUEUE-05, QUEUE-06, QUEUE-07, NOTIF-01, NOTIF-02, NOTIF-03, NOTIF-04, NOTIF-05
@@ -115,15 +115,15 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   4. A Windows toast notification appears when a new email arrives in the queue, showing sender and subject only (no body text); toast action buttons allow "Create draft" or "Dismiss" without opening the main window
   5. The Auto-draft / Manual mode toggle persists across app restarts
 **Plans**: 9 plans
-- [ ] 09-01-PLAN.md — Test hygiene pass (WR-01/02/03) — green-up develop CI before feature work
-- [ ] 09-02-PLAN.md — settings.json atomic write + appDataDir helper (D-13)
-- [ ] 09-03-PLAN.md — Automode goroutine + watcher_bridge fan-out + MarkProcessed idempotent + backlog-skip (D-09, D-10, D-14)
-- [ ] 09-04-PLAN.md — Wails bindings for queue actions + settings + pause (9 new App methods)
-- [ ] 09-05-PLAN.md — Tray has-queue icon + Pause menu + refreshTrayVisual (SHELL-02, SHELL-07, D-16, D-17)
-- [ ] 09-06-PLAN.md — Toast stack + WinRT shim (NOTIF-05) + COM activator + AUMID dev script (NOTIF-01..05)
-- [ ] 09-07-PLAN.md — Frontend: styles.css tokens + settings.ts + ReAuthBanner color alignment
-- [ ] 09-08-PLAN.md — Frontend: ModeToggle + AutoDraftErrorBadge components
-- [ ] 09-09-PLAN.md — Frontend: QueueRow + SignedInHeader extension + App.svelte rewire (QUEUE-01..07)
+- [x] 09-01-PLAN.md — Test hygiene pass (WR-01/02/03) — green-up develop CI before feature work
+- [x] 09-02-PLAN.md — settings.json atomic write + appDataDir helper (D-13)
+- [x] 09-03-PLAN.md — Automode goroutine + watcher_bridge fan-out + MarkProcessed idempotent + backlog-skip (D-09, D-10, D-14)
+- [x] 09-04-PLAN.md — Wails bindings for queue actions + settings + pause (9 new App methods)
+- [x] 09-05-PLAN.md — Tray has-queue icon + Pause menu + refreshTrayVisual (SHELL-02, SHELL-07, D-16, D-17)
+- [x] 09-06-PLAN.md — Toast stack + WinRT shim (NOTIF-05) + COM activator + AUMID dev script (NOTIF-01..05)
+- [x] 09-07-PLAN.md — Frontend: styles.css tokens + settings.ts + ReAuthBanner color alignment
+- [x] 09-08-PLAN.md — Frontend: ModeToggle + AutoDraftErrorBadge components
+- [x] 09-09-PLAN.md — Frontend: QueueRow + SignedInHeader extension + App.svelte rewire (QUEUE-01..07)
 **UI hint**: yes
 
 ### Phase 10: Installer + Migration
@@ -162,10 +162,10 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 6. Changesets Monorepo Scaffold | v2.1.0 | 3/3 | Complete | 2026-04-12 |
 | 7. Wails Shell + RAM Gate | v3.0 | 4/4 | Complete | 2026-04-14 |
 | 8. OAuth + Credentials | v3.0 | 5/5 | Complete | 2026-04-18 |
-| 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 0/9 | Not started | - |
-| 9. Queue, Automode + Toasts | v3.0 | 0/9 | Not started | - |
+| 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 9/9 | Complete | 2026-04-19 |
+| 9. Queue, Automode + Toasts | v3.0 | 9/9 | Complete | 2026-04-19 |
 | 10. Installer + Migration | v3.0 | 0/? | Not started | - |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
 
 ---
-*Roadmap updated: 2026-04-19 — Phase 9 planned (9 plans)*
+*Roadmap updated: 2026-04-19 — Phase 9 complete (9/9 plans; human UAT deferred to sandbox automation todo)*

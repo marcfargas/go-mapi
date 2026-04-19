@@ -112,12 +112,12 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SHELL-01 | Phase 7 | Pending |
-| SHELL-02 | Phase 7 | Pending |
+| SHELL-02 | Phase 7, 9 | Complete |
 | SHELL-03 | Phase 7 | Pending |
 | SHELL-04 | Phase 7 | Pending |
 | SHELL-05 | Phase 7 | Pending |
 | SHELL-06 | Phase 7 | Pending |
-| SHELL-07 | Phase 7 | Pending |
+| SHELL-07 | Phase 7, 9 | Complete |
 | AUTH-01 | Phase 8 | Pending |
 | AUTH-02 | Phase 8 | Pending |
 | AUTH-03 | Phase 8 | Complete |
@@ -125,18 +125,18 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | AUTH-05 | Phase 8 | Pending |
 | AUTH-06 | Phase 8 | Complete |
 | AUTH-07 | Phase 8 | Pending |
-| QUEUE-01 | Phase 9 | Pending |
-| QUEUE-02 | Phase 9 | Pending |
-| QUEUE-03 | Phase 9 | Pending |
-| QUEUE-04 | Phase 9 | Pending |
-| QUEUE-05 | Phase 9 | Pending |
-| QUEUE-06 | Phase 9 | Pending |
-| QUEUE-07 | Phase 9 | Pending |
-| NOTIF-01 | Phase 9 | Pending |
-| NOTIF-02 | Phase 9 | Pending |
-| NOTIF-03 | Phase 9 | Pending |
-| NOTIF-04 | Phase 9 | Pending |
-| NOTIF-05 | Phase 9 | Pending |
+| QUEUE-01 | Phase 9 | Complete |
+| QUEUE-02 | Phase 9 | Complete |
+| QUEUE-03 | Phase 9 | Complete |
+| QUEUE-04 | Phase 9 | Complete |
+| QUEUE-05 | Phase 9 | Complete |
+| QUEUE-06 | Phase 9 | Complete |
+| QUEUE-07 | Phase 9 | Complete |
+| NOTIF-01 | Phase 9 | Complete |
+| NOTIF-02 | Phase 9 | Complete |
+| NOTIF-03 | Phase 9 | Complete |
+| NOTIF-04 | Phase 9 | Complete |
+| NOTIF-05 | Phase 9 | Complete |
 | INST-01 | Phase 10 | Pending |
 | INST-02 | Phase 10 | Pending |
 | INST-03 | Phase 10 | Pending |
