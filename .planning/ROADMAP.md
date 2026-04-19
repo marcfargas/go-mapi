@@ -114,7 +114,16 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   3. In Auto-draft mode, every new queued email becomes a Gmail draft automatically — including while the window is hidden; failed auto-drafts stay in the queue with a visible error state and a notification
   4. A Windows toast notification appears when a new email arrives in the queue, showing sender and subject only (no body text); toast action buttons allow "Create draft" or "Dismiss" without opening the main window
   5. The Auto-draft / Manual mode toggle persists across app restarts
-**Plans**: TBD
+**Plans**: 9 plans
+- [ ] 09-01-PLAN.md — Test hygiene pass (WR-01/02/03) — green-up develop CI before feature work
+- [ ] 09-02-PLAN.md — settings.json atomic write + appDataDir helper (D-13)
+- [ ] 09-03-PLAN.md — Automode goroutine + watcher_bridge fan-out + MarkProcessed idempotent + backlog-skip (D-09, D-10, D-14)
+- [ ] 09-04-PLAN.md — Wails bindings for queue actions + settings + pause (9 new App methods)
+- [ ] 09-05-PLAN.md — Tray has-queue icon + Pause menu + refreshTrayVisual (SHELL-02, SHELL-07, D-16, D-17)
+- [ ] 09-06-PLAN.md — Toast stack + WinRT shim (NOTIF-05) + COM activator + AUMID dev script (NOTIF-01..05)
+- [ ] 09-07-PLAN.md — Frontend: styles.css tokens + settings.ts + ReAuthBanner color alignment
+- [ ] 09-08-PLAN.md — Frontend: ModeToggle + AutoDraftErrorBadge components
+- [ ] 09-09-PLAN.md — Frontend: QueueRow + SignedInHeader extension + App.svelte rewire (QUEUE-01..07)
 **UI hint**: yes
 
 ### Phase 10: Installer + Migration
@@ -154,9 +163,9 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 7. Wails Shell + RAM Gate | v3.0 | 4/4 | Complete | 2026-04-14 |
 | 8. OAuth + Credentials | v3.0 | 5/5 | Complete | 2026-04-18 |
 | 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 0/9 | Not started | - |
-| 9. Queue, Automode + Toasts | v3.0 | 0/? | Not started | - |
+| 9. Queue, Automode + Toasts | v3.0 | 0/9 | Not started | - |
 | 10. Installer + Migration | v3.0 | 0/? | Not started | - |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
 
 ---
-*Roadmap updated: 2026-04-18 — Phase 8.1 planned (9 plans)*
+*Roadmap updated: 2026-04-19 — Phase 9 planned (9 plans)*
