@@ -43,8 +43,21 @@ func toastErrorCopy(category string) string {
 	}
 }
 
-// activeAUMID picks dev vs prod AUMID. For Phase 9 we hard-code dev; Phase 10
-// installer will pass the prod AUMID via a build-time flag or ldflags.
+// aumidOverride is injected at build time via:
+//
+//	-ldflags "-X 'main.aumidOverride=com.marcfargas.gomapi'"
+//
+// `var` (not const) is REQUIRED — -X only overwrites string vars. Mirrors the
+// pattern used for oauthClientID / oauthClientSecret in auth_credentials.go.
+// Phase 10 installer wires this to aumidProd in its release build flags.
+var aumidOverride string
+
+// activeAUMID picks the correct AUMID for this build.
+// Returns the ldflags-injected value when set (release builds); falls back to
+// aumidDev so that dev/test runs continue to work without any -X flag.
 func activeAUMID() string {
+	if aumidOverride != "" {
+		return aumidOverride
+	}
 	return aumidDev
 }
