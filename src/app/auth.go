@@ -737,21 +737,35 @@ func (a *App) SignOut() error {
 // needed, and emits the initial auth-changed event. Runs under App.startup.
 // On invalid_grant or any keyring error, proceeds as signed-out.
 // Safe to call once per startup.
-func (a *App) bootstrapAuth() {
+//
+// Returns a channel that is closed when the async userinfo fetch goroutine
+// completes so callers (tests) can wait deterministically. Production callers
+// MAY discard the channel; discarding a receive-only channel is valid Go.
+//
+// WR-02 (2026-04-19): prior to this change, bootstrapAuth spawned a
+// fire-and-forget goroutine that leaked under -race in TestBootstrapAuth*
+// tests because tests exited before the goroutine contacted the real Google
+// userinfo endpoint. The returned channel lets tests stub userinfoEndpointOverride
+// and wait with a timeout select instead of relying on process-exit timing.
+func (a *App) bootstrapAuth() <-chan struct{} {
+	done := make(chan struct{})
 	if a.auth == nil {
-		return
+		close(done)
+		return done
 	}
 	if err := a.auth.LoadFromKeyring(); err != nil {
 		logError("oauth bootstrap: keyring load: %v", err)
 		a.SetTrayError("credential store unavailable")
 		a.emitAuthChanged()
-		return
+		close(done)
+		return done
 	}
 	if a.auth.tokens == nil {
 		logInfo("oauth bootstrap: no tokens, signed-out state")
 		a.SetTrayError("sign in required")
 		a.emitAuthChanged()
-		return
+		close(done)
+		return done
 	}
 	// Proactive refresh if within 5 minutes of expiry.
 	a.auth.refresh.Lock()
@@ -761,7 +775,8 @@ func (a *App) bootstrapAuth() {
 		logInfo("oauth bootstrap: invalid_grant — prompting re-sign-in")
 		a.SetTrayError("sign-in expired")
 		a.emitAuthChanged()
-		return
+		close(done)
+		return done
 	}
 	if err != nil {
 		// Transient: keep tokens (refreshIfNeededLocked did not clear them),
@@ -777,10 +792,13 @@ func (a *App) bootstrapAuth() {
 	// would flash an authenticated header with empty email/name. The Svelte
 	// frontend renders the queue view from the initial GetAuthStatus() pull
 	// on mount, and updates email/name via this single async emit.
+	// The returned done channel is closed when the goroutine completes (WR-02).
 	go func() {
+		defer close(done)
 		a.auth.refresh.Lock()
 		a.auth.fetchUserInfoLocked(a.ctx)
 		a.auth.refresh.Unlock()
 		a.emitAuthChanged() // single emission, email/name populated
 	}()
+	return done
 }
