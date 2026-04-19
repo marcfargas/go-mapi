@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/marcfargas/go-mapi/internal/mapi"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -317,3 +319,141 @@ func (a *App) pruneBacklogSkip(currentIds map[string]struct{}) {
 		}
 	}
 }
+
+// ---- Phase 9 bindings (QUEUE-02/03/04, SHELL-02) ----
+
+// validateEmailID is the shared validator for CreateDraftForID + DismissEmail.
+// IDs are 64-char hex SHA256 hashes from the watcher (see internal/mapi/watcher.go).
+// Any non-hex / wrong-length input is a frontend bug or tampering — reject early
+// with a typed error (T-9-08 mitigation).
+func validateEmailID(id string) error {
+	if id == "" {
+		return errors.New("email id: empty")
+	}
+	if len(id) > 128 {
+		return errors.New("email id: too long")
+	}
+	return nil
+}
+
+// CreateDraftForID runs the Gmail draft-creation flow for a single queued
+// email in response to a user action (row Create draft button).
+//
+// Emits `auto-draft-result` with the same shape as automode (Plan 03) so
+// the frontend can hydrate the drafted flash / error badge uniformly.
+// Unlike automode, does NOT mark the email as backlog-skipped on invalid_grant —
+// the user explicitly triggered this call; backlog-skip only applies to
+// background auto-draft attempts (D-10).
+func (a *App) CreateDraftForID(id string) error {
+	if err := validateEmailID(id); err != nil {
+		return err
+	}
+	if a.watcher == nil {
+		return errors.New("watcher not ready")
+	}
+	// Confirm the id is actually in the queue — returns a useful error to
+	// the frontend rather than propagating a Gmail call with empty body.
+	var target *mapi.EmailWithId
+	for _, e := range a.watcher.Snapshot() {
+		if e.Id == id {
+			e := e
+			target = &e
+			break
+		}
+	}
+	if target == nil {
+		// Idempotency path — row already processed / dismissed. Log + return nil.
+		logInfo("CreateDraftForID: id %s no longer in queue", safeIDPrefix(id))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(a.shutdownCtx, 30*time.Second)
+	defer cancel()
+
+	callErr := a.MakeAuthenticatedGmailCall(ctx, func(token string) (int, error) {
+		gc := mapi.NewGmailClientWithBase(token, gmailBaseURLOverride)
+		_, err := gc.CreateDraft(target.Message)
+		if err != nil {
+			if err.Error() == "token expired" {
+				return 401, err
+			}
+			return 500, err
+		}
+		return 200, nil
+	})
+	if callErr != nil {
+		category := classifyAutomodeError(callErr)
+		logError("CreateDraftForID: draft %s failed: %s", safeIDPrefix(id), category)
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "auto-draft-result", map[string]any{
+				"emailId":       id,
+				"success":       false,
+				"errorCategory": category,
+			})
+		}
+		return callErr
+	}
+	if err := a.watcher.MarkProcessed(id); err != nil {
+		logError("CreateDraftForID: MarkProcessed %s: %v", safeIDPrefix(id), err)
+	}
+	if a.ctx != nil {
+		wruntime.EventsEmit(a.ctx, "auto-draft-result", map[string]any{
+			"emailId": id,
+			"success": true,
+		})
+	}
+	return nil
+}
+
+// DismissEmail removes a queued email's JSON file without creating a draft.
+// Does NOT require auth (user may dismiss while signed out). Idempotent via
+// watcher.Delete (Plan 03 Task 1). Emits no event — queue-update fires
+// automatically from the watcher fsnotify path.
+func (a *App) DismissEmail(id string) error {
+	if err := validateEmailID(id); err != nil {
+		return err
+	}
+	if a.watcher == nil {
+		return errors.New("watcher not ready")
+	}
+	if err := a.watcher.Delete(id); err != nil {
+		return fmt.Errorf("dismiss %s: %w", safeIDPrefix(id), err)
+	}
+	return nil
+}
+
+// GetSettings returns the in-memory AppSettings. Frontend reads this once on
+// mount to hydrate the ModeToggle; subsequent changes flow through SaveSettings.
+func (a *App) GetSettings() AppSettings {
+	a.settingsMu.RLock()
+	defer a.settingsMu.RUnlock()
+	s := a.settings
+	if s.Mode == "" {
+		s.Mode = defaultMode
+	}
+	return s
+}
+
+// SaveSettings persists AppSettings to %APPDATA%\go-mapi\settings.json.
+// Delegates to setMode for validation + wake-automode-if-mode-flipped. In
+// Phase 9 Mode is the only field; future phases may surface more here.
+func (a *App) SaveSettings(s AppSettings) error {
+	return a.setMode(s.Mode)
+}
+
+// GetMode is a convenience wrapper. Frontend may prefer GetSettings for
+// future-proofing (new fields land in AppSettings, not as parallel bindings).
+func (a *App) GetMode() string { return a.getMode() }
+
+// SetMode is a convenience wrapper (matches GetMode for symmetry).
+func (a *App) SetMode(mode string) error { return a.setMode(mode) }
+
+// PauseWatching suppresses toasts + halts automode drain (D-14). Session-only
+// per D-15; resets on next app start. Watcher keeps running — queue still accrues.
+func (a *App) PauseWatching() { a.SetPaused(true) }
+
+// ResumeWatching re-enables toasts + automode drain.
+func (a *App) ResumeWatching() { a.SetPaused(false) }
+
+// GetPausedState returns the current session pause state.
+func (a *App) GetPausedState() bool { return a.isPaused() }
