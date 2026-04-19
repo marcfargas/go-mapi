@@ -110,7 +110,8 @@ func (m *automode) drain() {
 		if err != nil && errors.Is(err, ErrInvalidGrant) {
 			// Terminal — halt drain. markBacklogSkipped was already called
 			// inside draftOne; ReAuthBanner surfaces via MakeAuthenticatedGmailCall
-			// emitting auth-changed. D-10: one summary event per drain, not per-email.
+			// emitting auth-changed. D-10: one summary toast per drain, not per-email.
+			emitSummaryInvalidGrantToast(m.app)
 			return
 		}
 	}
@@ -172,6 +173,8 @@ func (m *automode) draftOne(e mapi.EmailWithId) error {
 			"success":       false,
 			"errorCategory": category,
 		})
+		// Error toast fires regardless of window state (D-11: errors always surface).
+		emitErrorToast(m.app, category, e.Id)
 		return callErr
 	}
 
@@ -180,6 +183,13 @@ func (m *automode) draftOne(e mapi.EmailWithId) error {
 		// Log and let the row linger; the queue-update event will refresh the UI.
 		logError("automode: MarkProcessed %s: %v", safeIDPrefix(e.Id), err)
 	}
+	// Draft-success toast: only fires when window is hidden (D-11). Subject safe per
+	// UI-SPEC copywriting; no body text / recipient email exposed (QUAL-03).
+	if e.Message != nil {
+		emitDraftSuccessToast(m.app, e.Message.Subject, e.Id)
+	}
+	// Clear arrival + error toasts for this email from Action Center (NOTIF-05).
+	clearToastForEmail(e.Id)
 	m.emit("auto-draft-result", map[string]any{
 		"emailId": e.Id,
 		"success": true,
