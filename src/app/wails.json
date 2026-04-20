@@ -9,5 +9,8 @@
   "author": {
     "name": "Marc Fargas",
     "email": "marc@marcfargas.com"
+  },
+  "info": {
+    "productVersion": "0.0.0"
   }
 }
