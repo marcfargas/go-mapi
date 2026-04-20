@@ -30,14 +30,14 @@ jobs:
     permissions:
       contents: read
 
-    env:
-      # OAuth secrets available to `wails build` via env var (Phase 8 D-09 pattern).
-      # Empty on forked-PR builds; Wails startup guard (credentials_check.go) would
-      # fire at runtime, BUT Pester never launches the app (D-22 excludes live-UI
-      # tests), so empty strings are fine here. Binaries built with empty OAuth
-      # creds still install + uninstall correctly — that's all we're testing.
-      GOMAPI_OAUTH_CLIENT_ID:     ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
-      GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
+    # WR-03: intentionally NO OAuth secret env vars here. Pester never launches
+    # go-mapi.exe (D-22 excludes live-UI tests) — only the installer + uninstaller
+    # round-trip is exercised. Injecting real OAuth secrets via ldflags would
+    # embed the client_secret in the string table of go-mapi.exe, which then
+    # gets bundled into go-mapi-setup.exe and uploaded as a workflow artifact
+    # (retention-days: 7). Artifacts on public repos are read-by-anyone; the
+    # release workflow (installer-release.yml) is the only intentional path
+    # for publishing a binary that contains the injected secrets.
 
     steps:
       - name: Checkout
@@ -71,11 +71,16 @@ jobs:
       - name: Build interceptor DLL
         run: npm run build:interceptor
 
-      - name: Build Wails app (dev ldflags - unsigned, AUMID only)
+      - name: Build Wails app (dev ldflags - unsigned, AUMID only, no OAuth secrets)
         working-directory: src/app
         shell: pwsh
+        # WR-03: OAuth ldflags intentionally omitted. The smoke harness only tests
+        # installer install/uninstall — Pester never launches go-mapi.exe, so a
+        # binary built without OAuth credentials installs and uninstalls correctly.
+        # This keeps real OAuth secrets out of the workflow artifact (which is
+        # broadly readable on public repos).
         run: |
-          wails build -platform windows/amd64 -ldflags "-X main.aumidOverride=com.marcfargas.gomapi -X main.oauthClientID=$env:GOMAPI_OAUTH_CLIENT_ID -X main.oauthClientSecret=$env:GOMAPI_OAUTH_CLIENT_SECRET"
+          wails build -platform windows/amd64 -ldflags "-X main.aumidOverride=com.marcfargas.gomapi"
 
       - name: Verify NSIS is available (pre-installed on windows-latest)
         shell: pwsh
