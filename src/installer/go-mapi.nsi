@@ -277,12 +277,77 @@ WebView2Ready:
   Return
 FunctionEnd
 
+;------------------------------------------------------------------------------
+; CreateShortcutAndAUMID — D-13 / D-14 / D-15 / INST-01
+;
+; Creates the all-users Start Menu shortcut at $SMPROGRAMS\go-mapi.lnk and
+; stamps PKEY_AppUserModel_ID on it via the ApplicationID NSIS plugin. The
+; stamped AUMID is what makes Phase 9's toast notifications persist in Action
+; Center — the shortcut AUMID MUST match the Wails app's runtime AUMID
+; (com.marcfargas.gomapi per D-15), which the plan 10-06 release pipeline
+; injects into the .exe via ldflags.
+;
+; Plugin ABI (from NSIS ApplicationID v1.1):
+;     ApplicationID::Set "<shortcut-path>" "<aumid-string>"
+;     Pop $0     ; "0" = success, non-zero = error
+; RESEARCH §Pitfall 2 — Pop is required; without it the rc is swallowed.
+;------------------------------------------------------------------------------
+
 Function CreateShortcutAndAUMID
-  DetailPrint "stub: CreateShortcutAndAUMID — implemented in plan 10-03"
+  ; D-13: Start Menu shortcut — all-users (admin install → $SMPROGRAMS resolves
+  ; to %ProgramData%\Microsoft\Windows\Start Menu\Programs\).
+  ; Signature: CreateShortcut link target parameters iconfile iconindex startoptions keyboardshortcut description
+  CreateShortcut "$SMPROGRAMS\go-mapi.lnk" \
+      "$INSTDIR\go-mapi.exe" \
+      "" \
+      "$INSTDIR\go-mapi.exe" 0 \
+      SW_SHOWNORMAL "" \
+      "go-mapi — MAPI-to-Gmail bridge"
+
+  ; D-14: stamp PKEY_AppUserModel_ID via ApplicationID plugin. Plugin loaded
+  ; from src/installer/plugins/x86-unicode/ApplicationID.dll (vendored in plan 10-01).
+  ; ApplicationID::Set pushes "0" on success, "-1" on error.
+  ; D-15: production AUMID is com.marcfargas.gomapi (matches the ${AUMID} define).
+  ApplicationID::Set "$SMPROGRAMS\go-mapi.lnk" "${AUMID}"
+  Pop $0
+  StrCmp $0 "0" AumidOk
+  DetailPrint "WARNING: AUMID stamp rc=$0 — Action Center persistence may break"
+  ; Do NOT halt the installer — continue install; Pester test (plan 10-05) will surface this in CI.
+  Goto AumidDone
+AumidOk:
+  DetailPrint "AUMID stamped: ${AUMID}"
+AumidDone:
 FunctionEnd
 
+;------------------------------------------------------------------------------
+; AddFirewallRule — D-16 / INST-06
+;
+; Creates an inbound Windows Firewall rule named "go-mapi OAuth loopback" bound
+; to program=$INSTDIR\go-mapi.exe. Pre-creating the rule at install time avoids
+; the first-bind firewall prompt that Windows otherwise raises when go-mapi
+; binds its OAuth loopback listener — on RDS that prompt appears on the server
+; console, invisible to the user in the RDP session (RESEARCH §Pitfall 4).
+;
+; Why netsh over `powershell.exe -Command "New-NetFirewallRule ..."`:
+;   - single-line ExecWait with no PowerShell quote escaping
+;   - works on all Windows 10+ SKUs without the NetSecurity PS module
+;   - shorter NSIS script (RESEARCH §Pitfall 4 recommendation)
+;
+; Why program= (not localport=):
+;   - go-mapi binds 127.0.0.1:0 (ephemeral port) for the OAuth loopback server
+;   - a program-scoped rule is both narrower (only this .exe) and port-stable
+;   - broad port exposure is avoided; tampering with $INSTDIR requires admin
+;
+; Rule name "go-mapi OAuth loopback" MUST match byte-for-byte the uninstall
+; counterpart in plan 10-04 — a typo here breaks uninstall.
+;------------------------------------------------------------------------------
+
 Function AddFirewallRule
-  DetailPrint "stub: AddFirewallRule — implemented in plan 10-03"
+  ExecWait 'netsh advfirewall firewall add rule name="go-mapi OAuth loopback" dir=in program="$INSTDIR\go-mapi.exe" action=allow profile=any' $0
+  DetailPrint "firewall add rule rc=$0"
+  ; Do NOT halt on non-zero rc — group policy may block netsh writes, in which
+  ; case OAuth on RDS will still hang but desktop Windows works (Windows
+  ; auto-classifies loopback without the prompt on non-RDS sessions).
 FunctionEnd
 
 ;------------------------------------------------------------------------------
