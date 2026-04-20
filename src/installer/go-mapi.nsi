@@ -631,11 +631,22 @@ un.SE_FoundEnd:
 un.SE_NotFound:
   StrCpy $R1 ""
 un.SE_Done:
+  ; IN-03: correct save/restore sequence. Prelude:
+  ;   Exch $R1 (save prev$R1), Exch, Exch $R2 (save prev$R2), Exch 2, Exch $R3
+  ;   (save prev$R3). Post-prelude stack (bottom->top):
+  ;     [prev$R2, prev$R1, prev$R3]
+  ;   Then Push $R4..$R7 adds 4 items. Full stack:
+  ;     [prev$R2, prev$R1, prev$R3, prev$R4, prev$R5, prev$R6, prev$R7]
+  ; Result lives in $R1. Cleanup: pop R7..R4 (restores R4..R7), Pop R3 (restores
+  ; prev$R3), then the remaining stack is [prev$R2, prev$R1]. We need to restore
+  ; $R2 = prev$R2 and $R1 = prev$R1, and push result. Swap the top two so
+  ; prev$R2 is on top, Pop into $R2, then Exch $R1 swaps prev$R1 with result.
   Pop $R7
   Pop $R6
   Pop $R5
   Pop $R4
-  Pop $R3
-  Pop $R2
-  Exch $R1
+  Pop $R3     ; restore prev$R3
+  Exch        ; swap top two: stack was [prev$R2, prev$R1] -> [prev$R1, prev$R2]
+  Pop $R2     ; restore prev$R2
+  Exch $R1    ; swap prev$R1 on stack with result in $R1: stack top = result, $R1 = prev$R1
 FunctionEnd
