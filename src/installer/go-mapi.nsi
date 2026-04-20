@@ -358,11 +358,59 @@ FunctionEnd
 ;------------------------------------------------------------------------------
 
 Section "Uninstall"
-  DetailPrint "stub: Uninstall body — implemented in plan 10-04"
-  ; Remove Add/Remove Programs entry so an incomplete uninstall cannot leave
-  ; orphaned metadata. Everything else (binaries, registry, shortcuts, etc.)
-  ; is fleshed out in plan 10-04.
+  ; D-18: 10-step full scrub. Steps execute in order; failures log but do
+  ; not abort — we want to get as close to a clean state as possible even
+  ; when some steps fail (e.g. firewall rule GPO-locked, AV-locked file).
+
+  ; 1. Firewall rule — name MUST match plan 10-03 AddFirewallRule byte-for-byte
+  ExecWait 'netsh advfirewall firewall delete rule name="go-mapi OAuth loopback"' $0
+  DetailPrint "firewall delete rule rc=$0"
+
+  ; 2. Start Menu shortcut (plan 10-03 stamped the AUMID on this .lnk)
+  Delete "$SMPROGRAMS\go-mapi.lnk"
+
+  ; 3. MAPI handler key
+  DeleteRegKey HKLM "SOFTWARE\Clients\Mail\go-mapi"
+
+  ; 4. Restore (Default) Mail client from backup (D-11)
+  Call un.RestorePreviousMailClient
+
+  ; 5. %ProgramData%\go-mapi\uninst\ — remove AFTER the restore (step 4) since
+  ; the restore reads from this directory
+  RMDir /r "$APPDATA\..\..\ProgramData\go-mapi\uninst"
+  RMDir    "$APPDATA\..\..\ProgramData\go-mapi"   ; only if empty (non-recursive)
+
+  ; 6. %TEMP%\go-mapi\ — best-effort. Under elevated uninstall this is the
+  ; SYSTEM user's TEMP, not the real user's. Real users' temp already
+  ; auto-cleans via the delete-on-process privacy model in src/app/watcher_bridge.go.
+  RMDir /r "$TEMP\go-mapi"
+
+  ; 7. %APPDATA%\go-mapi\ — uninstalling user only (D-19 multi-user caveat:
+  ; other users on the machine retain their own copies; documented in README)
+  RMDir /r "$APPDATA\go-mapi"
+
+  ; 8. Windows Credential Manager — target is "<service>:<username>" per
+  ; zalando/go-keyring Windows backend (PATTERNS.md §Shared Pattern 3).
+  ; CONTEXT specifics line 199 wrote "go-mapi/oauth-tokens" (slash) — WRONG.
+  ; Verified target: "go-mapi:oauth-tokens" (colon). This is the byte-for-byte
+  ; value returned by zalando/go-keyring's credName() method for
+  ; service="go-mapi" + username="oauth-tokens" (see src/app/auth.go:27-28).
+  ExecWait 'cmdkey /delete:go-mapi:oauth-tokens' $0
+  DetailPrint "cmdkey /delete:go-mapi:oauth-tokens rc=$0"
+
+  ; 9. Binaries
+  Delete "$INSTDIR\go-mapi.exe"
+  Delete "$INSTDIR\go-mapi.dll"
+  Delete "$INSTDIR\uninstall.exe"
+  Delete "$INSTDIR\install.log"
+
+  ; 10. Install dir (RMDir non-recursive — only removes if empty)
+  RMDir "$INSTDIR"
+
+  ; Add/Remove Programs entry
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
+
+  DetailPrint "Uninstall complete"
 SectionEnd
 
 ; D-11: on uninstall, restore HKLM\SOFTWARE\Clients\Mail\(Default) from the backup JSON.
