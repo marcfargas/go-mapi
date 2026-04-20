@@ -54,8 +54,12 @@ func checkWebView2() error {
 // Reuses the user32 LazyDLL + procMessageBoxW declared in sessionend.go
 // (see PATTERNS.md Shared Pattern 2) — DOES NOT redeclare them here.
 func showWebView2MissingDialog() {
-	title := syscall.StringToUTF16Ptr("go-mapi — WebView2 required")
-	body := syscall.StringToUTF16Ptr(
+	// syscall.UTF16PtrFromString returns (*uint16, error); the error is safely
+	// discarded because the literals are compile-time constants with no NUL
+	// bytes. Prefer this over the deprecated syscall.StringToUTF16Ptr (matches
+	// sessionend.go, settings.go, singleinstance.go idiom).
+	title, _ := syscall.UTF16PtrFromString("go-mapi — WebView2 required")
+	body, _ := syscall.UTF16PtrFromString(
 		"Microsoft Edge WebView2 Runtime is required to run go-mapi.\r\n\r\n" +
 			"Your system browser will now open the Microsoft download page. " +
 			"Install the runtime, then relaunch go-mapi.")
