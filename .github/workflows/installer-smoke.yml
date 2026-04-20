@@ -1,0 +1,120 @@
+name: Installer smoke test
+
+# Per-PR + develop/main push smoke gate (D-29). Compiles installer end-to-end
+# on windows-latest and round-trips install+uninstall via Pester 5. Blocks
+# merges on failure. Path-filtered so doc-only PRs skip the ~3-minute job.
+#
+# No code signing here (release-only per D-25); dev ldflags only. See
+# installer-release.yml (plan 10-06) for the signed-release pipeline.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/installer/**'
+      - 'src/interceptor/**'
+      - 'src/app/**'
+      - '.github/workflows/installer-smoke.yml'
+  pull_request:
+    paths:
+      - 'src/installer/**'
+      - 'src/interceptor/**'
+      - 'src/app/**'
+      - '.github/workflows/installer-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Build installer + Pester round-trip
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    env:
+      # OAuth secrets available to `wails build` via env var (Phase 8 D-09 pattern).
+      # Empty on forked-PR builds; Wails startup guard (credentials_check.go) would
+      # fire at runtime, BUT Pester never launches the app (D-22 excludes live-UI
+      # tests), so empty strings are fine here. Binaries built with empty OAuth
+      # creds still install + uninstall correctly — that's all we're testing.
+      GOMAPI_OAUTH_CLIENT_ID:     ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
+      GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go 1.25
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install MinGW (interceptor build)
+        shell: pwsh
+        run: |
+          choco install mingw --no-progress -y
+          echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
+
+      - name: Install npm workspace dependencies
+        run: npm ci
+
+      - name: Build frontend (Svelte 5 - produces src/app/frontend/dist for go:embed)
+        run: npm run -w @marcfargas/go-mapi-app-frontend build
+
+      - name: Build interceptor DLL
+        run: npm run build:interceptor
+
+      - name: Build Wails app (dev ldflags - unsigned, AUMID only)
+        working-directory: src/app
+        shell: pwsh
+        run: |
+          wails build -platform windows/amd64 -ldflags "-X main.aumidOverride=com.marcfargas.gomapi -X main.oauthClientID=$env:GOMAPI_OAUTH_CLIENT_ID -X main.oauthClientSecret=$env:GOMAPI_OAUTH_CLIENT_SECRET"
+
+      - name: Verify NSIS is available (pre-installed on windows-latest)
+        shell: pwsh
+        run: |
+          try {
+            $v = makensis /VERSION
+            Write-Host "makensis version: $v"
+          } catch {
+            Write-Host "makensis not on PATH - installing via choco as fallback"
+            choco install nsis --no-progress -y
+          }
+
+      - name: Compile installer
+        shell: pwsh
+        run: makensis /DGOMAPI_VERSION=0.0.0-smoke src\installer\go-mapi.nsi
+
+      - name: Confirm installer artifact produced
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'go-mapi-setup.exe')) {
+            throw "go-mapi-setup.exe not produced by makensis"
+          }
+          $size = (Get-Item 'go-mapi-setup.exe').Length
+          Write-Host "go-mapi-setup.exe size: $size bytes"
+
+      - name: Run Pester smoke tests
+        shell: pwsh
+        run: |
+          $config = New-PesterConfiguration
+          $config.Run.Path         = 'src/installer/tests/installer.Tests.ps1'
+          $config.Run.Exit         = $true
+          $config.Output.Verbosity = 'Detailed'
+          Invoke-Pester -Configuration $config
+
+      - name: Upload installer as workflow artifact (for debugging failed runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-setup-smoke-${{ github.sha }}
+          path: go-mapi-setup.exe
+          if-no-files-found: warn
+          retention-days: 7
