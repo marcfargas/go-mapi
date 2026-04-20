@@ -4,6 +4,10 @@ dist/
 *.dll
 *.obj
 *.exe
+
+# Vendored NSIS plugin binaries (Phase 10 installer) — tracked intentionally
+!src/installer/plugins/**/*.dll
+
 .env
 *.pdb
 *.lib

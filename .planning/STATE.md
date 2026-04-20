@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: completed
-stopped_at: Phase 10 planned — ready to execute
-last_updated: "2026-04-19T22:10:00.000Z"
-last_activity: 2026-04-19 -- Phase 10 planned (6 plans, 4 waves; INST-01..INST-07 covered; verification passed with 1 addressed warning on wave-2 sequencing)
+status: executing
+stopped_at: Phase 10 context gathered
+last_updated: "2026-04-20T11:30:58.869Z"
+last_activity: 2026-04-20 -- Phase 10 execution started
 progress:
   total_phases: 6
   completed_phases: 4
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 10 — Installer + Migration (next)
+**Current focus:** Phase 10 — installer-migration
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 10 (installer-migration) — PLANNED 2026-04-19 (6 plans across 4 waves; INST-01..INST-07 covered; ready to execute)
-Plan: 0 of 6 executed
-Status: Phase 10 planned — ready to execute
-Last activity: 2026-04-19 -- Phase 10 planned (6 plans, 4 waves; INST-01..INST-07 covered; verification passed with 1 addressed warning on wave-2 sequencing)
+Phase: 10 (installer-migration) — EXECUTING
+Plan: 1 of 6
+Status: Executing Phase 10
+Last activity: 2026-04-20 -- Phase 10 execution started
 
 Progress: [██████████████████░░] 80% (4/5 phases complete — 7, 8, 8.1, 9)
 
