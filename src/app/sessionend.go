@@ -30,6 +30,13 @@ var (
 	procDispatchMsg   = user32.NewProc("DispatchMessageW")
 	procPostQuitMsg   = user32.NewProc("PostQuitMessage")
 	procPostMessage   = user32.NewProc("PostMessageW")
+
+	// procMessageBoxW is used by webview2_check.go to show the native
+	// runtime-missing dialog (D-08). Declared here alongside the other
+	// user32 procs to avoid redeclaring the user32 LazyDLL handle in a
+	// sibling file (Go would fail with "user32 redeclared in this block"
+	// because both files are `package main`).
+	procMessageBoxW = user32.NewProc("MessageBoxW")
 )
 
 type wndclassex struct {
