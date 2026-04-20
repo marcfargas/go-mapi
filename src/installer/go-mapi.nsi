@@ -501,29 +501,34 @@ Function un.RestorePreviousMailClient
   StrCmp $0 "go-mapi" 0 DoneRestore
   DetailPrint "Mail (Default) is still 'go-mapi' — proceeding with restore"
 
-  ; Read the backup JSON — naive line-scan (no JSON lib in NSIS).
-  ; Shape (from plan 10-01 BackupPreviousMailClient, position-stable):
-  ;   {"previousClient":null,"backedUpAt":"..."}        OR
+  ; IN-05: parse the backup JSON via PowerShell's ConvertFrom-Json instead of a
+  ; naive substring search. The previous substring-based detection of
+  ; `"previousClient":null` would false-match on a display-name containing that
+  ; exact literal (contrived, but brittle); ConvertFrom-Json unambiguously
+  ; distinguishes `null` from a string value, and also correctly unescapes
+  ; JSON-escaped `"` / `\` characters written by EscapeJsonString (WR-02).
+  ;
+  ; Shape (from BackupPreviousMailClient, single line):
+  ;   {"previousClient":null,"backedUpAt":"..."}     OR
   ;   {"previousClient":"<name>","backedUpAt":"..."}
+  ;
+  ; PowerShell output:
+  ;   - missing file / parse error: non-zero exit code -> fall through to fallbacks
+  ;   - previousClient=null:        exit 0, stdout = "" (just trailing CRLF)
+  ;   - previousClient="<name>":    exit 0, stdout = "<name>" + trailing CRLF
   StrCpy $1 ""  ; candidate name
-  FileOpen $2 "$APPDATA\..\..\ProgramData\go-mapi\uninst\previous-mail-client.json" r
-  IfErrors NoBackup
-  FileRead $2 $3    ; read entire JSON line (single line from BackupPreviousMailClient)
-  FileClose $2
-
-  ; Detect null — {"previousClient":null,...}
-  Push $3
-  Push '"previousClient":null'
-  Call un.StrContains
-  Pop $4
-  StrCmp $4 "1" TryFallbacks
-
-  ; Extract the name between `"previousClient":"` and `"`. Use un.StrExtract helper.
-  Push $3
-  Push '"previousClient":"'   ; start-delim
-  Push '"'                    ; end-delim (first " after the start)
-  Call un.StrExtract
-  Pop $1
+  IfFileExists "$APPDATA\..\..\ProgramData\go-mapi\uninst\previous-mail-client.json" 0 NoBackup
+  nsExec::ExecToStack 'powershell.exe -NoProfile -Command "try { $$j = Get-Content -LiteralPath ''$APPDATA\..\..\ProgramData\go-mapi\uninst\previous-mail-client.json'' -Raw | ConvertFrom-Json; if ($$null -ne $$j.previousClient) { Write-Output $$j.previousClient } exit 0 } catch { exit 1 }"'
+  Pop $4    ; exit code
+  Pop $1    ; stdout (empty if null or parse error)
+  StrCmp $4 "0" 0 TryFallbacks
+  ; Strip trailing CRLF if present (same pattern as BackupPreviousMailClient's timestamp)
+  ; IntCmp len 2 <equal> <less> <greater>: trim when len >= 2 (equal or greater);
+  ; skip when len < 2 (no CRLF could fit).
+  StrLen $4 $1
+  IntCmp $4 2 0 SkipTrim 0
+  StrCpy $1 $1 -2
+SkipTrim:
   StrCmp $1 "" TryFallbacks
   DetailPrint "Backup contains previousClient='$1'"
   Goto VerifyAndRestore
