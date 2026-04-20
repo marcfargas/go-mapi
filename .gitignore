@@ -7,6 +7,8 @@ dist/
 
 # Vendored NSIS plugin binaries (Phase 10 installer) — tracked intentionally
 !src/installer/plugins/**/*.dll
+# Vendored WebView2 Evergreen bootstrapper (Phase 10 plan 10-02, D-05) — tracked intentionally
+!src/installer/MicrosoftEdgeWebview2Setup.exe
 
 .env
 *.pdb
