@@ -277,8 +277,46 @@ WebView2Ready:
   Return
 FunctionEnd
 
+;------------------------------------------------------------------------------
+; CreateShortcutAndAUMID — D-13 / D-14 / D-15 / INST-01
+;
+; Creates the all-users Start Menu shortcut at $SMPROGRAMS\go-mapi.lnk and
+; stamps PKEY_AppUserModel_ID on it via the ApplicationID NSIS plugin. The
+; stamped AUMID is what makes Phase 9's toast notifications persist in Action
+; Center — the shortcut AUMID MUST match the Wails app's runtime AUMID
+; (com.marcfargas.gomapi per D-15), which the plan 10-06 release pipeline
+; injects into the .exe via ldflags.
+;
+; Plugin ABI (from NSIS ApplicationID v1.1):
+;     ApplicationID::Set "<shortcut-path>" "<aumid-string>"
+;     Pop $0     ; "0" = success, non-zero = error
+; RESEARCH §Pitfall 2 — Pop is required; without it the rc is swallowed.
+;------------------------------------------------------------------------------
+
 Function CreateShortcutAndAUMID
-  DetailPrint "stub: CreateShortcutAndAUMID — implemented in plan 10-03"
+  ; D-13: Start Menu shortcut — all-users (admin install → $SMPROGRAMS resolves
+  ; to %ProgramData%\Microsoft\Windows\Start Menu\Programs\).
+  ; Signature: CreateShortcut link target parameters iconfile iconindex startoptions keyboardshortcut description
+  CreateShortcut "$SMPROGRAMS\go-mapi.lnk" \
+      "$INSTDIR\go-mapi.exe" \
+      "" \
+      "$INSTDIR\go-mapi.exe" 0 \
+      SW_SHOWNORMAL "" \
+      "go-mapi — MAPI-to-Gmail bridge"
+
+  ; D-14: stamp PKEY_AppUserModel_ID via ApplicationID plugin. Plugin loaded
+  ; from src/installer/plugins/x86-unicode/ApplicationID.dll (vendored in plan 10-01).
+  ; ApplicationID::Set pushes "0" on success, "-1" on error.
+  ; D-15: production AUMID is com.marcfargas.gomapi (matches the ${AUMID} define).
+  ApplicationID::Set "$SMPROGRAMS\go-mapi.lnk" "${AUMID}"
+  Pop $0
+  StrCmp $0 "0" AumidOk
+  DetailPrint "WARNING: AUMID stamp rc=$0 — Action Center persistence may break"
+  ; Do NOT halt the installer — continue install; Pester test (plan 10-05) will surface this in CI.
+  Goto AumidDone
+AumidOk:
+  DetailPrint "AUMID stamped: ${AUMID}"
+AumidDone:
 FunctionEnd
 
 Function AddFirewallRule
