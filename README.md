@@ -53,7 +53,21 @@ Two components linked by a filesystem drop:
 
 ## Install
 
+> **Upgrading from go-mapi v2.x?**
+> Please uninstall any prior **go-mapi v2.x** **before** installing v3.0 — via **Settings → Apps → Installed apps** (this removes the Chrome/Edge extension + native-host). The v3.0 installer does not migrate v2 artifacts; running both side-by-side is unsupported.
+
 The v3.0 installer ships in Phase 10. Until then, dev install only — see [Development](#development) below.
+
+### Uninstalling on multi-user machines (RDS / shared Windows Server)
+
+When you run the uninstaller on a multi-user host, only the **uninstalling user's** stored Gmail credentials and per-user settings are removed:
+
+- `%APPDATA%\go-mapi\` (settings.json, app.log) — per-user, scrubbed for the uninstalling user only.
+- Windows Credential Manager target `go-mapi:oauth-tokens` — per-user (DPAPI-scoped), scrubbed for the uninstalling user only.
+
+Other users on the same machine who signed in to go-mapi retain their own credentials and settings after uninstall. To scrub those, each affected user should manually remove their own `%APPDATA%\go-mapi\` directory and run `cmdkey /delete:go-mapi:oauth-tokens` in their own session.
+
+This limitation is by design: Credential Manager entries and `%APPDATA%` are protected by the Windows per-user data-protection model, and the uninstaller (even when elevated) cannot enumerate and impersonate every profile on the machine.
 
 ## Development
 
