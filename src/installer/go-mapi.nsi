@@ -183,7 +183,11 @@ FunctionEnd
 ;   1. HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{GUID}  (64-bit view)
 ;   2. HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{GUID}              (direct HKLM)
 ;   3. HKCU\Software\Microsoft\EdgeUpdate\Clients\{GUID}              (per-user)
-; The `pv` value is the installed runtime version — empty OR "0.0.0.0" = absent.
+; Each probe rejects pv="" OR pv="0.0.0.0" (Microsoft's broken-install sentinel
+; per WebView2 distribution docs) — matches the Go-side check in
+; webview2_check.go (`pv != "" && pv != "0.0.0.0"`). The two layers MUST stay
+; in sync or the installer skips the bootstrapper while the app shows the
+; "WebView2 required" dialog.
 ;------------------------------------------------------------------------------
 
 Function DetectWebView2
@@ -192,16 +196,22 @@ Function DetectWebView2
 
   SetRegView 64
   ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
-  StrCmp $0 "" 0 WebView2Found
-  StrCmp $0 "0.0.0.0" 0 WebView2Found
+  StrCmp $0 "" TryDirectHKLM
+  StrCmp $0 "0.0.0.0" TryDirectHKLM
+  Goto WebView2Found
 
+TryDirectHKLM:
   ReadRegStr $0 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
-  StrCmp $0 "" 0 WebView2Found
-  StrCmp $0 "0.0.0.0" 0 WebView2Found
+  StrCmp $0 "" TryHKCU
+  StrCmp $0 "0.0.0.0" TryHKCU
+  Goto WebView2Found
 
+TryHKCU:
   SetRegView 32
   ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
-  StrCmp $0 "" WebView2NotFound WebView2Found
+  StrCmp $0 "" WebView2NotFound
+  StrCmp $0 "0.0.0.0" WebView2NotFound
+  Goto WebView2Found
 
 WebView2NotFound:
   Pop $1
