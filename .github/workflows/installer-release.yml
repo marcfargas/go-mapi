@@ -1,0 +1,190 @@
+name: Installer release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — build + sign but do not publish GitHub release'
+        required: false
+        default: 'false'
+
+# D-27 release pipeline. Tag-triggered on v* (e.g. v3.0.0). Produces a signed
+# go-mapi-setup.exe and attaches it to the GitHub Release.
+#
+# SignPath is gated on secrets.SIGNPATH_API_TOKEN (D-24) — if empty, the pipeline
+# publishes unsigned. Required SignPath secrets: SIGNPATH_API_TOKEN, SIGNPATH_ORG_ID,
+# SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG.
+#
+# OAuth secrets (GOMAPI_OAUTH_CLIENT_ID, GOMAPI_OAUTH_CLIENT_SECRET) come from repo
+# secrets set during Phase 8 (D-09) and injected via ldflags.
+
+permissions:
+  contents: write       # softprops/action-gh-release@v2 release asset upload
+  actions:  read        # SignPath v2 reads upload-artifact output
+
+jobs:
+  release:
+    name: Build + sign + publish installer
+    runs-on: windows-latest
+
+    env:
+      GOMAPI_OAUTH_CLIENT_ID:     ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
+      GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go 1.25
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Install MinGW (interceptor build)
+        run: |
+          choco install mingw --no-progress -y
+          echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
+        shell: pwsh
+
+      - name: Install npm workspaces
+        run: npm ci
+
+      # D-26: wails.json info.productVersion is the version authority. Validate it
+      # matches the pushed tag (strip leading 'v'). Throws on mismatch.
+      - name: Extract + validate version against tag
+        id: version
+        shell: pwsh
+        run: |
+          $json = Get-Content src/app/wails.json -Raw | ConvertFrom-Json
+          $wailsVer = $json.info.productVersion
+          if (-not $wailsVer) {
+            throw "src/app/wails.json is missing info.productVersion — plan 10-06 task 1 did not land."
+          }
+          $tagVer = "${{ github.ref_name }}" -replace '^v',''
+          if ("${{ github.event_name }}" -eq 'workflow_dispatch') {
+            Write-Host "workflow_dispatch: skipping tag-vs-wails.json validation (using wails.json=$wailsVer)"
+          }
+          elseif ($wailsVer -ne $tagVer) {
+            throw "Tag $tagVer does not match src/app/wails.json info.productVersion=$wailsVer. Bump wails.json before pushing the tag."
+          }
+          "version=$wailsVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+          Write-Host "Release version: $wailsVer"
+
+      - name: Build frontend
+        run: npm run -w @marcfargas/go-mapi-app-frontend build
+
+      - name: Build interceptor DLL
+        run: npm run build:interceptor
+
+      # PATTERNS.md §Shared Pattern 4: all four injectable vars are in `package main`
+      # at src/app/. Use -X main.<var>=<value>. CONTEXT D-15's `github.com/marcfargas/go-mapi/src/app`
+      # path is wrong and corrected here.
+      - name: Build Wails app (release ldflags — all four injections)
+        working-directory: src/app
+        shell: pwsh
+        run: |
+          $ldf = "-X main.Version=${{ steps.version.outputs.version }} -X main.aumidOverride=com.marcfargas.gomapi -X main.oauthClientID=$env:GOMAPI_OAUTH_CLIENT_ID -X main.oauthClientSecret=$env:GOMAPI_OAUTH_CLIENT_SECRET"
+          wails build -platform windows/amd64 -ldflags "$ldf"
+
+      - name: Stage unsigned binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force staged | Out-Null
+          Copy-Item src/app/build/bin/go-mapi.exe staged/
+          Copy-Item src/interceptor/build/bin/go-mapi.dll staged/
+
+      # SignPath v2 (errata: CONTEXT D-23 referenced @v1 — PATTERNS.md §Planner-Facing
+      # Correction Log entry 2 mandates @v2).
+      - name: Upload binaries for SignPath (pass 1)
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        id: upload-binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-binaries-unsigned
+          path: staged/
+
+      - name: SignPath — sign binaries (pass 1 of 2)
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token:            ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id:      ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug:         ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug:  ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id:   ${{ steps.upload-binaries.outputs.artifact-id }}
+          output-artifact-directory: staged-signed
+          wait-for-completion:  true
+
+      - name: Replace staged binaries with signed versions
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          Copy-Item staged-signed/go-mapi.exe src/app/build/bin/go-mapi.exe -Force
+          Copy-Item staged-signed/go-mapi.dll src/interceptor/build/bin/go-mapi.dll -Force
+
+      - name: Verify NSIS + compile installer
+        shell: pwsh
+        run: |
+          try { makensis /VERSION | Out-Null } catch { choco install nsis --no-progress -y }
+          makensis /DGOMAPI_VERSION=${{ steps.version.outputs.version }} src\installer\go-mapi.nsi
+
+      - name: Upload installer for SignPath (pass 2)
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        id: upload-installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-setup-unsigned
+          path: go-mapi-setup.exe
+
+      - name: SignPath — sign installer (pass 2 of 2)
+        if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token:            ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id:      ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug:         ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug:  ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id:   ${{ steps.upload-installer.outputs.artifact-id }}
+          output-artifact-directory: final
+          wait-for-completion:  true
+
+      - name: Resolve final installer path (signed or unsigned)
+        id: final
+        shell: pwsh
+        run: |
+          $signed = 'final/go-mapi-setup.exe'
+          $unsigned = 'go-mapi-setup.exe'
+          if (Test-Path $signed) {
+            "path=$signed" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+            Write-Host "Using SIGNED installer: $signed"
+          } else {
+            "path=$unsigned" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+            Write-Host "Using UNSIGNED installer: $unsigned (SIGNPATH_API_TOKEN absent or signing skipped)"
+          }
+
+      - name: Attach installer to GitHub Release
+        if: ${{ github.event_name == 'push' && (github.event.inputs.dry_run != 'true') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.final.outputs.path }}
+          draft: false
+          prerelease: false
+          body_path: .github/release-template.md
+
+      - name: Upload release artifact (workflow_dispatch dry-run debug)
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-setup-release-${{ github.sha }}
+          path: ${{ steps.final.outputs.path }}
+          retention-days: 7
