@@ -391,7 +391,7 @@ Section "Uninstall"
 
   ; 8. Windows Credential Manager — target is "<service>:<username>" per
   ; zalando/go-keyring Windows backend (PATTERNS.md §Shared Pattern 3).
-  ; CONTEXT specifics line 199 wrote "go-mapi/oauth-tokens" (slash) — WRONG.
+  ; CONTEXT specifics line 199 wrote the slash-separated form — WRONG.
   ; Verified target: "go-mapi:oauth-tokens" (colon). This is the byte-for-byte
   ; value returned by zalando/go-keyring's credName() method for
   ; service="go-mapi" + username="oauth-tokens" (see src/app/auth.go:27-28).
