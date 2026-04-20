@@ -319,8 +319,35 @@ AumidOk:
 AumidDone:
 FunctionEnd
 
+;------------------------------------------------------------------------------
+; AddFirewallRule — D-16 / INST-06
+;
+; Creates an inbound Windows Firewall rule named "go-mapi OAuth loopback" bound
+; to program=$INSTDIR\go-mapi.exe. Pre-creating the rule at install time avoids
+; the first-bind firewall prompt that Windows otherwise raises when go-mapi
+; binds its OAuth loopback listener — on RDS that prompt appears on the server
+; console, invisible to the user in the RDP session (RESEARCH §Pitfall 4).
+;
+; Why netsh over `powershell.exe -Command "New-NetFirewallRule ..."`:
+;   - single-line ExecWait with no PowerShell quote escaping
+;   - works on all Windows 10+ SKUs without the NetSecurity PS module
+;   - shorter NSIS script (RESEARCH §Pitfall 4 recommendation)
+;
+; Why program= (not localport=):
+;   - go-mapi binds 127.0.0.1:0 (ephemeral port) for the OAuth loopback server
+;   - a program-scoped rule is both narrower (only this .exe) and port-stable
+;   - broad port exposure is avoided; tampering with $INSTDIR requires admin
+;
+; Rule name "go-mapi OAuth loopback" MUST match byte-for-byte the uninstall
+; counterpart in plan 10-04 — a typo here breaks uninstall.
+;------------------------------------------------------------------------------
+
 Function AddFirewallRule
-  DetailPrint "stub: AddFirewallRule — implemented in plan 10-03"
+  ExecWait 'netsh advfirewall firewall add rule name="go-mapi OAuth loopback" dir=in program="$INSTDIR\go-mapi.exe" action=allow profile=any' $0
+  DetailPrint "firewall add rule rc=$0"
+  ; Do NOT halt on non-zero rc — group policy may block netsh writes, in which
+  ; case OAuth on RDS will still hang but desktop Windows works (Windows
+  ; auto-classifies loopback without the prompt on non-RDS sessions).
 FunctionEnd
 
 ;------------------------------------------------------------------------------
