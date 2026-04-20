@@ -274,12 +274,18 @@ TryHKCU:
   Goto WebView2Found
 
 WebView2NotFound:
+  ; IN-04: reset registry view before returning so subsequent registry writes
+  ; in the install section (AddFirewallRule, future growth) are not silently
+  ; redirected through WOW6432Node or forced to the 32-bit view.
+  SetRegView default
   Pop $1
   Pop $0
   Push "0"
   Return
 
 WebView2Found:
+  ; IN-04: see WebView2NotFound above — reset view before returning.
+  SetRegView default
   DetailPrint "WebView2 runtime detected: $0"
   Pop $1
   Pop $0
