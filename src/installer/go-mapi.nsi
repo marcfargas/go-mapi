@@ -175,8 +175,106 @@ FunctionEnd
 ; resolve cleanly.
 ;------------------------------------------------------------------------------
 
+;------------------------------------------------------------------------------
+; DetectWebView2 — D-06 / INST-02
+;
+; Pushes "1" (runtime present) or "0" (absent) onto the stack. Probes three
+; registry locations per Microsoft's WebView2 distribution guidance:
+;   1. HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{GUID}  (64-bit view)
+;   2. HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{GUID}              (direct HKLM)
+;   3. HKCU\Software\Microsoft\EdgeUpdate\Clients\{GUID}              (per-user)
+; The `pv` value is the installed runtime version — empty OR "0.0.0.0" = absent.
+;------------------------------------------------------------------------------
+
+Function DetectWebView2
+  Push $0
+  Push $1
+
+  SetRegView 64
+  ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $0 "" 0 WebView2Found
+  StrCmp $0 "0.0.0.0" 0 WebView2Found
+
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $0 "" 0 WebView2Found
+  StrCmp $0 "0.0.0.0" 0 WebView2Found
+
+  SetRegView 32
+  ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  StrCmp $0 "" WebView2NotFound WebView2Found
+
+WebView2NotFound:
+  Pop $1
+  Pop $0
+  Push "0"
+  Return
+
+WebView2Found:
+  DetailPrint "WebView2 runtime detected: $0"
+  Pop $1
+  Pop $0
+  Push "1"
+  Return
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; InstallWebView2 — D-05 / D-06 / D-07 / INST-02
+;
+; If runtime absent, extract the vendored bootstrapper to $INSTDIR, invoke with
+; /silent /install, then poll the registry every 2 seconds for up to 30 iterations
+; (60-second budget per D-06). The bootstrapper is known to exit before install
+; completes (GH WebView2Feedback#1349, still unfixed) — registry poll is the
+; only reliable completion signal.
+;
+; D-07: On poll timeout, continue (do NOT abort). The Wails app has its own
+; runtime-missing recovery (D-08, see webview2_check.go). Log the timeout to
+; $INSTDIR\install.log (append mode so prior log lines survive).
+;
+; Cleanup: the bootstrapper is deleted from $INSTDIR on both success and timeout
+; branches — no leftover bootstrapper in the install dir (D-05 cleanup intent).
+;------------------------------------------------------------------------------
+
 Function InstallWebView2
-  DetailPrint "stub: InstallWebView2 — implemented in plan 10-02"
+  Call DetectWebView2
+  Pop $0
+  StrCmp $0 "1" WebView2Ready
+
+  DetailPrint "WebView2 runtime not present — invoking bootstrapper"
+  SetOutPath "$INSTDIR"
+  File "${__FILEDIR__}\MicrosoftEdgeWebview2Setup.exe"
+
+  ; D-06: bootstrapper exits before install completes (GH WebView2Feedback#1349)
+  ExecWait '"$INSTDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install' $1
+  DetailPrint "WebView2 bootstrapper exit=$1 — polling registry for completion"
+
+  ; Poll every 2s for up to 30 iterations (60s budget) — D-06
+  StrCpy $2 "0"
+PollLoop:
+  IntOp $2 $2 + 1
+  IntCmp $2 30 PollTimeout
+  Sleep 2000
+  Call DetectWebView2
+  Pop $0
+  StrCmp $0 "1" WebView2Installed
+  Goto PollLoop
+
+PollTimeout:
+  ; D-07: continue, do NOT abort. Wails app has runtime-recovery path (D-08).
+  DetailPrint "WARNING: WebView2 bootstrap did not complete within 60s"
+  FileOpen $3 "$INSTDIR\install.log" a
+  FileWrite $3 "WebView2 bootstrap timed out after 60s; user will be prompted on app launch.$\r$\n"
+  FileClose $3
+  Delete "$INSTDIR\MicrosoftEdgeWebview2Setup.exe"
+  Return
+
+WebView2Installed:
+  DetailPrint "WebView2 runtime install completed after $2 polls"
+  Delete "$INSTDIR\MicrosoftEdgeWebview2Setup.exe"
+  Return
+
+WebView2Ready:
+  DetailPrint "WebView2 runtime already present; skipping bootstrap"
+  Return
 FunctionEnd
 
 Function CreateShortcutAndAUMID
