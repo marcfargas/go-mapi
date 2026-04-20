@@ -12,7 +12,12 @@
 #   Add-Type with the same Namespace/Name is idempotent in the same PS session
 #   but noisy if repeated; isolating to a helper keeps the Pester file clean.
 
-if (-not ('GoMapi.AumidReader.Reader' -as [type])) {
+# IN-06: guard on PublicReader (the actual entry point used by Get-ShortcutAumid
+# below) rather than Reader. Add-Type -Name Reader compiles all inline types into
+# a single assembly; if a previous definition was loaded into the session,
+# checking the symbol that is actually called catches stale-definition scenarios
+# that checking `Reader` would miss.
+if (-not ('GoMapi.AumidReader.PublicReader' -as [type])) {
     Add-Type -Namespace GoMapi.AumidReader -Name Reader -MemberDefinition @'
         using System;
         using System.Runtime.InteropServices;
