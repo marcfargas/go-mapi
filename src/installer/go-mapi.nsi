@@ -139,6 +139,14 @@ Function BackupPreviousMailClient
   ; Clean install with no prior default Mail client.
   StrCmp $0 "" BackupNull
 
+  ; WR-02: escape $0 for JSON string context before interpolation. A mail
+  ; client display name may legally contain `"` or `\` (e.g. locale-specific
+  ; or custom enterprise names) which would otherwise produce invalid JSON
+  ; and break the uninstaller's restore path (which parses the file).
+  Push $0
+  Call EscapeJsonString
+  Pop $0
+
   ; Get ISO-8601 UTC timestamp via Windows PowerShell (not pwsh — end-user
   ; machines may only have PS 5.1 per §Anti-Patterns in 10-RESEARCH.md).
   nsExec::ExecToStack 'powershell.exe -NoProfile -Command "[DateTime]::UtcNow.ToString(\"yyyy-MM-ddTHH:mm:ssZ\")"'
@@ -167,6 +175,58 @@ BackupNull:
 AlreadyUs:
   DetailPrint "Upgrade detected — preserving existing previous-mail-client.json"
   Return
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; EscapeJsonString — WR-02
+;
+; Pops one string off the stack, pushes a JSON-string-safe version. NSIS has
+; no native JSON escaper; for the narrow context of a previous-mail-client
+; display name written into a JSON string literal, the two characters that
+; matter are `\` and `"`. Order matters: backslash MUST be escaped before
+; quote (escaping quote first would then double-escape our new backslash).
+;
+; Register usage (local only — all $R* values restored before return):
+;   $R0 = input/output string         $R3 = output buffer
+;   $R1 = length                      $R4 = single char at cursor
+;   $R2 = cursor (0-indexed)
+;------------------------------------------------------------------------------
+
+Function EscapeJsonString
+  Exch $R0     ; input string
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+
+  StrCpy $R3 ""
+  StrLen $R1 $R0
+  StrCpy $R2 0
+
+EscLoop:
+  IntCmp $R2 $R1 EscDone
+  StrCpy $R4 $R0 1 $R2
+  StrCmp $R4 "\" EscBackslash
+  StrCmp $R4 '"' EscQuote
+  StrCpy $R3 "$R3$R4"
+  Goto EscNext
+EscBackslash:
+  StrCpy $R3 "$R3\\"
+  Goto EscNext
+EscQuote:
+  StrCpy $R3 '$R3\"'
+  Goto EscNext
+EscNext:
+  IntOp $R2 $R2 + 1
+  Goto EscLoop
+
+EscDone:
+  StrCpy $R0 $R3
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0     ; push escaped string; restore caller's $R0
 FunctionEnd
 
 ;------------------------------------------------------------------------------
