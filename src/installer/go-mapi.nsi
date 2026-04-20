@@ -582,13 +582,17 @@ un.SC_Found:
 un.SC_NotFound:
   StrCpy $R1 "0"
 un.SC_Done:
+  ; IN-02: correct save/restore sequence. Prelude saved prev$R1, prev$R2 via
+  ; Exch $R1; Exch; Exch $R2 (2 saves, stack = [prev$R1, prev$R2]), then
+  ; Push $R3..$R5 (stack = [prev$R1, prev$R2, prev$R3, prev$R4, prev$R5]).
+  ; Result lives in $R1. Exit: pop $R5..$R3, pop prev$R2 into $R2, then Exch $R1
+  ; swaps the remaining prev$R1 on stack with the result in $R1 — caller sees
+  ; the result on top of stack, $R1 is restored, $R2 is restored.
   Pop $R5
   Pop $R4
   Pop $R3
-  Exch $R1
-  Exch
-  Pop $R2
-  Exch $R1
+  Pop $R2     ; restore prev$R2
+  Exch $R1    ; swap prev$R1 on stack with result in $R1: stack top = result, $R1 = prev$R1
 FunctionEnd
 
 ; Helper: extract substring between two delimiters. Push haystack, push startDelim, push endDelim.
