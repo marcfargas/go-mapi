@@ -365,6 +365,155 @@ Section "Uninstall"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 SectionEnd
 
+; D-11: on uninstall, restore HKLM\SOFTWARE\Clients\Mail\(Default) from the backup JSON.
+; Only restores if:
+;   1. backup JSON exists AND
+;   2. current (Default) still points at "go-mapi" (don't clobber another installer) AND
+;   3. the restoration target's subkey still exists under HKLM\SOFTWARE\Clients\Mail\
+; Otherwise: try fallbacks (Microsoft Outlook -> Outlook -> Windows Mail) or clear to "".
 Function un.RestorePreviousMailClient
-  DetailPrint "stub: un.RestorePreviousMailClient — implemented in plan 10-04"
+  ; Guard 1: only restore if current (Default) is still our claim
+  ReadRegStr $0 HKLM "SOFTWARE\Clients\Mail" ""
+  StrCmp $0 "go-mapi" 0 DoneRestore
+  DetailPrint "Mail (Default) is still 'go-mapi' — proceeding with restore"
+
+  ; Read the backup JSON — naive line-scan (no JSON lib in NSIS).
+  ; Shape (from plan 10-01 BackupPreviousMailClient, position-stable):
+  ;   {"previousClient":null,"backedUpAt":"..."}        OR
+  ;   {"previousClient":"<name>","backedUpAt":"..."}
+  StrCpy $1 ""  ; candidate name
+  FileOpen $2 "$APPDATA\..\..\ProgramData\go-mapi\uninst\previous-mail-client.json" r
+  IfErrors NoBackup
+  FileRead $2 $3    ; read entire JSON line (single line from BackupPreviousMailClient)
+  FileClose $2
+
+  ; Detect null — {"previousClient":null,...}
+  Push $3
+  Push '"previousClient":null'
+  Call un.StrContains
+  Pop $4
+  StrCmp $4 "1" TryFallbacks
+
+  ; Extract the name between `"previousClient":"` and `"`. Use un.StrExtract helper.
+  Push $3
+  Push '"previousClient":"'   ; start-delim
+  Push '"'                    ; end-delim (first " after the start)
+  Call un.StrExtract
+  Pop $1
+  StrCmp $1 "" TryFallbacks
+  DetailPrint "Backup contains previousClient='$1'"
+  Goto VerifyAndRestore
+
+NoBackup:
+  DetailPrint "No backup JSON at %ProgramData%\go-mapi\uninst\previous-mail-client.json — trying fallbacks"
+  Goto TryFallbacks
+
+VerifyAndRestore:
+  ; Confirm the target subkey still exists under HKLM\SOFTWARE\Clients\Mail\<name>
+  ; (some other installer may have removed it since backup).
+  ReadRegStr $5 HKLM "SOFTWARE\Clients\Mail\$1" ""
+  StrCmp $5 "" TryFallbacks     ; subkey gone; fall through
+  WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" "$1"
+  DetailPrint "Restored Mail (Default) to: $1"
+  Goto DoneRestore
+
+TryFallbacks:
+  ; Try "Microsoft Outlook" -> "Outlook" -> "Windows Mail" -> clear
+  ReadRegStr $5 HKLM "SOFTWARE\Clients\Mail\Microsoft Outlook" ""
+  StrCmp $5 "" TryOutlook
+  WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" "Microsoft Outlook"
+  DetailPrint "Fallback: restored Mail (Default) to 'Microsoft Outlook'"
+  Goto DoneRestore
+TryOutlook:
+  ReadRegStr $5 HKLM "SOFTWARE\Clients\Mail\Outlook" ""
+  StrCmp $5 "" TryWinMail
+  WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" "Outlook"
+  DetailPrint "Fallback: restored Mail (Default) to 'Outlook'"
+  Goto DoneRestore
+TryWinMail:
+  ReadRegStr $5 HKLM "SOFTWARE\Clients\Mail\Windows Mail" ""
+  StrCmp $5 "" ClearDefault
+  WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" "Windows Mail"
+  DetailPrint "Fallback: restored Mail (Default) to 'Windows Mail'"
+  Goto DoneRestore
+ClearDefault:
+  WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" ""
+  DetailPrint "No fallback Mail client available — cleared (Default)"
+DoneRestore:
+FunctionEnd
+
+; Helper: case-sensitive substring check. Push haystack, push needle. Pops "1" (found) or "0".
+Function un.StrContains
+  Exch $R1   ; needle
+  Exch
+  Exch $R2   ; haystack
+  Push $R3   ; needle-length
+  Push $R4   ; haystack cursor
+  Push $R5   ; needle cursor
+  StrLen $R3 $R1
+  StrCpy $R4 0
+un.SC_Loop:
+  StrCpy $R5 $R2 $R3 $R4
+  StrCmp $R5 $R1 un.SC_Found
+  StrCmp $R5 "" un.SC_NotFound   ; cursor past end of haystack
+  IntOp $R4 $R4 + 1
+  Goto un.SC_Loop
+un.SC_Found:
+  StrCpy $R1 "1"
+  Goto un.SC_Done
+un.SC_NotFound:
+  StrCpy $R1 "0"
+un.SC_Done:
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Exch $R1
+  Exch
+  Pop $R2
+  Exch $R1
+FunctionEnd
+
+; Helper: extract substring between two delimiters. Push haystack, push startDelim, push endDelim.
+; Returns the substring on the stack, or "" if not found.
+Function un.StrExtract
+  Exch $R1   ; endDelim
+  Exch
+  Exch $R2   ; startDelim
+  Exch 2
+  Exch $R3   ; haystack
+  Push $R4   ; startDelim-length
+  Push $R5   ; startIndex
+  Push $R6   ; cursor/endIndex
+  Push $R7   ; temp
+  StrLen $R4 $R2
+  StrCpy $R5 0
+un.SE_FindStart:
+  StrCpy $R7 $R3 $R4 $R5
+  StrCmp $R7 $R2 un.SE_FoundStart
+  StrCmp $R7 "" un.SE_NotFound
+  IntOp $R5 $R5 + 1
+  Goto un.SE_FindStart
+un.SE_FoundStart:
+  IntOp $R5 $R5 + $R4     ; cursor past startDelim
+  StrCpy $R6 $R5
+un.SE_FindEnd:
+  StrCpy $R7 $R3 1 $R6
+  StrCmp $R7 $R1 un.SE_FoundEnd
+  StrCmp $R7 "" un.SE_NotFound
+  IntOp $R6 $R6 + 1
+  Goto un.SE_FindEnd
+un.SE_FoundEnd:
+  IntOp $R7 $R6 - $R5
+  StrCpy $R1 $R3 $R7 $R5
+  Goto un.SE_Done
+un.SE_NotFound:
+  StrCpy $R1 ""
+un.SE_Done:
+  Pop $R7
+  Pop $R6
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Exch $R1
 FunctionEnd
