@@ -4,14 +4,14 @@ milestone: v3.0
 milestone_name: Wails Pivot
 status: executing
 stopped_at: Phase 11 context gathered
-last_updated: "2026-04-21T15:21:34.465Z"
-last_activity: 2026-04-20 -- Phase 10 execution started
+last_updated: "2026-04-21T17:34:15.297Z"
+last_activity: 2026-04-21 -- Phase 11 execution started
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 33
+  total_plans: 38
   completed_plans: 33
-  percent: 100
+  percent: 87
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 11 — autoupdate-release
+**Current focus:** Phase 11 — Auto-Update + v3.0 Release
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 11 (autoupdate-release) — CONTEXT GATHERED
-Plan: 0 of 0
-Status: Ready for planning
-Last activity: 2026-04-21 -- Phase 11 context gathered
+Phase: 11 (Auto-Update + v3.0 Release) — EXECUTING
+Plan: 1 of 5
+Status: Executing Phase 11
+Last activity: 2026-04-21 -- Phase 11 execution started
 
-Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 ready to plan
+Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 is planned and ready for execution
 
 ## Performance Metrics
 
@@ -74,6 +74,7 @@ Recent decisions carried into v3.0:
 - [Phase 9]: Svelte 5 reactive `Map`/`Set` mutations via `.set()`/`.delete()` do NOT trigger re-renders from callbacks registered in `onMount` — must reassign (`autoDraftErrors = new Map(autoDraftErrors)`). Signal-driven reactivity needs a new reference, not in-place mutation, when the write happens outside the synchronous component scope.
 - [Phase 9]: Toast shim uses `QueryInterface` (returns `(*IUnknown, error)`), NOT `MustQueryInterface` (panics on failure). In Go test runners outside a real WinRT host, `MustQueryInterface` panics cascade through the test runner even with recover. Propagate errors via Go's normal error path.
 - [Phase 9]: Manual QA gate pattern for Windows shell features (tray, toast, live UI): DEFERRED in favor of Windows Sandbox + FlaUI automation todo (`.planning/todos/pending/2026-04-19-automate-tray-visual-qa-windows-sandbox.md`). Surfaces in `09-HUMAN-UAT.md`. All 3 deferred checks are tracked for closure by either a manual pass or the automation harness.
+- [Phase 10]: All six Phase 10 plans have completion summaries on 2026-04-20. Remaining work is human/CI verification debt recorded in `10-VERIFICATION.md` and `10-HUMAN-UAT.md`; per user direction, that debt is accepted for progression and does not block Phase 11.
 
 ### Roadmap Evolution
 
@@ -81,6 +82,7 @@ Recent decisions carried into v3.0:
 - Phase 8.1 completed 2026-04-19 (7/7 must-haves; 9 plans / 7 waves; 2 warnings routed as non-blocking test-hygiene follow-ups for Phase 9)
 - Phase 9 planned 2026-04-19 (9 plans / 6 waves; plan-checker PASSED zero blockers). 09-01 closes WR-01/02/03 to green-up develop CI BEFORE 09-03 watcher_bridge fan-out lands. Toast plan 09-06 carries the NOTIF-05 wintoast shim (~150 LOC, go-ole + x/sys/windows) as the highest-risk item; flagged `autonomous: false` with manual-QA checkpoint.
 - Phase 9 completed 2026-04-19 (5/5 must-haves; 9 plans / 6 waves). Code-review found 1 critical + 5 warnings — all closed in the REVIEW-FIX pass. Verification status `human_needed` — 3 UAT items (tray visual, toast E2E, full user-flow) deferred to the Windows Sandbox + FlaUI automation todo. Develop CI green again after 09-01 landed WR-01/02/03 fixes.
+- Phase 10 completed 2026-04-20 from an implementation standpoint (10-01 through 10-06 all landed). Verification status remains `human_needed`, but the remaining manual/CI checks are accepted as non-blocking for progression into Phase 11.
 
 ### Pending Todos
 
@@ -100,4 +102,4 @@ Recent decisions carried into v3.0:
 
 Last session: 2026-04-21T15:21:34.465Z
 Stopped at: Phase 11 context gathered
-Resume: run `/gsd-plan-phase 11`
+Resume: run `/gsd-execute-phase 11`

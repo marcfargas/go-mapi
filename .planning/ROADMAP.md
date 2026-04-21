@@ -41,7 +41,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] **Phase 8: OAuth + Credentials** — Desktop OAuth (PKCE loopback) with Windows Credential Manager storage shipped; human UAT approved 2026-04-18
 - [x] **Phase 8.1: Post-pivot cleanup and test coverage review (INSERTED)** — Purge v2.x leftovers from the native-host + browser-extension era and shore up test coverage across the Wails codebase before Phase 9 feature work resumes
 - [x] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
-- [ ] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, and uninstall
+- [x] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, uninstall, and release/smoke groundwork landed in 10-05 and 10-06
 - [ ] **Phase 11: Autoupdate + Release** — Notify-only autoupdate, GitHub release pipeline, extension store retirement, smoke test
 
 ## Phase Details
@@ -137,24 +137,29 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   4. Running the uninstaller removes the Wails binary, MAPI handler, registry keys, AppUserModelID shortcut, and temp directory; nothing of go-mapi remains after uninstall
   5. A Pester 5 smoke test verifies install and uninstall round-trip on a fresh `windows-latest` CI runner without manual intervention
 **Plans**: 6 plans
-- [ ] 10-01-PLAN.md — NSIS scaffold + MAPI handler + previous-client backup + ApplicationID plugin vendoring + v2.0 artifact cleanup (INST-01, INST-03, INST-04)
-- [ ] 10-02-PLAN.md — WebView2 bootstrap in installer + Wails app runtime-missing recovery via MessageBoxW (INST-02)
-- [ ] 10-03-PLAN.md — AUMID + Start Menu shortcut + firewall rule (INST-01, INST-06)
-- [ ] 10-04-PLAN.md — Uninstall 10-step scrub + Default Mail restore + README multi-user caveat (INST-05)
-- [ ] 10-05-PLAN.md — Pester 5 smoke tests + CI smoke workflow + inline-C# AUMID reader (INST-07)
-- [ ] 10-06-PLAN.md — Release workflow + SignPath v2 + wails.json info.productVersion (INST-01, INST-03)
+- [x] 10-01-PLAN.md — NSIS scaffold + MAPI handler + previous-client backup + ApplicationID plugin vendoring + v2.0 artifact cleanup (INST-01, INST-03, INST-04) — completed 2026-04-20
+- [x] 10-02-PLAN.md — WebView2 bootstrap in installer + Wails app runtime-missing recovery via MessageBoxW (INST-02) — completed 2026-04-20
+- [x] 10-03-PLAN.md — AUMID + Start Menu shortcut + firewall rule (INST-01, INST-06) — completed 2026-04-20
+- [x] 10-04-PLAN.md — Uninstall 10-step scrub + Default Mail restore + README multi-user caveat (INST-05) — completed 2026-04-20
+- [x] 10-05-PLAN.md — Pester 5 smoke tests + CI smoke workflow + inline-C# AUMID reader (INST-07) — completed 2026-04-20
+- [x] 10-06-PLAN.md — Release workflow + SignPath v2 + wails.json info.productVersion (INST-01, INST-03) — completed 2026-04-20
 
 ### Phase 11: Autoupdate + Release
 **Goal**: Users are notified of new versions via tray notification and can download them with one click; the v3.0 binary is released to a stable URL, the extension is retired from browser stores, and the end-to-end flow is smoke-tested on a clean machine
-**Depends on**: Phase 10
+**Depends on**: Phase 10 foundation, including 10-05 smoke gate and 10-06 release pipeline
 **Requirements**: REL-01, REL-02, REL-03, REL-04, REL-05, REL-06, REL-07
 **Success Criteria** (what must be TRUE):
   1. When a newer version is available on GitHub Releases, the tray icon shows an update indicator and a notification appears with a "Download" button that opens the release page — no in-process binary replacement occurs
   2. User can toggle off update checks in settings; the toggle persists across restarts and no network calls to GitHub are made while opted out
   3. `go-mapi-setup.exe` is downloadable from `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe` and installs successfully on a machine with no prior go-mapi
-  4. The Chrome Web Store listing and Edge Add-ons listing for the v2.x extension are unpublished
+  4. The Chrome Web Store listing and Edge Add-ons listing for the v2.x extension are frozen/deprecated with strong desktop-app cutover messaging, and proof of the store-side action is captured
   5. An end-to-end smoke test on Windows Sandbox completes: fresh install → sign in → MAPI trigger → email queued → Gmail draft created → uninstall clean; README describes the v3.0 install flow
-**Plans**: TBD
+**Plans**: 5 plans
+- [x] 11-01-PLAN.md — Updater backend + persisted AppSettings + App-owned update state/event model (REL-03, REL-05)
+- [ ] 11-02-PLAN.md — Tray toggle/manual-check/status rows + notify-only Download action (REL-04, REL-05)
+- [ ] 11-03-PLAN.md — Main-window update banner/panel + typed frontend wrappers/tests (REL-04)
+- [ ] 11-04-PLAN.md — Release/docs cutover + stable URL publish + store-retirement evidence checkpoint (REL-01, REL-02, REL-07)
+- [ ] 11-05-PLAN.md — Windows Sandbox clean-machine smoke harness + evidence gate (REL-06)
 
 ## Progress
 
@@ -170,8 +175,8 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 8. OAuth + Credentials | v3.0 | 5/5 | Complete | 2026-04-18 |
 | 8.1. Post-pivot cleanup and test coverage review (INSERTED) | v3.0 | 9/9 | Complete | 2026-04-19 |
 | 9. Queue, Automode + Toasts | v3.0 | 9/9 | Complete | 2026-04-19 |
-| 10. Installer + Migration | v3.0 | 0/? | Not started | - |
+| 10. Installer + Migration | v3.0 | 6/6 | Complete | 2026-04-20 |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
 
 ---
-*Roadmap updated: 2026-04-19 — Phase 9 complete (9/9 plans; human UAT deferred to sandbox automation todo)*
+*Roadmap updated: 2026-04-21 — Phase 10 accepted complete for progression; remaining verification debt is explicitly waived for planning purposes and Phase 11 is next*
