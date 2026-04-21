@@ -2,6 +2,8 @@ export namespace main {
 	
 	export class AppSettings {
 	    mode: string;
+	    update_checks_enabled: boolean;
+	    last_update_check?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppSettings(source);
@@ -10,6 +12,8 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
+	        this.update_checks_enabled = source["update_checks_enabled"];
+	        this.last_update_check = source["last_update_check"];
 	    }
 	}
 	export class AuthStatus {
@@ -26,6 +30,30 @@ export namespace main {
 	        this.authenticated = source["authenticated"];
 	        this.email = source["email"];
 	        this.name = source["name"];
+	    }
+	}
+	export class UpdateState {
+	    currentVersion: string;
+	    latestVersion: string;
+	    latestReleaseUrl: string;
+	    installerUrl: string;
+	    updateAvailable: boolean;
+	    lastCheckedAt: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentVersion = source["currentVersion"];
+	        this.latestVersion = source["latestVersion"];
+	        this.latestReleaseUrl = source["latestReleaseUrl"];
+	        this.installerUrl = source["installerUrl"];
+	        this.updateAvailable = source["updateAvailable"];
+	        this.lastCheckedAt = source["lastCheckedAt"];
+	        this.enabled = source["enabled"];
 	    }
 	}
 
