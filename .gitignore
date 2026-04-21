@@ -48,3 +48,8 @@ PLANNING_AGENT.md
 
 # Phase 8: OAuth credentials — must never be committed
 /.env.local
+
+# Phase 11 smoke: sandbox evidence bundles (screenshots, logs, app.log copies)
+# and locally-built RC installers. Ledger stays tracked via 11-SMOKE-EVIDENCE.md.
+tests/sandbox/phase11/evidence-*/
+tests/sandbox/phase11/installer/

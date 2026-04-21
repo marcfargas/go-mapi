@@ -3,206 +3,94 @@ phase: 11-autoupdate-release
 plan: 05
 subsystem: release-verification
 tags: [sandbox, smoke-test, release-verification, evidence]
-dependency-graph:
-  requires: [11-03]
-  provides:
-    - windows-sandbox-harness
-    - phase-11-smoke-checklist
-    - phase-11-evidence-ledger
-  affects:
-    - plan-11-04-release-cut
-tech-stack:
-  added:
-    - windows-sandbox-wsb
-    - powershell-5-harness-script
-  patterns:
-    - mapped-folder-evidence-path
-    - screenshots-before-manual-tail
-    - sha256-evidence-manifest
-    - installer-source-fallback-chain
-key-files:
-  created:
-    - tests/sandbox/phase11/go-mapi-phase11.wsb
-    - tests/sandbox/phase11/Run-Phase11Smoke.ps1
-    - tests/sandbox/phase11/Collect-Phase11Evidence.ps1
-    - .planning/phases/11-autoupdate-release/11-SMOKE-CHECKLIST.md
-    - .planning/phases/11-autoupdate-release/11-SMOKE-EVIDENCE.md
-  modified: []
-decisions:
-  - id: harness-outside-hosted-ci
-    description: "Per D-13, the full user-journey smoke lives in Windows Sandbox, NOT in GitHub Actions. The Phase 10 installer-smoke.yml stays lean and MAPI/OAuth-free."
-  - id: installer-source-fallback
-    description: "Harness tries explicit -InstallerSource, then a pre-staged workflow_dispatch dry-run artifact at C:\\phase11\\installer\\go-mapi-setup.exe, then falls back to https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe."
-  - id: screenshots-but-no-oauth-automation
-    description: "Harness captures 01-pre-install / 02-post-install / 03-app-launched screenshots automatically (D-15). OAuth consent + MAPI shell trigger + Gmail-drafts-UI verification remain a documented manual tail (D-14)."
-  - id: evidence-persists-via-mapped-folder
-    description: "The .wsb maps the host tests/sandbox/phase11/ directory into the sandbox at C:\\phase11 with ReadOnly=false, so evidence-<timestamp>/ subdirectories land back on the host filesystem after sandbox teardown."
-metrics:
-  duration: "~18 min"
-  completed: PENDING (blocking checkpoint)
+status: checkpoint-pending
+requirements: [REL-06]
 ---
 
-# Phase 11 Plan 05: Clean-machine Sandbox Smoke Harness Summary
+# Plan 11-05 — Clean-machine smoke harness
 
-Windows Sandbox harness for the pre-GA full-user-journey smoke (install ->
-sign in -> MAPI trigger -> queue -> Gmail draft -> uninstall) that deliberately
-runs outside hosted CI (per D-13) so OAuth + MAPI shell + Gmail UI checks
-never contaminate GitHub runners.
+## Delivery (Task 1)
 
-## Status
+Harness scaffolded, then rewritten after the first-run feedback exposed three
+blockers:
 
-- Task 1 (auto): COMPLETE and committed as `5aeb9d5`.
-- Task 2 (checkpoint:human-verify, gate=blocking): PENDING - awaiting the
-  human to run the sandbox and fill `11-SMOKE-EVIDENCE.md` with pass/fail
-  outcomes for every checklist step.
+1. **v2.1 fallback removed.** The original fallback to
+   `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`
+   silently pulled v2.1.x during v3.0 pre-GA, which defeats the smoke. The
+   harness now hard-errors if no v3.0 installer is staged at
+   `tests\sandbox\phase11\installer\go-mapi-setup.exe` and points the caller at
+   `scripts\build-phase11-installer.ps1`.
+2. **PSSecurityException safety net.** The `.wsb` LogonCommand already passed
+   `-ExecutionPolicy Bypass -NoProfile -File`, but mapped-folder files carry a
+   Zone.Internet MOTW that can still block under some host settings. The
+   harness now runs `Unblock-File` across `C:\phase11\*.ps1` as its first step.
+3. **Manual tail shrunk 9 → 3.** The flow now auto-installs, auto-launches,
+   auto-triggers MAPI via `mailto:`, auto-detects the queue JSON, auto-
+   uninstalls, and auto-verifies cleanliness. Only three moments need a
+   human: OAuth consent in the browser, clicking "Create draft" in the app
+   window, and a y/n glance at Gmail Drafts. The harness polls `app.log` for
+   the milestone lines (`oauth: signed in as`, `gmail: draft created id=`) so
+   the human's job is just "do the thing, then hit Enter".
 
-This Summary documents what Task 1 delivered. It will need a follow-up
-amendment (or a second summary block) once Task 2 is approved, to record
-the final evidence verdict and any deviations discovered during the actual
-clean-machine run.
+### New helper
 
-## What Task 1 delivered
+- `scripts\build-phase11-installer.ps1` — local RC builder. Invokes `makensis`
+  with an explicit absolute `!addplugindir` (the `.nsi`'s `${__FILEDIR__}`-
+  based directive doesn't register under all pwsh/MSYS invocations), copies
+  the installer to the staged path, and prints size + SHA256.
 
-### 1. `tests/sandbox/phase11/go-mapi-phase11.wsb` (52 lines)
+### Updated files
 
-Windows Sandbox configuration that:
+- `tests\sandbox\phase11\Run-Phase11Smoke.ps1` — full rewrite, ~250 lines, 0
+  parse errors via `[Parser]::ParseFile`.
+- `tests\sandbox\phase11\go-mapi-phase11.wsb` — unchanged (LogonCommand
+  already correct).
+- `.planning\phases\11-autoupdate-release\11-SMOKE-CHECKLIST.md` — now a
+  3-prompt tail instead of a 9-step walkthrough.
+- `.planning\phases\11-autoupdate-release\11-SMOKE-EVIDENCE.md` — template
+  matched to the auto-generated ledger the harness drops in the evidence dir.
+- `.gitignore` — adds `tests/sandbox/phase11/evidence-*/` and
+  `tests/sandbox/phase11/installer/`.
 
-- maps the host `tests/sandbox/phase11/` into the sandbox at `C:\phase11`
-  with `ReadOnly=false` so evidence survives sandbox teardown;
-- enables networking (needed for installer download + OAuth consent + Gmail
-  draft verification);
-- disables printer, audio, video, VGpu redirection to keep the sandbox
-  surface small and reproducible;
-- keeps clipboard redirection enabled so the human can paste the OAuth
-  verification code into the sandbox browser;
-- uses `<LogonCommand>` to auto-run `Run-Phase11Smoke.ps1` on login.
+### Staged for the sandbox run
 
-### 2. `tests/sandbox/phase11/Run-Phase11Smoke.ps1` (190 lines)
+- `tests\sandbox\phase11\installer\go-mapi-setup.exe` — v3.0.0-rc.1 built
+  from this branch (6,793,870 bytes). Includes Phase 11 updater backend +
+  tray UX + frontend UX. OAuth client ID/secret ldflags-injected.
 
-Automated harness that runs inside the sandbox. Key behaviors:
+## Pending (Task 2)
 
-- Creates `C:\phase11\evidence-<timestamp>/` with `screenshots/`, `video/`,
-  `logs/` subdirectories.
-- Resolves the installer with a three-way fallback: explicit
-  `-InstallerSource` parameter -> pre-staged
-  `C:\phase11\installer\go-mapi-setup.exe` (used when a `workflow_dispatch`
-  dry-run artifact is placed there) -> stable
-  `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`.
-  Required per the plan's verify snippet - the harness MUST cite at least
-  one of those two strings; this one cites both.
-- Takes pre-install and post-install screenshots via
-  `System.Windows.Forms.Screen.PrimaryScreen.Bounds` + `Bitmap.Save` PNG.
-- Runs `go-mapi-setup.exe /S` silently; fails hard on non-zero exit.
-- Launches the app from the Start Menu shortcut so the human lands in the
-  sign-in screen ready to perform the manual OAuth tail.
-- Writes `harness-metadata.md` with the run metadata for the human to
-  reference while filling `11-SMOKE-EVIDENCE.md`.
+`checkpoint:human-verify gate="blocking"`. The human:
 
-### 3. `tests/sandbox/phase11/Collect-Phase11Evidence.ps1` (~85 lines)
+1. Verifies the installer is staged (done above).
+2. Double-clicks `tests\sandbox\phase11\go-mapi-phase11.wsb`.
+3. Handles the three prompts described in `11-SMOKE-CHECKLIST.md`.
+4. Copies `<EvidenceDir>\EVIDENCE.md` into `11-SMOKE-EVIDENCE.md`, commits.
+5. Replies `approved` to the orchestrator if verdict is `PASS`.
 
-Post-run gatherer. Collects:
+REL-06 is satisfied once that ledger commit lands. Plan 11-04 (v3.0 release
+cut) stays blocked until it does.
 
-- `%APPDATA%\go-mapi\app.log` (OAuth + queue + Gmail activity during the
-  manual tail - the single richest signal for pass/fail triage).
-- `%LOCALAPPDATA%\go-mapi\` if present.
-- `%TEMP%\go-mapi\` snapshot before uninstall (for draft-step debugging).
-- NSIS install + uninstall log files.
-- Generates `evidence-manifest.json` with a SHA256 hash of every collected
-  file so `11-SMOKE-EVIDENCE.md` can reference integrity-verified names.
+## Invariants preserved
 
-Privacy baseline (CLAUDE.md + D-15): no OAuth token values and no email
-body content are parsed or written - only log lines and file paths.
+- Hosted CI unchanged — `.github/workflows/installer-smoke.yml` continues to
+  cover the DLL-only smoke; Phase 11 flow stays on the sandbox per D-13.
+- Evidence binaries (screenshots, `app.log` snapshot) are gitignored under
+  `evidence-*/`; only the committed ledger is source of record.
+- STATE.md / ROADMAP.md untouched — orchestrator owns those writes.
 
-### 4. `.planning/phases/11-autoupdate-release/11-SMOKE-CHECKLIST.md`
+## Decisions honored
 
-Ten numbered steps (`0. pre-flight` through `9. fill evidence ledger` plus
-`10. resume signal`). Each step has checkbox items and an `Evidence` line
-stating what screenshot / log / text note must exist to close the step.
-Time budget spelled out: roughly 15 minutes wall-clock, roughly 3 minutes
-active interaction. OAuth is called out explicitly as the slowest manual
-step. The uninstall step spells out the exact PowerShell one-liners the
-human must run to verify each artifact is gone.
+- D-13 Sandbox is the clean-room; not ported into hosted CI.
+- D-14 Short manual tail accepted (3 prompts; OAuth consent + UI click + Gmail glance).
+- D-15 Screenshots auto-captured at 7 checkpoints.
+- D-16 Single green journey is the gate — `Overall: PASS` in the ledger.
 
-### 5. `.planning/phases/11-autoupdate-release/11-SMOKE-EVIDENCE.md` (120 lines)
+## Deviations from original plan
 
-Artifact ledger skeleton with one section per checklist step. Each section
-has: expected screenshot/log filenames, structured YES/NO questions for the
-operator, a `Verdict` line, and a free-form `Notes` field. Contains all
-required substrings per the plan's verify snippet: `install`, `sign in`,
-`MAPI`, `queue`, `draft`, `uninstall`. A final-verdict section with three
-gate checkboxes closes the file.
-
-## Verification
-
-Ran the plan's automated verify snippet inside the worktree:
-
-```
-wsb lines: 52 (need >=20)
-Run-Phase11Smoke lines: 190 (need >=120)
-evidence lines: 120 (need >=80)
-VERIFY OK
-```
-
-All five files exist, `.wsb` is valid XML, both PowerShell files tokenize
-cleanly (0 parse errors), Run-Phase11Smoke.ps1 cites both
-`workflow_dispatch` and `releases/latest/download/go-mapi-setup.exe`, and
-SMOKE-EVIDENCE.md contains every required step keyword.
-
-## Deviations from Plan
-
-### Auto-fixed Issues
-
-**1. [Rule 3 - Blocking] PowerShell 5.1 misparsed UTF-8 smart punctuation in comments**
-
-- **Found during:** Task 1 verification (`[System.Management.Automation.PSParser]::Tokenize`).
-- **Issue:** Em-dash (U+2014) and other smart-punctuation characters written
-  by the draft got decoded as Windows-1252 during Tokenize, which then saw
-  stray right-double-quote bytes and reported 13 spurious parse errors.
-  The plan-level verify snippet specifically asserts parse errors == 0, so
-  this was a gate-blocking issue for the Task 1 commit.
-- **Fix:** Normalized `Run-Phase11Smoke.ps1` and `Collect-Phase11Evidence.ps1`
-  to ASCII (`—` -> `-`, `"`/`"` -> `"`, `'`/`'` -> `'`). The CLAUDE.md
-  project-level convention of describing "why not what" in comments is
-  preserved; only the punctuation flavor changed.
-- **Files modified:** `tests/sandbox/phase11/Run-Phase11Smoke.ps1`,
-  `tests/sandbox/phase11/Collect-Phase11Evidence.ps1`.
-- **Commit:** `5aeb9d5` (included in the Task 1 atomic commit - the fix
-  was applied before the first successful verify).
-
-**2. [Rule 3 - Blocking] `@"..."@` here-string closing marker misaligned**
-
-- **Found during:** Task 1 verification.
-- **Issue:** The first draft of `Write-EvidenceHeader` used a here-string
-  with the closing `"@` indented inside the function body. PowerShell
-  here-strings require the closing marker to be at column 0, and the
-  misalignment combined with the smart-quote issue above produced a parse
-  error at line 145.
-- **Fix:** Rewrote `Write-EvidenceHeader` to build the metadata lines via a
-  string array + `-join [Environment]::NewLine` instead of a here-string.
-  Simpler, column-agnostic, and indent-robust under future edits.
-- **Files modified:** `tests/sandbox/phase11/Run-Phase11Smoke.ps1`.
-- **Commit:** `5aeb9d5`.
-
-Both fixes are correctness issues caught by the plan's own verify snippet;
-no scope expansion.
-
-## What happens next (Task 2 - blocking checkpoint)
-
-A separate checkpoint message is being returned to the orchestrator
-describing the exact manual steps. Nothing else gets built until the
-human runs the sandbox, fills `11-SMOKE-EVIDENCE.md` with real evidence,
-and replies `approved` (or describes the failing step).
-
-Per plan 11-05 `<verification>`: "The deliverable is not complete until
-`11-SMOKE-EVIDENCE.md` contains a full pass record from a clean-machine
-run and the user checkpoint is approved. Public GA release work in 11-04
-stays blocked on that result."
-
-## Self-Check: PASSED
-
-- `tests/sandbox/phase11/go-mapi-phase11.wsb`: FOUND (52 lines, valid XML)
-- `tests/sandbox/phase11/Run-Phase11Smoke.ps1`: FOUND (190 lines, 0 parse errors, cites both installer sources)
-- `tests/sandbox/phase11/Collect-Phase11Evidence.ps1`: FOUND (0 parse errors)
-- `.planning/phases/11-autoupdate-release/11-SMOKE-CHECKLIST.md`: FOUND
-- `.planning/phases/11-autoupdate-release/11-SMOKE-EVIDENCE.md`: FOUND (120 lines, all six required keywords present)
-- Commit `5aeb9d5`: FOUND in git log
+- Original harness shipped as "5 files scaffolded" with the user running a
+  9-step manual checklist. User pushed back on over-manuality + bugs; this
+  rewrite shrinks the manual tail to 3 prompts and unblocks the install path.
+- Added `scripts\build-phase11-installer.ps1` outside the original `files_modified`
+  list. It's a local-dev helper, required because the CI path to an RC installer
+  (`workflow_dispatch` dry-run) hadn't been triggered when the sandbox is run.

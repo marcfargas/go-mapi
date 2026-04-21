@@ -1,133 +1,91 @@
-# Phase 11 Clean-Machine Smoke Checklist
+# Phase 11 clean-machine smoke — human checklist
 
-**Purpose:** REL-06 gate — prove the full v3.0 user journey works once on a
-reproducible clean Windows environment before tagging the GA release.
+This checklist is the **short manual tail** (D-14) left after `Run-Phase11Smoke.ps1`
+automates everything it can. On a green path there are exactly **three** moments
+where the script waits for you. Everything else (install, launch, mailto trigger,
+queue-file detection, uninstall, cleanliness check, evidence ledger) is scripted.
 
-**Target environment:** Windows Sandbox launched from
-`tests/sandbox/phase11/go-mapi-phase11.wsb`, or any equivalent disposable
-clean Windows 10/11 VM (D-13). The automation assumes the Windows Sandbox
-path; for another VM, run the same scripts manually.
+## Pre-flight (host, before launching sandbox)
 
-**Time budget:** roughly 15 minutes of wall-clock; roughly 3 minutes of
-active human interaction (OAuth consent + MAPI trigger + draft verify).
+1. Verify the v3.0 RC installer is staged:
 
-**Evidence rule:** every numbered step must produce *either* a screenshot /
-video clip *or* a text note in `11-SMOKE-EVIDENCE.md`. A "pass" without any
-evidence does not close REL-06.
+   ```pwsh
+   Test-Path C:\dev\go-mapi\tests\sandbox\phase11\installer\go-mapi-setup.exe
+   ```
 
----
+   If missing, build one:
 
-## 0. Pre-flight (on the host)
+   ```pwsh
+   pwsh -ExecutionPolicy Bypass -File C:\dev\go-mapi\build-rc.ps1
+   ```
 
-- [ ] Check out the tag or branch under test.
-- [ ] Pick an installer source:
-  - **Option A — release candidate via `workflow_dispatch` dry-run artifact:**
-    download `go-mapi-setup.exe` from the most recent `workflow_dispatch`
-    run of `installer-release.yml`, place it at
-    `tests/sandbox/phase11/installer/go-mapi-setup.exe`.
-  - **Option B — published stable release:** leave the staging folder empty;
-    the harness will download from
-    `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`.
-- [ ] Optional: start screen-recording software on the host pointed at the
-      sandbox window (OBS, ShareX, Windows Game Bar — free tools all fine).
-      Save the video output to `tests/sandbox/phase11/evidence-<timestamp>/video/`
-      once available.
-- [ ] Double-click `go-mapi-phase11.wsb` to launch the sandbox. Windows
-      Sandbox auto-runs `Run-Phase11Smoke.ps1` as the logon command.
+   (requires NSIS installed locally; `scoop install nsis` or `choco install nsis`)
 
-## 1. Install (mostly automated)
+2. (Optional) Start a screen recorder pointed at the sandbox window.
 
-- [ ] Sandbox logs in; PowerShell console appears.
-- [ ] `Run-Phase11Smoke.ps1` prints the evidence directory path — note it
-      (e.g. `C:\phase11\evidence-20260421-143012`).
-- [ ] Installer exits 0 (automated assert).
-- [ ] Post-install screenshot `02-post-install.png` is written.
-- **Evidence:** screenshots `01-pre-install.png`, `02-post-install.png`,
-  plus `logs\harness.log`.
+## Launch sandbox
 
-## 2. App launch
+Double-click `C:\dev\go-mapi\tests\sandbox\phase11\go-mapi-phase11.wsb`.
 
-- [ ] Start Menu shortcut `go-mapi.lnk` exists and is launched by the harness.
-- [ ] The Wails window renders the **sign-in screen** (welcome + Google button).
-- [ ] Tray icon appears in the system tray.
-- **Evidence:** screenshot `03-app-launched.png`, plus a manual screenshot of
-  the tray icon area.
+The logon command auto-runs `Run-Phase11Smoke.ps1`, which will:
 
-## 3. Sign in (manual — OAuth consent cannot be automated)
+- unblock mapped scripts
+- create `C:\phase11\evidence-<timestamp>\`
+- take pre-install screenshot
+- silent-install the RC (`/S`)
+- take post-install screenshot
+- launch the app from the Start Menu
+- pause and wait for you (prompt 1 below)
 
-- [ ] Click `Sign in with Google` in the sign-in screen.
-- [ ] Default browser opens Google consent for `gmail.compose` and `gmail.send`.
-- [ ] Authenticate with the test Gmail account. (Never use a personal primary
-      Gmail account — use a disposable test account.)
-- [ ] Consent loopback returns; the app shows the signed-in header (name + email).
-- [ ] Re-auth banner is NOT shown.
-- **Evidence:** manual screenshot `04-signed-in.png` of the signed-in header.
+## Manual tail (inside sandbox) — 3 prompts
 
-## 4. MAPI trigger (manual — needs a real Windows app doing a MAPI send)
+### Prompt 1 — OAuth sign-in
 
-- [ ] Open Notepad inside the sandbox.
-- [ ] Type a short body (`Phase 11 smoke test`) and save as
-      `C:\Users\WDAGUtilityAccount\Desktop\smoke.txt`.
-- [ ] Right-click the file → `Send to` → `Mail recipient`.
-- [ ] Windows invokes the MAPI handler (`go-mapi.dll`), which writes JSON to
-      `%TEMP%\go-mapi\`.
-- **Evidence:** manual screenshot `05-mapi-sendto.png` of the Send to menu.
+The app opens its own browser window for Google OAuth consent. Complete the
+consent flow in that window. Once the app shows the signed-in header, press
+**ENTER** in the PowerShell console. The script polls `app.log` for
+`oauth: signed in as` — if it never sees that line within 5 min, it aborts
+with `oauth = FAIL`.
 
-## 5. Queue row
+### Prompt 2 — Create draft click
 
-- [ ] Within 2-3 seconds, the Wails window shows a queued email row
-      corresponding to the `smoke.txt` send.
-- [ ] Subject reads `smoke` (or similar — depending on how the legacy MAPI
-      client filled the subject field).
-- **Evidence:** manual screenshot `06-queue-row.png` of the queue view.
+After prompt 1, the script auto-triggers a `mailto:` send, which routes through
+the newly-installed go-mapi MAPI handler and drops a JSON into `%TEMP%\go-mapi\`.
+The go-mapi window will show a new queue row.
 
-## 6. Gmail draft
+**Click "Create draft" on the queue row.** Then press **ENTER** in the
+PowerShell console. The script polls `app.log` for `gmail: draft created id=` —
+2-min budget.
 
-- [ ] Click `Create draft` on the queue row.
-- [ ] The row disappears (processed and deleted from `%TEMP%\go-mapi\`).
-- [ ] Open `https://mail.google.com/mail/u/0/#drafts` in the sandbox browser.
-- [ ] The new draft exists with the expected subject + body.
-- **Evidence:** manual screenshots `07-draft-created.png` (app view) and
-  `08-draft-in-gmail.png` (Gmail drafts view). Redact or crop the account
-  email address in the second screenshot per D-15 + CLAUDE.md privacy rule.
+### Prompt 3 — Gmail glance (y/n)
 
-## 7. Uninstall (mostly automated)
+Open Gmail in your browser. Confirm the draft appeared in Drafts. The script
+asks `[y]/n` — type `y` on success, `n` if the draft is missing.
 
-- [ ] Close the Wails window and right-click tray icon → `Quit`.
-- [ ] Inside the sandbox, open an elevated PowerShell and run:
-      `& 'C:\Program Files\go-mapi\uninstall.exe' /S`
-- [ ] Confirm exit code is 0.
-- [ ] Verify clean removal:
-      - `Test-Path 'C:\Program Files\go-mapi'` → False (or empty dir)
-      - `Test-Path 'HKLM:\SOFTWARE\Clients\Mail\go-mapi'` → False
-      - `Test-Path "$env:APPDATA\go-mapi"` → False
-      - `cmdkey /list:go-mapi:oauth-tokens` → no matching entries
-      - `Get-NetFirewallRule -DisplayName 'go-mapi OAuth loopback'` → empty
-      - Start Menu shortcut gone.
-- **Evidence:** manual screenshot `09-post-uninstall.png` of the PowerShell
-  console with the checks above.
+## Post-script (inside sandbox)
 
-## 8. Collect evidence (automated)
+The script then auto-uninstalls, verifies cleanliness, and writes
+`<EvidenceDir>\EVIDENCE.md` with PASS/FAIL per step plus screenshot refs.
 
-- [ ] Run `C:\phase11\Collect-Phase11Evidence.ps1` — gathers `app.log`,
-      installer/uninstaller logs, the TEMP MAPI JSON staging state, and
-      writes `evidence-manifest.json` with SHA256 hashes.
-- **Evidence:** `evidence-manifest.json` under the evidence dir.
+**Leave the sandbox running** until you've read the final console output.
 
-## 9. Fill the evidence ledger (on the host)
+## Close sandbox (host)
 
-- [ ] Close the sandbox. The mapped folder
-      `tests/sandbox/phase11/evidence-<timestamp>/` persists on the host.
-- [ ] Open `11-SMOKE-EVIDENCE.md` and fill every step with: screenshot
-      filename, video timestamp range (if recorded), pass/fail verdict, and
-      free-form notes for anything unexpected.
-- [ ] Commit the filled `11-SMOKE-EVIDENCE.md` (evidence files themselves are
-      gitignored under `tests/sandbox/phase11/evidence-*/`).
+The mapped evidence folder persists at:
 
-## 10. Resume signal
+```
+C:\dev\go-mapi\tests\sandbox\phase11\evidence-<timestamp>\
+```
 
-- [ ] If all steps passed, reply to the GSD executor with `approved` so the
-      orchestrator can continue toward the GA tag push in plan `11-04`.
-- [ ] If any step failed, capture the failing screenshot + the app log,
-      record the outcome in `11-SMOKE-EVIDENCE.md`, and reply with the
-      failing step number plus a short description — DO NOT reply `approved`.
+## Fill ledger (host)
+
+Copy the contents of `<EvidenceDir>\EVIDENCE.md` into
+`.planning/phases/11-autoupdate-release/11-SMOKE-EVIDENCE.md`, commit the
+ledger only (screenshots + app.log stay gitignored under
+`tests/sandbox/phase11/evidence-*/`).
+
+## Resume signal
+
+Reply `approved` to the orchestrator once the ledger shows `Overall: PASS`.
+If any step shows `FAIL`, describe which and paste the relevant screenshot
+filename — do not reply `approved` on a partial pass.
