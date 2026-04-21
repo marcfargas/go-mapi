@@ -63,8 +63,10 @@ describe('settings.ts', () => {
 
   it('saveSettings forwards to SaveSettings with the given value', async () => {
     asMock(SaveSettings).mockResolvedValue(undefined);
-    await saveSettings({ mode: 'auto-draft' });
-    expect(SaveSettings).toHaveBeenCalledWith({ mode: 'auto-draft' });
+    // Phase 11-03: AppSettings now includes the update-check fields (D-08).
+    const next = { mode: 'auto-draft' as const, update_checks_enabled: true };
+    await saveSettings(next);
+    expect(SaveSettings).toHaveBeenCalledWith(next);
   });
 
   it('getMode returns "manual" or "auto-draft" (narrows unknown strings)', async () => {
