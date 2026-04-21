@@ -19,7 +19,6 @@
     subscribeAutoDraftResult,
     subscribePauseChanged,
     fetchUpdateState,
-    checkForUpdatesNow,
     subscribeUpdateState,
     type Mode,
     type ErrorCategory,
@@ -31,6 +30,8 @@
   import ReAuthBanner from './lib/components/ReAuthBanner.svelte';
   import SignedInHeader from './lib/components/SignedInHeader.svelte';
   import QueueRow from './lib/components/QueueRow.svelte';
+  import UpdateBanner from './lib/components/UpdateBanner.svelte';
+  import UpdatePanel from './lib/components/UpdatePanel.svelte';
   import './lib/styles.css';
 
   // Existing state
@@ -220,7 +221,31 @@
   async function handleSignOutClick() {
     await signOut();
   }
+
+  /** Phase 11-03: open the update panel from the banner (D-01 → D-02). */
+  function handleOpenUpdatePanel() {
+    showUpdatePanel = true;
+  }
+
+  /** Phase 11-03: close the panel without dismissing the banner — the
+   *  banner stays until a newer version actually ships. bannerDismissedForVersion
+   *  is reserved for an optional future "hide until next release" dismissal
+   *  flow; we keep it inert this phase to avoid suppressing legitimate
+   *  upgrade prompts. */
+  function handleCloseUpdatePanel() {
+    showUpdatePanel = false;
+    // bannerDismissedForVersion intentionally not updated here (D-01: banner
+    // remains persistent across panel open/close cycles).
+    void bannerDismissedForVersion; // silence "assigned but never read" without removing the state field
+  }
 </script>
+
+{#if updateState && updateState.updateAvailable}
+  <UpdateBanner
+    latestVersion={updateState.latestVersion}
+    onViewUpdate={handleOpenUpdatePanel}
+  />
+{/if}
 
 {#if showReAuthBanner}
   <ReAuthBanner onRestore={handleReAuthClick} />
@@ -267,4 +292,8 @@
 
 {#if showPreAuthModal}
   <PreAuthModal onContinue={handlePreAuthContinue} onCancel={handlePreAuthCancel} />
+{/if}
+
+{#if showUpdatePanel && updateState}
+  <UpdatePanel update={updateState} onClose={handleCloseUpdatePanel} />
 {/if}
