@@ -93,6 +93,15 @@ type App struct {
 	// to a counter to verify the contract without spinning up Wails.
 	updateStateEmitter func(UpdateState)
 
+	// updateStateObserver is the in-process observer for tray /
+	// notification code that needs to react to state changes. Separate
+	// from updateStateEmitter so the Wails event emission path and the
+	// in-process notification path never race (Phase 11 Plan 02 —
+	// tray_update.go / update_notifications.go). At most one observer
+	// is registered at a time; callers that need fan-out wrap their
+	// own dispatcher.
+	updateStateObserver func(UpdateState)
+
 	// updateSchedulerStop cancels the long-lived 24h scheduler
 	// goroutine on shutdown. nil until the scheduler starts.
 	updateSchedulerStop context.CancelFunc
@@ -251,6 +260,11 @@ func (a *App) startup(ctx context.Context) {
 				wruntime.EventsEmit(a.ctx, "update-state-changed", state)
 			}
 		}
+		// Phase 11 Plan 02: in-process notification helper. Subscribes
+		// to update-state fan-out and fires a tray toast on flip-to-
+		// available. Silent on failures per D-04; never touches the
+		// installer binary (D-03).
+		a.wireUpdateNotifications()
 		// REL-03: startup check runs on a goroutine so network IO does
 		// not delay main-window readiness. MaybeCheck inside
 		// runStartupUpdateCheck enforces opt-out + 24h cadence.
@@ -756,6 +770,17 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 	if a.updateStateEmitter != nil {
 		a.updateStateEmitter(merged)
 	}
+	// Phase 11 Plan 02: in-process observer fan-out for tray/notification
+	// code. Distinct from the Wails EventsEmit hook so the frontend path
+	// and the tray path can evolve independently.
+	if a.updateStateObserver != nil {
+		a.updateStateObserver(merged)
+	}
+	// Signal tray refresh so the update-available icon/tooltip and the
+	// "Last checked" status row reflect this result. Coalesced via the
+	// 1-slot channel (T-9-11) so repeated result emissions never wake
+	// the tray more than necessary.
+	a.signalTrayRefresh()
 }
 
 // syncUpdateEnabledIntoState updates the cached Enabled flag without
@@ -852,6 +877,13 @@ func (a *App) handleToastAction(args string) {
 		// clearToastForEmail already called inside DismissEmail on success.
 	case "open":
 		a.showWindow()
+	case "open-update":
+		// Phase 11 Plan 02: update-available toast body was clicked.
+		// Open the release page in the browser; D-03 invariant — never
+		// launch an installer. openUpdateReleasePage handles the
+		// LatestReleaseURL vs fallback decision and swallows
+		// browser.Open failures silently per D-04.
+		openUpdateReleasePage(a.GetUpdateState())
 	default:
 		logError("toast: unknown action %q", op)
 		a.showWindow()
