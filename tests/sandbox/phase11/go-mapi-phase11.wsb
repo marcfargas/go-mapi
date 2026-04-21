@@ -1,0 +1,52 @@
+<Configuration>
+    <!--
+      Phase 11 (Autoupdate + Release) clean-machine smoke harness.
+
+      This .wsb is intentionally separate from tests/sandbox/sandbox.wsb
+      (which is the v1 DLL-only smoke). Phase 11 needs a disposable clean
+      Windows environment that can:
+        1. Reach the internet (to download the release candidate installer
+           and to complete Google OAuth consent).
+        2. Receive a mapped host folder where the harness scripts + evidence
+           output live, so we can collect screenshots and logs back on the
+           host after the sandbox is torn down.
+        3. Auto-run the PowerShell bootstrap on logon so the human only
+           performs the short documented manual tail (see 11-SMOKE-CHECKLIST.md).
+
+      Evidence host folder convention:
+        HostFolder = <repo-root>\tests\sandbox\phase11
+        SandboxFolder = C:\phase11
+      The bootstrap script (Run-Phase11Smoke.ps1) will create C:\phase11\evidence-<timestamp>\
+      inside the sandbox and surface that path so screenshots, videos, logs,
+      and the filled-in SMOKE-EVIDENCE.md land back on the host filesystem.
+
+      NOTE: HostFolder must be the ABSOLUTE path on the host. Windows Sandbox
+      does NOT resolve relative paths. Before launching, adjust the host path
+      below if the repo lives somewhere other than C:\dev\go-mapi.
+
+      D-13: Windows Sandbox is the clean-room target for the Phase 11 smoke.
+      D-14: automate as much as practical; manual tail is explicit, short.
+      D-15: evidence capture (screenshots/video) lives under the mapped folder.
+      D-16: one successful journey on a clean machine is the closing gate.
+    -->
+    <VGpu>Disable</VGpu>
+    <Networking>Default</Networking>
+    <MemoryInMB>8192</MemoryInMB>
+    <AudioInput>Disable</AudioInput>
+    <VideoInput>Disable</VideoInput>
+    <ProtectedClient>Enable</ProtectedClient>
+    <PrinterRedirection>Disable</PrinterRedirection>
+    <!-- ClipboardRedirection stays Enable so the human can paste the OAuth
+         verification code or any one-time auth artefact into the sandbox. -->
+    <ClipboardRedirection>Enable</ClipboardRedirection>
+    <MappedFolders>
+        <MappedFolder>
+            <HostFolder>C:\dev\go-mapi\tests\sandbox\phase11</HostFolder>
+            <SandboxFolder>C:\phase11</SandboxFolder>
+            <ReadOnly>false</ReadOnly>
+        </MappedFolder>
+    </MappedFolders>
+    <LogonCommand>
+        <Command>powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\phase11\Run-Phase11Smoke.ps1</Command>
+    </LogonCommand>
+</Configuration>
