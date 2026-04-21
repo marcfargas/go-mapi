@@ -93,6 +93,15 @@ type App struct {
 	// to a counter to verify the contract without spinning up Wails.
 	updateStateEmitter func(UpdateState)
 
+	// updateStateObserver is the in-process observer for tray /
+	// notification code that needs to react to state changes. Separate
+	// from updateStateEmitter so the Wails event emission path and the
+	// in-process notification path never race (Phase 11 Plan 02 —
+	// tray_update.go / update_notifications.go). At most one observer
+	// is registered at a time; callers that need fan-out wrap their
+	// own dispatcher.
+	updateStateObserver func(UpdateState)
+
 	// updateSchedulerStop cancels the long-lived 24h scheduler
 	// goroutine on shutdown. nil until the scheduler starts.
 	updateSchedulerStop context.CancelFunc
@@ -756,6 +765,17 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 	if a.updateStateEmitter != nil {
 		a.updateStateEmitter(merged)
 	}
+	// Phase 11 Plan 02: in-process observer fan-out for tray/notification
+	// code. Distinct from the Wails EventsEmit hook so the frontend path
+	// and the tray path can evolve independently.
+	if a.updateStateObserver != nil {
+		a.updateStateObserver(merged)
+	}
+	// Signal tray refresh so the update-available icon/tooltip and the
+	// "Last checked" status row reflect this result. Coalesced via the
+	// 1-slot channel (T-9-11) so repeated result emissions never wake
+	// the tray more than necessary.
+	a.signalTrayRefresh()
 }
 
 // syncUpdateEnabledIntoState updates the cached Enabled flag without
