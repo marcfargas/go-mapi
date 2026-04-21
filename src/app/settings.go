@@ -12,16 +12,39 @@ import (
 )
 
 // AppSettings is the persisted per-user settings for go-mapi. Phase 9 ships
-// only `Mode`. Future phases may add flat fields — do NOT nest. Marshaled to
-// %APPDATA%\go-mapi\settings.json via saveSettings (atomic, crash-safe).
+// `Mode`; Phase 11 adds the flat update-check fields. Future phases may add
+// flat fields — do NOT nest. Marshaled to %APPDATA%\go-mapi\settings.json
+// via saveSettings (atomic, crash-safe).
 //
 // Pause state is INTENTIONALLY not persisted (D-15) — resets on every app
 // start to prevent "I paused a month ago and forgot" silent failure mode.
+//
+// Update-check fields (Phase 11, D-05/D-07/D-08):
+//   - UpdateChecksEnabled: user opt-out toggle (REL-05). Defaults to true so
+//     existing settings files missing the field still get update checks.
+//   - LastUpdateCheck: RFC3339 timestamp of the most recent check attempt
+//     (success OR failure). Empty string on first run / never-checked.
+//     Consumed by the cadence gate and by tray/frontend "Last checked" status
+//     (D-07). Background goroutines MUST NOT call saveSettings directly —
+//     persistence is routed through an App-owned guarded writer (Task 2)
+//     that preserves the single-writer atomic-save invariant.
 type AppSettings struct {
-	Mode string `json:"mode"` // "manual" | "auto-draft"
+	Mode                string `json:"mode"`                         // "manual" | "auto-draft"
+	UpdateChecksEnabled bool   `json:"update_checks_enabled"`        // D-08 default enabled
+	LastUpdateCheck     string `json:"last_update_check,omitempty"`  // RFC3339, "" = never checked
 }
 
 const defaultMode = "manual"
+
+// defaultAppSettings returns the settings used on first run, corrupt file,
+// or any other fallback path. Keeping this one builder means every fallback
+// code path gets the same defaults — notably D-08 UpdateChecksEnabled=true.
+func defaultAppSettings() AppSettings {
+	return AppSettings{
+		Mode:                defaultMode,
+		UpdateChecksEnabled: true,
+	}
+}
 
 // settingsPath returns the full path to settings.json.
 // Lives under the per-user appDataDir() (see paths.go) — RDS-safe per-user scope.
@@ -40,18 +63,30 @@ func loadSettings() AppSettings {
 	if err != nil {
 		// ENOENT or any other read error → defaults. First-run is the
 		// common case; no log to avoid noise.
-		return AppSettings{Mode: defaultMode}
+		return defaultAppSettings()
 	}
-	var s AppSettings
-	if err := json.Unmarshal(data, &s); err != nil {
+	// Intermediate shape with a *bool for the update toggle so we can tell
+	// "field absent from JSON" (partial/old file) from "field explicitly
+	// set to false" (user opted out). Absent → default true per D-08.
+	var raw struct {
+		Mode                string `json:"mode"`
+		UpdateChecksEnabled *bool  `json:"update_checks_enabled"`
+		LastUpdateCheck     string `json:"last_update_check"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		logError("settings: parse error, using defaults: %v", err)
-		return AppSettings{Mode: defaultMode}
+		return defaultAppSettings()
 	}
-	if s.Mode != "manual" && s.Mode != "auto-draft" {
-		// Unknown value from a manual edit or older version — normalize.
-		return AppSettings{Mode: defaultMode}
+	out := defaultAppSettings()
+	if raw.Mode == "manual" || raw.Mode == "auto-draft" {
+		out.Mode = raw.Mode
 	}
-	return s
+	// raw.Mode ∉ {"manual","auto-draft"}: keep defaultAppSettings().Mode.
+	if raw.UpdateChecksEnabled != nil {
+		out.UpdateChecksEnabled = *raw.UpdateChecksEnabled
+	}
+	out.LastUpdateCheck = raw.LastUpdateCheck
+	return out
 }
 
 // saveSettings writes s atomically. Pattern (RESEARCH §3):
