@@ -562,6 +562,85 @@ func TestDeleteIdempotent(t *testing.T) {
 	}
 }
 
+// TestMarkProcessed_DispatchesQueueChanged: covers the regression surfaced by
+// the Phase 11 smoke — drafted rows persisted in the UI because MarkProcessed
+// cleared the in-memory maps but never dispatched OnQueueChanged. The fsnotify
+// Remove event that fires shortly after the disk delete races with the map
+// cleanup, so handleRemove's lookup misses and it skips its own dispatch.
+func TestMarkProcessed_DispatchesQueueChanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	data := makeValidEmail(t, "MarkProcessed Dispatch Test", "2024-01-03T00:00:00Z")
+	writeFile(t, filepath.Join(watchDir, "mp-dispatch.json"), data)
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in arrival snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	if err := ew.MarkProcessed(id); err != nil {
+		t.Fatalf("MarkProcessed(%q) error = %v", id, err)
+	}
+
+	// After MarkProcessed, OnQueueChanged MUST fire with an empty snapshot —
+	// otherwise the frontend sits on stale state and the drafted row never
+	// leaves the UI. Use a 2s budget: fsnotify Remove may also fire, but the
+	// handler's exists-guard means it won't double-dispatch.
+	post := cb.waitSnapshot(t, 2*time.Second)
+	if len(post) != 0 {
+		t.Errorf("expected empty snapshot after MarkProcessed, got %d items", len(post))
+	}
+}
+
+// TestDelete_DispatchesQueueChanged: mirror of the MarkProcessed test — same
+// race, same fix. Surfaces the "Dismiss button has no visible effect" bug.
+func TestDelete_DispatchesQueueChanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	data := makeValidEmail(t, "Delete Dispatch Test", "2024-01-04T00:00:00Z")
+	writeFile(t, filepath.Join(watchDir, "del-dispatch.json"), data)
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in arrival snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	if err := ew.Delete(id); err != nil {
+		t.Fatalf("Delete(%q) error = %v", id, err)
+	}
+
+	post := cb.waitSnapshot(t, 2*time.Second)
+	if len(post) != 0 {
+		t.Errorf("expected empty snapshot after Delete, got %d items", len(post))
+	}
+}
+
 // TestMarkProcessedUnknownIdReturnsNil: call MarkProcessed with a never-seen id
 // on an empty watcher — must return nil.
 func TestMarkProcessedUnknownIdReturnsNil(t *testing.T) {

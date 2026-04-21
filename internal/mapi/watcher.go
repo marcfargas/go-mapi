@@ -143,7 +143,6 @@ func (ew *EmailWatcher) GetEmails() map[string]*MailMessage {
 // depend on this; see 09-RESEARCH.md §7 for the full rationale.
 func (ew *EmailWatcher) MarkProcessed(id string) error {
 	ew.mu.Lock()
-	defer ew.mu.Unlock()
 
 	var filename string
 	for f, fid := range ew.fileToID {
@@ -156,16 +155,27 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 		// Idempotent: unknown id → already-processed (or never-existed) → success.
 		// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
 		// depend on this; see 09-RESEARCH.md §7 for the full rationale.
+		ew.mu.Unlock()
 		return nil
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
 	if err := os.Remove(srcPath); err != nil {
+		ew.mu.Unlock()
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
+	snap := ew.snapshotLocked()
+	ew.mu.Unlock()
+
+	// Dispatch queue-changed ourselves. The fsnotify Remove event that will fire
+	// shortly races with this cleanup — by the time handleRemove locks, the
+	// filename lookup misses and its exists-guard skips dispatch. Without this
+	// call the frontend never learns the row was processed (bug found in Phase
+	// 11 smoke: drafted rows persisted in the UI indefinitely).
+	ew.dispatchQueueChanged(snap)
 	return nil
 }
 
@@ -178,7 +188,6 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 // depend on this; see 09-RESEARCH.md §7 for the full rationale.
 func (ew *EmailWatcher) Delete(id string) error {
 	ew.mu.Lock()
-	defer ew.mu.Unlock()
 
 	var filename string
 	for f, fid := range ew.fileToID {
@@ -191,16 +200,25 @@ func (ew *EmailWatcher) Delete(id string) error {
 		// Idempotent: unknown id → already-deleted (or never-existed) → success.
 		// Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
 		// depend on this; see 09-RESEARCH.md §7 for the full rationale.
+		ew.mu.Unlock()
 		return nil
 	}
 
 	srcPath := filepath.Join(ew.watchDir, filename)
 	if err := os.Remove(srcPath); err != nil {
+		ew.mu.Unlock()
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
+	snap := ew.snapshotLocked()
+	ew.mu.Unlock()
+
+	// Dispatch queue-changed ourselves. See note in MarkProcessed for the race
+	// with the fsnotify Remove event — same reason, same fix (Phase 11 smoke
+	// finding: Dismiss button had no visible effect in the UI).
+	ew.dispatchQueueChanged(snap)
 	return nil
 }
 
