@@ -156,8 +156,8 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
   5. An end-to-end smoke test on Windows Sandbox completes: fresh install → sign in → MAPI trigger → email queued → Gmail draft created → uninstall clean; README describes the v3.0 install flow
 **Plans**: 5 plans
 - [x] 11-01-PLAN.md — Updater backend + persisted AppSettings + App-owned update state/event model (REL-03, REL-05)
-- [ ] 11-02-PLAN.md — Tray toggle/manual-check/status rows + notify-only Download action (REL-04, REL-05)
-- [ ] 11-03-PLAN.md — Main-window update banner/panel + typed frontend wrappers/tests (REL-04)
+- [x] 11-02-PLAN.md — Tray toggle/manual-check/status rows + notify-only Download action (REL-04, REL-05)
+- [x] 11-03-PLAN.md — Main-window update banner/panel + typed frontend wrappers/tests (REL-04)
 - [ ] 11-04-PLAN.md — Release/docs cutover + stable URL publish + store-retirement evidence checkpoint (REL-01, REL-02, REL-07)
 - [ ] 11-05-PLAN.md — Windows Sandbox clean-machine smoke harness + evidence gate (REL-06)
 
