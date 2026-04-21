@@ -18,15 +18,20 @@
     getPausedState,
     subscribeAutoDraftResult,
     subscribePauseChanged,
+    fetchUpdateState,
+    subscribeUpdateState,
     type Mode,
     type ErrorCategory,
     type AutoDraftResult,
+    type UpdateState,
   } from './lib/settings';
   import SignInScreen from './lib/components/SignInScreen.svelte';
   import PreAuthModal from './lib/components/PreAuthModal.svelte';
   import ReAuthBanner from './lib/components/ReAuthBanner.svelte';
   import SignedInHeader from './lib/components/SignedInHeader.svelte';
   import QueueRow from './lib/components/QueueRow.svelte';
+  import UpdateBanner from './lib/components/UpdateBanner.svelte';
+  import UpdatePanel from './lib/components/UpdatePanel.svelte';
   import './lib/styles.css';
 
   // Existing state
@@ -44,23 +49,32 @@
   let flashingIds = $state(new Set<string>());
   let inflightIds = $state(new Set<string>());
 
+  // Phase 11-03 state — notify-only update UX (D-01/D-02/D-07/D-08).
+  let updateState = $state<UpdateState | null>(null);
+  let showUpdatePanel = $state(false);
+  let bannerDismissedForVersion = $state<string | null>(null);
+
   // Collect all unsub functions for cleanup
   const unsubs: Array<() => void> = [];
 
   onMount(async () => {
     // Fetch initial state in parallel.
-    const [initialAuth, initialQueue, initialSettings, initialPaused] = await Promise.all([
-      fetchAuthStatus(),
-      fetchQueue().catch((e) => { errorMsg = (e as Error).message; return []; }),
-      fetchSettings().catch(() => ({ mode: 'manual' as Mode })),
-      getPausedState().catch(() => false),
-    ]);
+    const [initialAuth, initialQueue, initialSettings, initialPaused, initialUpdate] =
+      await Promise.all([
+        fetchAuthStatus(),
+        fetchQueue().catch((e) => { errorMsg = (e as Error).message; return []; }),
+        fetchSettings().catch(() => ({ mode: 'manual' as Mode })),
+        getPausedState().catch(() => false),
+        // D-04 silent-failure: never block startup on update hydration.
+        fetchUpdateState().catch(() => null),
+      ]);
 
     auth = initialAuth as AuthStatus;
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
     mode = ((initialSettings as { mode: string }).mode === 'auto-draft' ? 'auto-draft' : 'manual');
     paused = initialPaused as boolean;
+    updateState = initialUpdate as UpdateState | null;
 
     // Subscribe to queue updates — prune stale state entries on each update.
     unsubs.push(subscribeQueue(
@@ -131,6 +145,10 @@
 
     // Pause state changes from Go (tray menu or PauseWatching/ResumeWatching calls).
     unsubs.push(subscribePauseChanged((p: boolean) => { paused = p; }));
+
+    // Update state changes from Go (startup check, 24h scheduler, manual check).
+    // Plan 11-01 guarantees one event per material state change.
+    unsubs.push(subscribeUpdateState((s: UpdateState) => { updateState = s; }));
   });
 
   onDestroy(() => {
@@ -203,7 +221,31 @@
   async function handleSignOutClick() {
     await signOut();
   }
+
+  /** Phase 11-03: open the update panel from the banner (D-01 → D-02). */
+  function handleOpenUpdatePanel() {
+    showUpdatePanel = true;
+  }
+
+  /** Phase 11-03: close the panel without dismissing the banner — the
+   *  banner stays until a newer version actually ships. bannerDismissedForVersion
+   *  is reserved for an optional future "hide until next release" dismissal
+   *  flow; we keep it inert this phase to avoid suppressing legitimate
+   *  upgrade prompts. */
+  function handleCloseUpdatePanel() {
+    showUpdatePanel = false;
+    // bannerDismissedForVersion intentionally not updated here (D-01: banner
+    // remains persistent across panel open/close cycles).
+    void bannerDismissedForVersion; // silence "assigned but never read" without removing the state field
+  }
 </script>
+
+{#if updateState && updateState.updateAvailable}
+  <UpdateBanner
+    latestVersion={updateState.latestVersion}
+    onViewUpdate={handleOpenUpdatePanel}
+  />
+{/if}
 
 {#if showReAuthBanner}
   <ReAuthBanner onRestore={handleReAuthClick} />
@@ -250,4 +292,8 @@
 
 {#if showPreAuthModal}
   <PreAuthModal onContinue={handlePreAuthContinue} onCancel={handlePreAuthCancel} />
+{/if}
+
+{#if showUpdatePanel && updateState}
+  <UpdatePanel update={updateState} onClose={handleCloseUpdatePanel} />
 {/if}
