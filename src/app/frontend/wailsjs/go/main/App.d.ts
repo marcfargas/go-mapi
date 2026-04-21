@@ -38,6 +38,8 @@ export function SetTrayError(arg1:string):Promise<void>;
 
 export function SetTrayIdle(arg1:string):Promise<void>;
 
+export function SetUpdateChecksEnabled(arg1:boolean):Promise<void>;
+
 export function SignIn():Promise<void>;
 
 export function SignOut():Promise<void>;

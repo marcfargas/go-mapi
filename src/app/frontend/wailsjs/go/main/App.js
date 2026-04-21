@@ -70,6 +70,10 @@ export function SetTrayIdle(arg1) {
   return window['go']['main']['App']['SetTrayIdle'](arg1);
 }
 
+export function SetUpdateChecksEnabled(arg1) {
+  return window['go']['main']['App']['SetUpdateChecksEnabled'](arg1);
+}
+
 export function SignIn() {
   return window['go']['main']['App']['SignIn']();
 }
