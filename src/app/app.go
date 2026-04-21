@@ -260,6 +260,11 @@ func (a *App) startup(ctx context.Context) {
 				wruntime.EventsEmit(a.ctx, "update-state-changed", state)
 			}
 		}
+		// Phase 11 Plan 02: in-process notification helper. Subscribes
+		// to update-state fan-out and fires a tray toast on flip-to-
+		// available. Silent on failures per D-04; never touches the
+		// installer binary (D-03).
+		a.wireUpdateNotifications()
 		// REL-03: startup check runs on a goroutine so network IO does
 		// not delay main-window readiness. MaybeCheck inside
 		// runStartupUpdateCheck enforces opt-out + 24h cadence.
@@ -872,6 +877,13 @@ func (a *App) handleToastAction(args string) {
 		// clearToastForEmail already called inside DismissEmail on success.
 	case "open":
 		a.showWindow()
+	case "open-update":
+		// Phase 11 Plan 02: update-available toast body was clicked.
+		// Open the release page in the browser; D-03 invariant — never
+		// launch an installer. openUpdateReleasePage handles the
+		// LatestReleaseURL vs fallback decision and swallows
+		// browser.Open failures silently per D-04.
+		openUpdateReleasePage(a.GetUpdateState())
 	default:
 		logError("toast: unknown action %q", op)
 		a.showWindow()
