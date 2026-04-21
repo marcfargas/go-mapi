@@ -67,6 +67,35 @@ type App struct {
 	// on its LockOSThread-ed context — keeping systray.* Win32 HWND affinity intact
 	// (T-9-10 mitigation).
 	trayRefreshCh chan struct{}
+
+	// --- Phase 11: notify-only update state (REL-03, REL-05) --------
+	//
+	// updates is the stateless service that performs version fetch +
+	// compare. App owns the cadence/scheduling and all persistence —
+	// the service is a pure consumer.
+	updates *updateService
+
+	// updateState is the cached UpdateState snapshot that tray and
+	// frontend consume via GetUpdateState. atomic.Pointer so readers
+	// never block a background goroutine that is refreshing the state.
+	updateState atomic.Pointer[UpdateState]
+
+	// updateWriteMu serializes persistence of LastUpdateCheck via the
+	// guarded writer persistLastUpdateCheck. This preserves the
+	// single-writer atomic-save invariant that settings.go expects —
+	// background cadence goroutines must NEVER call saveSettings
+	// directly (11-PATTERNS.md §Seam 1).
+	updateWriteMu sync.Mutex
+
+	// updateStateEmitter is the test-injectable hook for observing
+	// state-change emissions. Production wires this to wruntime
+	// EventsEmit("update-state-changed", ...) in startup; tests set it
+	// to a counter to verify the contract without spinning up Wails.
+	updateStateEmitter func(UpdateState)
+
+	// updateSchedulerStop cancels the long-lived 24h scheduler
+	// goroutine on shutdown. nil until the scheduler starts.
+	updateSchedulerStop context.CancelFunc
 }
 
 // NewApp creates a new App instance.
@@ -202,6 +231,37 @@ func (a *App) startup(ctx context.Context) {
 		})
 	}
 
+	// Phase 11: initialize notify-only update service and wire Wails
+	// event emission. Failing to build the GitHub fetcher is non-fatal
+	// — the app still runs; we just never detect updates until next
+	// start (D-04 silent-failure invariant extends to the updater
+	// bootstrap itself).
+	if fetcher, err := newGitHubReleaseFetcher(); err != nil {
+		logError("updates: init GitHub fetcher: %v", err)
+	} else {
+		a.updates = newUpdateService(Version, fetcher, logInfo)
+		a.updateState.Store(&UpdateState{
+			CurrentVersion: Version,
+			InstallerURL:   installerDownloadURL,
+			Enabled:        a.settings.UpdateChecksEnabled,
+			LastCheckedAt:  a.settings.LastUpdateCheck,
+		})
+		a.updateStateEmitter = func(state UpdateState) {
+			if a.ctx != nil {
+				wruntime.EventsEmit(a.ctx, "update-state-changed", state)
+			}
+		}
+		// REL-03: startup check runs on a goroutine so network IO does
+		// not delay main-window readiness. MaybeCheck inside
+		// runStartupUpdateCheck enforces opt-out + 24h cadence.
+		go a.runStartupUpdateCheck(a.shutdownCtx)
+		// Long-lived recurring cadence — a session open for days still
+		// rechecks every 24h (scheduler ticks hourly but the cadence
+		// gate enforces the 24h floor).
+		a.startUpdateScheduler()
+		logInfo("updates: service ready (enabled=%v)", a.settings.UpdateChecksEnabled)
+	}
+
 	logInfo("startup complete (version %s, watching %s)", Version, watchDir)
 }
 
@@ -210,6 +270,11 @@ func (a *App) shutdown(ctx context.Context) {
 	// draftOne call has a chance to observe context cancellation cleanly.
 	if a.automode != nil {
 		a.automode.stop()
+	}
+	// Phase 11: stop the long-lived update scheduler before cancelling
+	// shutdownCtx so the ticker goroutine exits cleanly.
+	if a.updateSchedulerStop != nil {
+		a.updateSchedulerStop()
 	}
 	// Normal Wails shutdown path: cancel context (drain goroutine handles cleanup via runBoundedDrain).
 	if a.shutdownCancel != nil {
@@ -555,6 +620,202 @@ func (a *App) ResumeWatching() { a.SetPaused(false) }
 
 // GetPausedState returns the current session pause state.
 func (a *App) GetPausedState() bool { return a.isPaused() }
+
+// ---- Phase 11: update-check bindings (REL-03, REL-05, D-06, D-07) ----
+
+// updateCheckInterval is how often the long-lived scheduler wakes while
+// the app stays open. Intentionally shorter than updateCheckWindow so
+// a boundary crossing during a multi-day session is handled promptly.
+// The cadence gate inside MaybeCheck still enforces the 24h floor, so
+// ticking more often is safe — we only do real fetches when stale.
+var updateCheckInterval = 1 * time.Hour
+
+// GetUpdateState returns the cached notify-only update state for the
+// frontend / tray. Always returns a valid snapshot — never nil — so
+// callers never need to guard a pointer. If the App has not been
+// fully initialised yet, CurrentVersion falls back to main.Version.
+func (a *App) GetUpdateState() UpdateState {
+	if state := a.updateState.Load(); state != nil {
+		return *state
+	}
+	return UpdateState{
+		CurrentVersion: Version,
+		InstallerURL:   installerDownloadURL,
+	}
+}
+
+// CheckForUpdatesNow forces an immediate update check, bypassing the
+// 24h cadence gate. Exposed as the D-06 manual "Check for updates now"
+// action for tray/frontend consumers. Returns the fetch error to the
+// caller for logging; on failure, the prior cached state is preserved
+// (D-04 silent-failure invariant — transient outages must not wipe a
+// previously-detected update).
+func (a *App) CheckForUpdatesNow(ctx context.Context) error {
+	if a.updates == nil {
+		return errors.New("updates: service not initialised")
+	}
+	// Always run through the full manual-check path so LastUpdateCheck
+	// is persisted and the state-change emitter fires.
+	newState, err := a.updates.CheckNow(ctx)
+	newState.Enabled = a.isUpdateChecksEnabled()
+	a.applyUpdateCheckResult(newState, err)
+	return err
+}
+
+// isUpdateChecksEnabled is a small RLock helper so call sites read
+// the current opt-out flag without duplicating the mutex dance.
+func (a *App) isUpdateChecksEnabled() bool {
+	a.settingsMu.RLock()
+	defer a.settingsMu.RUnlock()
+	return a.settings.UpdateChecksEnabled
+}
+
+// lastUpdateCheckValue reads the persisted LastUpdateCheck under the
+// settings RLock.
+func (a *App) lastUpdateCheckValue() string {
+	a.settingsMu.RLock()
+	defer a.settingsMu.RUnlock()
+	return a.settings.LastUpdateCheck
+}
+
+// runStartupUpdateCheck is the D-08 "check on startup" path, subject to
+// REL-05 opt-out and the REL-03 24h cadence gate. Never blocks startup
+// for network IO when called on a goroutine; the synchronous form is
+// retained so tests can drive the path deterministically.
+func (a *App) runStartupUpdateCheck(ctx context.Context) {
+	a.runGatedUpdateCheck(ctx)
+}
+
+// updateSchedulerTick is one iteration of the long-lived 24h cadence
+// loop. Re-evaluates settings each tick so a user who flips the opt-out
+// toggle at runtime is honored immediately. Silent-failure invariant
+// applies (D-04).
+func (a *App) updateSchedulerTick(ctx context.Context) {
+	a.runGatedUpdateCheck(ctx)
+}
+
+// runGatedUpdateCheck is the shared cadence/opt-out path used by both
+// startup and the scheduler tick. Uses MaybeCheck so the cadence gate
+// lives in one place (the update service); App handles state caching,
+// persistence, and observer notification.
+func (a *App) runGatedUpdateCheck(ctx context.Context) {
+	if a.updates == nil {
+		return
+	}
+	settings := updateSettings{
+		Enabled:         a.isUpdateChecksEnabled(),
+		LastUpdateCheck: a.lastUpdateCheckValue(),
+		Now:             time.Now().UTC(),
+	}
+	newState, checked, err := a.updates.MaybeCheck(ctx, settings)
+	if !checked {
+		// Opt-out or inside 24h window. Refresh the cached Enabled
+		// flag in case the user toggled the opt-out; do not mutate
+		// LatestVersion / LastCheckedAt (we did not attempt a fetch).
+		a.syncUpdateEnabledIntoState(settings.Enabled)
+		return
+	}
+	a.applyUpdateCheckResult(newState, err)
+}
+
+// applyUpdateCheckResult merges a fresh check result into the cached
+// state, persists LastCheckedAt through the guarded writer, and fires
+// the state-change emitter. On fetch error, LatestVersion / URL /
+// UpdateAvailable from the previous snapshot are preserved (D-04).
+func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
+	prior := a.GetUpdateState()
+	merged := UpdateState{
+		CurrentVersion:   newState.CurrentVersion,
+		InstallerURL:     installerDownloadURL,
+		LastCheckedAt:    newState.LastCheckedAt,
+		Enabled:          newState.Enabled,
+		LatestVersion:    newState.LatestVersion,
+		LatestReleaseURL: newState.LatestReleaseURL,
+		UpdateAvailable:  newState.UpdateAvailable,
+	}
+	if fetchErr != nil {
+		// Preserve whatever the user previously saw — banner must not
+		// flicker on transient outages (D-04).
+		merged.LatestVersion = prior.LatestVersion
+		merged.LatestReleaseURL = prior.LatestReleaseURL
+		merged.UpdateAvailable = prior.UpdateAvailable
+	}
+	if merged.CurrentVersion == "" {
+		merged.CurrentVersion = Version
+	}
+	a.updateState.Store(&merged)
+
+	// Persist LastCheckedAt through the single-writer guarded path so
+	// background goroutines never touch saveSettings directly.
+	if merged.LastCheckedAt != "" {
+		if err := a.persistLastUpdateCheck(merged.LastCheckedAt); err != nil {
+			logError("updates: persist last-checked: %v", err)
+		}
+	}
+
+	if a.updateStateEmitter != nil {
+		a.updateStateEmitter(merged)
+	}
+}
+
+// syncUpdateEnabledIntoState updates the cached Enabled flag without
+// changing any other field. Called on opt-out / within-window no-op
+// paths so tray/frontend see toggle changes even when no fetch ran.
+func (a *App) syncUpdateEnabledIntoState(enabled bool) {
+	prior := a.GetUpdateState()
+	if prior.Enabled == enabled {
+		return
+	}
+	prior.Enabled = enabled
+	a.updateState.Store(&prior)
+	if a.updateStateEmitter != nil {
+		a.updateStateEmitter(prior)
+	}
+}
+
+// persistLastUpdateCheck is the App-owned guarded writer for the
+// LastUpdateCheck field. Serializes concurrent background callers with
+// updateWriteMu, reads the current settings snapshot under the
+// settings lock, writes LastUpdateCheck, then delegates to saveSettings
+// (the existing atomic-save path). Preserves the single-writer
+// invariant documented in settings.go — NO background goroutine may
+// call saveSettings directly (11-PATTERNS.md §Seam 1).
+func (a *App) persistLastUpdateCheck(ts string) error {
+	a.updateWriteMu.Lock()
+	defer a.updateWriteMu.Unlock()
+
+	a.settingsMu.Lock()
+	a.settings.LastUpdateCheck = ts
+	snapshot := a.settings
+	a.settingsMu.Unlock()
+
+	return saveSettings(snapshot)
+}
+
+// startUpdateScheduler kicks off the long-lived 24h cadence goroutine.
+// Called from startup after the update service is built. The goroutine
+// wakes every updateCheckInterval, re-evaluates opt-out + last-checked
+// state, and performs a silent recheck when the cadence floor is crossed.
+// Cancelled via updateSchedulerStop on shutdown.
+func (a *App) startUpdateScheduler() {
+	if a.updates == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(a.shutdownCtx)
+	a.updateSchedulerStop = cancel
+	go func() {
+		ticker := time.NewTicker(updateCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.updateSchedulerTick(ctx)
+			}
+		}
+	}()
+}
 
 // handleToastAction dispatches a toast click or button tap to the appropriate
 // App binding. Called from the COM activation callback (initToasts) on a

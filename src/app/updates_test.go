@@ -102,12 +102,15 @@ func TestUpdateServiceOptOutSkipsFetch(t *testing.T) {
 	stub := &stubReleaseFetcher{}
 	svc := newUpdateService("0.0.0-dev", stub, nopLogger)
 
-	state, checked := svc.MaybeCheck(context.Background(), updateSettings{
+	state, checked, err := svc.MaybeCheck(context.Background(), updateSettings{
 		Enabled:         false,
 		LastUpdateCheck: "",
 		Now:             time.Now().UTC(),
 	})
 
+	if err != nil {
+		t.Errorf("MaybeCheck should not return err when disabled, got %v", err)
+	}
 	if checked {
 		t.Error("MaybeCheck should report checked=false when disabled")
 	}
@@ -129,12 +132,15 @@ func TestUpdateServiceRecentCheckSkipsFetch(t *testing.T) {
 	now := time.Now().UTC()
 	recent := now.Add(-1 * time.Hour).Format(time.RFC3339)
 
-	_, checked := svc.MaybeCheck(context.Background(), updateSettings{
+	_, checked, err := svc.MaybeCheck(context.Background(), updateSettings{
 		Enabled:         true,
 		LastUpdateCheck: recent,
 		Now:             now,
 	})
 
+	if err != nil {
+		t.Errorf("MaybeCheck should not return err on no-op path, got %v", err)
+	}
 	if checked {
 		t.Error("MaybeCheck should skip fetch when last check is within 24h")
 	}
@@ -156,12 +162,15 @@ func TestUpdateServiceStaleCheckTriggersFetch(t *testing.T) {
 	now := time.Now().UTC()
 	stale := now.Add(-48 * time.Hour).Format(time.RFC3339)
 
-	_, checked := svc.MaybeCheck(context.Background(), updateSettings{
+	_, checked, err := svc.MaybeCheck(context.Background(), updateSettings{
 		Enabled:         true,
 		LastUpdateCheck: stale,
 		Now:             now,
 	})
 
+	if err != nil {
+		t.Errorf("MaybeCheck should not return err when fetch succeeds, got %v", err)
+	}
 	if !checked {
 		t.Error("MaybeCheck should fetch when last check is older than 24h")
 	}

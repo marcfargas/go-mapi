@@ -163,12 +163,12 @@ type updateSettings struct {
 //     was performed (so callers can hydrate tray/UI after every call);
 //   - checked: true iff FetchLatestRelease was actually invoked. This
 //     lets the caller decide whether to persist a new LastUpdateCheck
-//     through the App-owned guarded writer (Task 2).
-//
-// MaybeCheck never panics on fetch failure; errors are logged and the
-// returned state reflects the attempt (LastCheckedAt refreshed, no
-// LatestVersion). D-04 silent-failure invariant.
-func (s *updateService) MaybeCheck(ctx context.Context, settings updateSettings) (UpdateState, bool) {
+//     through the App-owned guarded writer (Task 2);
+//   - err: non-nil iff the fetch was attempted and failed. Callers log
+//     the error and preserve prior user-visible fields (D-04). The
+//     returned state still has LastCheckedAt refreshed so cadence
+//     advances even on failure.
+func (s *updateService) MaybeCheck(ctx context.Context, settings updateSettings) (UpdateState, bool, error) {
 	// Base state — always reflects current version + enabled flag so
 	// callers have a valid snapshot even on the opt-out path.
 	state := UpdateState{
@@ -181,26 +181,26 @@ func (s *updateService) MaybeCheck(ctx context.Context, settings updateSettings)
 	if !settings.Enabled {
 		// REL-05 opt-out: user turned checks off. Do not hit the
 		// network. Do not mutate LastCheckedAt.
-		return state, false
+		return state, false, nil
 	}
 
 	if !s.cadenceExpired(settings.Now, settings.LastUpdateCheck) {
 		// Inside the 24h window; skip the fetch but return the
 		// cached state so callers can hydrate tray/UI.
-		return state, false
+		return state, false, nil
 	}
 
 	// Cadence expired — do the fetch. Failure is silent to the user
-	// but the caller receives the resulting state so cadence advances.
+	// but the caller receives the error so it can be logged and the
+	// prior user-visible state preserved (D-04).
 	newState, err := s.CheckNow(ctx)
 	if err != nil {
-		// D-04: log only, no user-facing surface here.
 		s.log("updates: background fetch failed: %v", err)
 	}
 	// Preserve the Enabled flag the caller asked about — CheckNow does
 	// not know about the settings.Enabled gate.
 	newState.Enabled = settings.Enabled
-	return newState, true
+	return newState, true, err
 }
 
 // CheckNow forces a fetch regardless of cadence. Used by:
