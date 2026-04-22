@@ -80,6 +80,13 @@ jobs:
           "version=$wailsVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
           Write-Host "Release version: $wailsVer"
 
+      # Phase 11 plan 06 guard: prove this workflow would not ship e2e hooks.
+      # Fails fast if '-tags e2e', GOMAPI_DEBUG_BROWSER_ARGS, or any GOMAPI_E2E_*
+      # marker is present in the build definition.
+      - name: Verify release hygiene (no e2e hooks)
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release-hygiene.ps1
+
       - name: Build frontend
         run: npm run -w @marcfargas/go-mapi-app-frontend build
 
