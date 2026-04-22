@@ -1,0 +1,15 @@
+{
+  "name": "@marcfargas/go-mapi-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "@types/node": "^20.0.0",
+    "tree-kill": "^1.2.2"
+  }
+}

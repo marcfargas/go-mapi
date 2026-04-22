@@ -2,7 +2,7 @@
   let { onRestore }: { onRestore: () => void } = $props();
 </script>
 
-<div class="banner" role="alert">
+<div class="banner" role="alert" data-testid="reauth-banner">
   <span class="msg">Sign-in expired — click to restore</span>
   <button type="button" onclick={onRestore}>Sign in again</button>
 </div>

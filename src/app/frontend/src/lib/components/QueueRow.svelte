@@ -58,6 +58,8 @@
   class:queue-row--error={state === 'error'}
   class:queue-row--inflight={state === 'in-flight'}
   tabindex="0"
+  data-testid="queue-row"
+  data-email-id={item.id}
 >
   <span class="sender">{sender}</span>
   <span class="subject">
@@ -74,6 +76,7 @@
       class="btn btn--primary"
       disabled={buttonsDisabled}
       title={disabledTitle}
+      data-testid="queue-row-create-draft"
       onclick={() => onCreateDraft(item.id)}
     >{createLabel}</button>
     <button
@@ -81,6 +84,7 @@
       class="btn btn--ghost"
       disabled={buttonsDisabled}
       title={disabledTitle}
+      data-testid="queue-row-dismiss"
       onclick={() => onDismiss(item.id)}
     >Dismiss</button>
   </span>

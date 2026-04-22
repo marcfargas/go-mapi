@@ -53,3 +53,9 @@ PLANNING_AGENT.md
 # and locally-built RC installers. Ledger stays tracked via 11-SMOKE-EVIDENCE.md.
 tests/sandbox/phase11/evidence-*/
 tests/sandbox/phase11/installer/
+
+# Phase 11 plan 06: Playwright e2e workspace artifacts
+tests/e2e/node_modules/
+tests/e2e/playwright-report/
+tests/e2e/test-results/
+tests/e2e/.cache/
