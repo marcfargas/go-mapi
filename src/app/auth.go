@@ -127,10 +127,17 @@ type AuthManager struct {
 	keyring KeyringStore
 }
 
+// keyringStoreFactory is the seam for build-tag injection. Production code
+// leaves it pointing at realKeyringStore (Windows Credential Manager via
+// zalando/go-keyring); the //go:build e2e shim in auth_e2e.go swaps it for a
+// fake populated from GOMAPI_E2E_FAKE_TOKEN_JSON so the Playwright harness can
+// boot the app pre-authenticated without touching the real credential store.
+var keyringStoreFactory func() KeyringStore = func() KeyringStore { return realKeyringStore{} }
+
 // NewAuthManager constructs a fresh, signed-out AuthManager backed by the
 // real Windows Credential Manager (via zalando/go-keyring).
 func NewAuthManager() *AuthManager {
-	return NewAuthManagerWithStore(realKeyringStore{})
+	return NewAuthManagerWithStore(keyringStoreFactory())
 }
 
 // NewAuthManagerWithStore constructs an AuthManager with a custom keyring
