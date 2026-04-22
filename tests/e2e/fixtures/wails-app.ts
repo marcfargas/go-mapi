@@ -129,7 +129,11 @@ export const test = base.extend<{ app: WailsAppFixture }>({
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${cdpPort} --no-first-run`,
+      // GOMAPI_DEBUG_BROWSER_ARGS is honored by our vendored go-webview2 fork
+      // (src/app/vendor/go-webview2-e2e/). The upstream wipes WebView2's own
+      // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at package init so that route
+      // does not work. See 11-06-SUMMARY.md for the full audit trail.
+      GOMAPI_DEBUG_BROWSER_ARGS: `--remote-debugging-port=${cdpPort} --no-first-run`,
       GOMAPI_E2E_FAKE_TOKEN_JSON: tokenBlob,
       GOMAPI_E2E_GMAIL_BASE_URL: gmail.url,
       GOMAPI_E2E_TOKEN_ENDPOINT: oauth.tokenURL,

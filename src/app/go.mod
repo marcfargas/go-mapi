@@ -60,3 +60,11 @@ require (
 )
 
 replace github.com/marcfargas/go-mapi/internal/mapi v0.0.0 => ../../internal/mapi
+
+// Phase 11 plan 06: vendored fork of go-webview2 adds a GOMAPI_DEBUG_BROWSER_ARGS
+// env-var injection path so Playwright/CDP automation can reach WebView2. The
+// upstream wipes WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS at package init AND
+// right before WebView2 environment creation, defeating external configuration.
+// The patched code is no-op when the env var is unset (production default).
+// See .planning/phases/11-autoupdate-release/11-06-SUMMARY.md for audit detail.
+replace github.com/wailsapp/go-webview2 => ./vendor/go-webview2-e2e
