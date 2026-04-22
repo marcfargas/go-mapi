@@ -64,6 +64,7 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 - [ ] **REL-05**: User can opt out of update checks via a settings toggle
 - [ ] **REL-06**: End-to-end smoke test on Windows Sandbox: fresh install → sign-in → email queued via MAPI → draft created → uninstall clean
 - [ ] **REL-07**: README rewritten to describe the v3.0 install + setup flow; v2.x is retired and not maintained as in-tree legacy documentation
+- [ ] **REL-08**: An end-to-end Playwright/CDP harness drives the real Wails app + WebView2 against a fake Gmail endpoint and a fake keyring (under a `//go:build e2e` shim), with regression coverage for the Wails↔Svelte UI roundtrip class of bug — added 2026-04-22 after Phase 11 manual smoke caught queue-row staleness symptoms that Vitest with mocked bindings could not see
 
 ### Quality Gates (non-functional)
 
