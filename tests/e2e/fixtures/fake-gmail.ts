@@ -44,10 +44,10 @@ export async function startFakeGmail(): Promise<FakeGmailControl> {
     const url = req.url ?? '';
     const method = req.method ?? '';
 
-    // Drafts endpoint — the only path the current GmailClient uses for
-    // CreateDraft. Match on suffix so any leading /upload/ prefix variant
-    // still routes correctly.
-    if (method === 'POST' && url.includes('/gmail/v1/users/me/drafts')) {
+    // Drafts endpoint. The Go GmailClient uses a baseURL that already
+    // includes /gmail/v1/users/me, so on our side we just see /drafts.
+    // Match on path suffix so the harness is robust to base-URL form.
+    if (method === 'POST' && (url.endsWith('/drafts') || url.includes('/gmail/v1/users/me/drafts'))) {
       drafts.push({ body, headers: req.headers });
       const override = overrides.shift();
       if (override !== undefined) {
@@ -67,7 +67,7 @@ export async function startFakeGmail(): Promise<FakeGmailControl> {
       return;
     }
 
-    if (method === 'POST' && url.includes('/gmail/v1/users/me/messages/send')) {
+    if (method === 'POST' && (url.endsWith('/messages/send') || url.includes('/gmail/v1/users/me/messages/send'))) {
       const override = overrides.shift();
       if (override !== undefined) {
         res.statusCode = override;
