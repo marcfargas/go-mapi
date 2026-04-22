@@ -160,7 +160,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] 11-03-PLAN.md — Main-window update banner/panel + typed frontend wrappers/tests (REL-04)
 - [ ] 11-04-PLAN.md — Release/docs cutover + stable URL publish + store-retirement evidence checkpoint (REL-01, REL-02, REL-07)
 - [ ] 11-05-PLAN.md — Windows Sandbox clean-machine smoke harness + evidence gate (REL-06)
-- [ ] 11-06-PLAN.md — Playwright/CDP E2E harness — closes UI roundtrip regression class (REL-08; inserted 2026-04-22 after 11-05 manual smoke caught queue-row staleness bugs Vitest mocks could not see)
+- [x] 11-06-PLAN.md — Playwright/CDP E2E harness — closes UI roundtrip regression class (REL-08; inserted 2026-04-22 after 11-05 manual smoke caught queue-row staleness bugs Vitest mocks could not see; 5/5 specs green, self-verification confirmed Test 2 catches the pre-fix watcher dispatch bug)
 
 ## Progress
 
