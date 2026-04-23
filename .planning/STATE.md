@@ -29,7 +29,7 @@ Milestone: v3.0 Wails Pivot
 Phase: 11 (Auto-Update + v3.0 Release) — EXECUTING
 Plan: 1 of 5
 Status: Executing Phase 11
-Last activity: 2026-04-23 - Completed quick task 260423-msq: Relocate DLL queue to %LOCALAPPDATA% + diagnostic scripts
+Last activity: 2026-04-23 - Completed quick task 260423-ntu: 32-bit DLL support + uninstall process guard + diagnostic script fixes
 
 Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 is planned and ready for execution
 
@@ -103,6 +103,7 @@ Recent decisions carried into v3.0:
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260423-msq | Relocate DLL queue to %LOCALAPPDATA%\go-mapi\queue\ + diagnostic scripts | 2026-04-23 | 395cb7e | [260423-msq-relocate-dll-queue-to-localappdata-and-a](./quick/260423-msq-relocate-dll-queue-to-localappdata-and-a/) |
+| 260423-ntu | 32-bit DLL support + uninstaller running-process guard + diagnostic script null-ref fixes | 2026-04-23 | 3744b00 | [260423-ntu-32-bit-dll-support-uninstaller-process-c](./quick/260423-ntu-32-bit-dll-support-uninstaller-process-c/) |
 
 ## Session Continuity
 
