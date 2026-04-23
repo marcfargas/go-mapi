@@ -1,8 +1,8 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -39,64 +39,57 @@ func TestAppDataDir_EnvPrecedence(t *testing.T) {
 	})
 }
 
-// TestWatcherDir_EnvPrecedence covers the override order in paths.go:
+// TestWatcherDir_EnvPrecedence — quick/260423-msq rewires the resolution chain
+// to ignore TEMP/TMP entirely and resolve via %LOCALAPPDATA%\go-mapi\queue to
+// match the DLL-side SHGetFolderPathW(CSIDL_LOCAL_APPDATA) path.
 //
-//	1. GOMAPI_WATCH_DIR  → used as-is (no "go-mapi" suffix)
-//	2. TEMP              → filepath.Join(TEMP, "go-mapi")
-//	3. TMP               → filepath.Join(TMP, "go-mapi")  (fallback when TEMP empty)
-//	4. os.TempDir()      → filepath.Join(os.TempDir(), "go-mapi")  (final fallback)
+//	1. GOMAPI_WATCH_DIR        → used as-is (test / per-session override)
+//	2. %LOCALAPPDATA%\go-mapi\queue
+//	3. platform fallback (os.UserCacheDir) — POSIX CI compile only
+//
+// TEMP and TMP are intentionally NOT consulted. This regression guard fails
+// if either env var ever leaks back into the resolved path.
 //
 // Subtests cannot use t.Parallel — they mutate process-wide env vars.
 func TestWatcherDir_EnvPrecedence(t *testing.T) {
 	overrideDir := filepath.Join(t.TempDir(), "override")
-	tempA := t.TempDir()
-	tempB := t.TempDir()
+	localAppData := filepath.Join(t.TempDir(), "localappdata")
 
-	t.Run("GOMAPI_WATCH_DIR wins over TEMP and TMP", func(t *testing.T) {
+	t.Run("GOMAPI_WATCH_DIR wins — used as-is", func(t *testing.T) {
 		t.Setenv("GOMAPI_WATCH_DIR", overrideDir)
-		t.Setenv("TEMP", tempA)
-		t.Setenv("TMP", tempB)
-		got := watcherDir()
-		if got != overrideDir {
-			t.Errorf("watcherDir() = %q, want %q (used as-is)", got, overrideDir)
+		t.Setenv("LOCALAPPDATA", localAppData)
+		t.Setenv("TEMP", "C:\\BOGUS\\TEMP")
+		t.Setenv("TMP", "C:\\BOGUS\\TMP")
+		if got := watcherDir(); got != overrideDir {
+			t.Errorf("watcherDir() = %q, want %q (as-is)", got, overrideDir)
 		}
 	})
 
-	t.Run("falls back to TEMP when GOMAPI_WATCH_DIR unset", func(t *testing.T) {
+	t.Run("LOCALAPPDATA used when GOMAPI_WATCH_DIR empty — TEMP and TMP ignored", func(t *testing.T) {
 		t.Setenv("GOMAPI_WATCH_DIR", "")
-		t.Setenv("TEMP", tempA)
-		t.Setenv("TMP", tempB)
-		want := filepath.Join(tempA, "go-mapi")
+		t.Setenv("LOCALAPPDATA", localAppData)
+		bogusTemp := filepath.Join(t.TempDir(), "process-local-temp")
+		bogusTmp := filepath.Join(t.TempDir(), "process-local-tmp")
+		t.Setenv("TEMP", bogusTemp)
+		t.Setenv("TMP", bogusTmp)
+
+		want := filepath.Join(localAppData, "go-mapi", "queue")
 		got := watcherDir()
 		if got != want {
 			t.Errorf("watcherDir() = %q, want %q", got, want)
 		}
-	})
-
-	t.Run("falls back to TMP when GOMAPI_WATCH_DIR and TEMP unset", func(t *testing.T) {
-		t.Setenv("GOMAPI_WATCH_DIR", "")
-		t.Setenv("TEMP", "")
-		t.Setenv("TMP", tempB)
-		want := filepath.Join(tempB, "go-mapi")
-		got := watcherDir()
-		if got != want {
-			t.Errorf("watcherDir() = %q, want %q", got, want)
+		// Regression guard for the bug this plan fixes: TEMP/TMP must have zero
+		// influence on the resolved path.
+		if strings.Contains(got, bogusTemp) || strings.Contains(got, bogusTmp) {
+			t.Errorf("watcherDir() = %q leaked TEMP=%q or TMP=%q into the path", got, bogusTemp, bogusTmp)
 		}
 	})
 
-	t.Run("falls back to os.TempDir when GOMAPI_WATCH_DIR, TEMP, and TMP all unset", func(t *testing.T) {
+	t.Run("non-empty fallback when LOCALAPPDATA and GOMAPI_WATCH_DIR both empty", func(t *testing.T) {
 		t.Setenv("GOMAPI_WATCH_DIR", "")
-		t.Setenv("TEMP", "")
-		t.Setenv("TMP", "")
-		// On Windows, os.TempDir() reads from the same TEMP/TMP env vars, so
-		// capture its return value under the same env to match what paths.go sees.
-		want := filepath.Join(os.TempDir(), "go-mapi")
-		got := watcherDir()
-		if got != want {
-			t.Errorf("watcherDir() = %q, want %q", got, want)
-		}
-		if got == "" {
-			t.Error("watcherDir() returned empty string")
+		t.Setenv("LOCALAPPDATA", "")
+		if got := watcherDir(); got == "" {
+			t.Error("watcherDir() returned empty string with no env vars set — callers assume non-empty")
 		}
 	})
 }
