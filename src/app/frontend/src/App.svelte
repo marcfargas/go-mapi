@@ -267,7 +267,7 @@
   {:else if errorMsg}
     <section class="state state--error">
       <h2>Watcher stopped</h2>
-      <p>go-mapi can't watch %TEMP%\go-mapi\. Restart the app, or check app.log for details.</p>
+      <p>go-mapi can't watch %LOCALAPPDATA%\go-mapi\queue\. Restart the app, or check app.log for details.</p>
     </section>
   {:else if queue.length === 0}
     <section class="state state--empty">

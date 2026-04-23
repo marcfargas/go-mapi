@@ -6,23 +6,29 @@ import (
 )
 
 // watcherDir returns the directory that the MAPI interceptor DLL writes email JSON files to.
-// Mirrors the logic in src/native-host/main.go defaultWatchDir().
-// DLL, native-host, and Wails app must all agree on this path.
+//
+// As of quick/260423-msq: the DLL resolves this via SHGetFolderPathW(CSIDL_LOCAL_APPDATA)
+// + "\\go-mapi\\queue", which is session-scoped and immune to per-process TEMP/TMP
+// overrides (fixes the bug where legacy apps overriding TEMP redirected MAPI JSON away
+// from the watcher). The Go side mirrors that resolution by reading LOCALAPPDATA directly.
+//
+// Precedence:
+//  1. GOMAPI_WATCH_DIR — used as-is (test override / RDS per-session override).
+//  2. %LOCALAPPDATA%\go-mapi\queue — production path; must match the DLL.
+//  3. Platform fallback (os.UserCacheDir) — keeps Go test compile green on POSIX CI.
+//
+// TEMP and TMP are intentionally NOT consulted — doing so would reintroduce the bug.
 func watcherDir() string {
-	// Check GOMAPI_WATCH_DIR env var first (allows per-session override under RDS).
 	if dir := os.Getenv("GOMAPI_WATCH_DIR"); dir != "" {
 		return dir
 	}
-
-	// Default: %TEMP%\go-mapi\ — matches the MAPI interceptor DLL and native-host.
-	tempDir := os.Getenv("TEMP")
-	if tempDir == "" {
-		tempDir = os.Getenv("TMP")
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		return filepath.Join(localAppData, "go-mapi", "queue")
 	}
-	if tempDir == "" {
-		tempDir = os.TempDir()
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cacheDir, "go-mapi", "queue")
 	}
-	return filepath.Join(tempDir, "go-mapi")
+	return filepath.Join(".", "go-mapi", "queue")
 }
 
 // appDataDir returns the directory that holds per-user go-mapi state:
