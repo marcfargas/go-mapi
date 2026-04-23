@@ -1,5 +1,8 @@
 node_modules/
 build/
+# QUICK-260423-ntu T3a: arch-specific CMake build dirs (x86_64 / i686 clang)
+build-x64/
+build-x86/
 dist/
 *.dll
 *.obj
