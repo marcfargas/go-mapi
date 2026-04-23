@@ -127,7 +127,7 @@ std::wstring JsonWriter::WriteMailToFile(const MailMessage& msg) {
 
     // Generate unique filename
     std::wstring filename = FsUtils::GenerateUniqueFilename();
-    std::wstring outputDir = FsUtils::GetTempPath();
+    std::wstring outputDir = FsUtils::GetQueueDirectory();
     std::wstring fullPath = outputDir + filename;
 
     // Serialize message to JSON

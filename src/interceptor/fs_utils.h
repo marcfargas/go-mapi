@@ -7,10 +7,12 @@ namespace go_mapi {
 
 class FsUtils {
 public:
-    // Get the temp directory path (e.g., %TEMP%\go-mapi\)
-    static std::wstring GetTempPath();
+    // Get the queue directory path (e.g., %LOCALAPPDATA%\go-mapi\queue\) — invariant
+    // regardless of the calling process's TEMP/TMP environment.
+    static std::wstring GetQueueDirectory();
 
-    // Ensure the output directory exists, create if necessary
+    // Ensure the queue directory and the queue/errors subdirectory both exist
+    // (create if needed).
     static bool EnsureOutputDirectory();
 
     // Generate a unique filename (timestamp_randomchars.json)
@@ -20,8 +22,8 @@ public:
     static bool WriteFile(const std::wstring& filePath, const std::string& content);
 
 private:
-    // Get base temp directory
-    static std::wstring GetBaseTempDir();
+    // Get base queue directory (%LOCALAPPDATA%\go-mapi\queue) without trailing separator.
+    static std::wstring GetBaseQueueDir();
 
     // Get 6 random hex characters
     static std::string GetRandomSuffix();

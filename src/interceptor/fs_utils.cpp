@@ -1,29 +1,35 @@
+// TODO: cover GetQueueDirectory + EnsureOutputDirectory in a future C++ unit harness.
+
 #include "fs_utils.h"
-#include <shlwapi.h>
+#include <shlobj.h>
 #include <ctime>
 #include <random>
 #include <iomanip>
 #include <sstream>
 
-#pragma comment(lib, "shlwapi.lib")
-
 namespace go_mapi {
 
-std::wstring FsUtils::GetBaseTempDir() {
-    wchar_t tempPath[MAX_PATH];
-    if (GetTempPathW(MAX_PATH, tempPath) == 0) {
+std::wstring FsUtils::GetBaseQueueDir() {
+    // CSIDL_LOCAL_APPDATA resolves to %LOCALAPPDATA% (e.g., C:\Users\<user>\AppData\Local).
+    // Unlike GetTempPathW (which reads TMP/TEMP/USERPROFILE per-process), this is
+    // session-scoped and NOT influenced by per-process TEMP/TMP env overrides —
+    // fixes the legacy-app-overrides-TEMP bug where the DLL and the Wails watcher
+    // disagreed on the queue location (quick/260423-msq).
+    wchar_t path[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path);
+    if (FAILED(hr)) {
         return L"";
     }
-    std::wstring result(tempPath);
-    if (result.back() != L'\\') {
+    std::wstring result(path);
+    if (!result.empty() && result.back() != L'\\') {
         result += L'\\';
     }
-    result += L"go-mapi";
+    result += L"go-mapi\\queue";
     return result;
 }
 
-std::wstring FsUtils::GetTempPath() {
-    std::wstring basePath = GetBaseTempDir();
+std::wstring FsUtils::GetQueueDirectory() {
+    std::wstring basePath = GetBaseQueueDir();
     if (!basePath.empty() && basePath.back() != L'\\') {
         basePath += L'\\';
     }
@@ -31,15 +37,22 @@ std::wstring FsUtils::GetTempPath() {
 }
 
 bool FsUtils::EnsureOutputDirectory() {
-    std::wstring dirPath = GetBaseTempDir();
-    if (dirPath.empty()) {
+    std::wstring queueDir = GetBaseQueueDir();
+    if (queueDir.empty()) {
         return false;
     }
 
-    // Try to create the directory (CreateDirectoryW doesn't fail if it exists)
-    BOOL result = CreateDirectoryW(dirPath.c_str(), nullptr);
-    // Either it was created successfully, or it already exists
-    return result || GetLastError() == ERROR_ALREADY_EXISTS;
+    // SHCreateDirectoryExW handles nested creation (creates the parent
+    // %LOCALAPPDATA%\go-mapi too if needed).
+    // ERROR_ALREADY_EXISTS / ERROR_FILE_EXISTS are success cases.
+    int rc = SHCreateDirectoryExW(nullptr, queueDir.c_str(), nullptr);
+    if (rc != ERROR_SUCCESS && rc != ERROR_ALREADY_EXISTS && rc != ERROR_FILE_EXISTS) {
+        return false;
+    }
+
+    std::wstring errorsDir = queueDir + L"\\errors";
+    rc = SHCreateDirectoryExW(nullptr, errorsDir.c_str(), nullptr);
+    return rc == ERROR_SUCCESS || rc == ERROR_ALREADY_EXISTS || rc == ERROR_FILE_EXISTS;
 }
 
 std::string FsUtils::GetRandomSuffix() {
