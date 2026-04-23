@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: executing
-stopped_at: Phase 11 context gathered
-last_updated: "2026-04-21T17:34:15.297Z"
-last_activity: 2026-04-21 -- Phase 11 execution started
+status: paused
+stopped_at: Phase 11 paused at 11-04 Task 2 — store delisting + GA tag deferred until go-mapi-www ships
+last_updated: "2026-04-23T20:17:00.000Z"
+last_activity: 2026-04-23 -- Phase 11 plan 11-04 paused at human-action checkpoint (Task 1 landed in 20d36f1; delisting + GA deferred pending go-mapi-www)
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 38
-  completed_plans: 33
-  percent: 87
+  total_plans: 39
+  completed_plans: 38
+  percent: 97
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 11 — Auto-Update + v3.0 Release
+**Current focus:** Phase 11 — autoupdate-release
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 11 (Auto-Update + v3.0 Release) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 11
-Last activity: 2026-04-23 - Completed quick task 260423-tk6: DLL copies attachments to queue + surface draft-failure reason in UI
+Phase: 11 (autoupdate-release) — PAUSED at 11-04 Task 2 (human-action checkpoint)
+Plan: 11-04 (6 of 6) — Task 1 landed (20d36f1); Task 2 + 3 deferred
+Status: Paused — store delisting + GA tag held until go-mapi-www ships
+Last activity: 2026-04-23 -- Plan 11-04 paused at human-action checkpoint; Chrome/Edge delisting deferred pending go-mapi-www
 
-Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 is planned and ready for execution
+Progress: [███████████████████░] Phase 11 at 5/6 plans complete; 11-04 paused at human-action checkpoint pending go-mapi-www and store delisting
 
 ## Performance Metrics
 
@@ -110,6 +110,6 @@ Recent decisions carried into v3.0:
 
 ## Session Continuity
 
-Last session: 2026-04-21T15:21:34.465Z
-Stopped at: Phase 11 context gathered
-Resume: run `/gsd-execute-phase 11`
+Last session: 2026-04-23T20:17:00.000Z
+Stopped at: Phase 11 paused at 11-04 Task 2 (human-action checkpoint) — store delisting + GA tag deferred until go-mapi-www ships
+Resume: finish go-mapi-www (c:/dev/go-mapi-www), update Chrome Web Store + Edge Add-ons listings with deprecation copy, paste proof into `.planning/phases/11-autoupdate-release/11-RELEASE-EVIDENCE.md`, then run `/gsd-execute-phase 11` and reply `approved` at the checkpoint
