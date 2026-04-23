@@ -34,6 +34,20 @@ std::string FilenameFromPath(const std::string& path) {
     return path;
 }
 
+// QUICK-260423-qpx: many legacy Simple MAPI callers (Spanish SendEmail-style
+// apps, older accounting software, Win32 utilities that predate the modern
+// lpszName/lpszAddress split) populate only lpszName with a bare email and
+// leave lpszAddress NULL. Promote when the name looks like an email so the
+// Go validator can accept the message. Only considers '@' as the signal --
+// the Go side (normalizeAddress) handles further cleanup.
+static void PromoteEmailShapedNameToAddress(Recipient& r) {
+    if (!r.address.empty()) return;
+    if (r.name.empty()) return;
+    if (r.name.find('@') == std::string::npos) return;
+    r.address = r.name;
+    r.name.clear();
+}
+
 MailMessage ConvertAnsiMessage(const MapiMessage& msg) {
     MailMessage result;
     // originApp is populated by the DLL glue layer (MapiImpl::GetOriginApplicationName),
@@ -61,6 +75,7 @@ MailMessage ConvertAnsiMessage(const MapiMessage& msg) {
             if (recip.lpszAddress) {
                 r.address = AnsiToUtf8(recip.lpszAddress);
             }
+            PromoteEmailShapedNameToAddress(r);
 
             switch (recip.ulRecipClass) {
             case MAPI_TO:
@@ -129,6 +144,7 @@ MailMessage ConvertWideMessage(const MapiMessageW& msg) {
             if (recip.lpszAddress) {
                 r.address = WideToUtf8(recip.lpszAddress);
             }
+            PromoteEmailShapedNameToAddress(r);
 
             switch (recip.ulRecipClass) {
             case MAPI_TO:

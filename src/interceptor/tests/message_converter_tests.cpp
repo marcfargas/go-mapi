@@ -209,6 +209,84 @@ TEST_CASE("ConvertAnsiMessage preserves SMTP prefix verbatim") {
     CHECK(result.toRecipients[0].address == "SMTP:user@example.com");
 }
 
+TEST_CASE("ConvertAnsiMessage promotes email-shaped name to address when address empty") {
+    // QUICK-260423-qpx: legacy Simple MAPI callers (Spanish SendEmail-style
+    // apps) often populate only lpszName with a bare email and leave
+    // lpszAddress NULL. Without a fallback, the Go validator rejects the
+    // message with 'recipient to[0] missing address'.
+    char name[] = "marc@blegal.eu";
+    MapiRecipDesc recip{};
+    recip.ulRecipClass = MAPI_TO;
+    recip.lpszName = name;
+    recip.lpszAddress = nullptr;
+
+    MapiMessage msg{};
+    msg.nRecipCount = 1;
+    msg.lpRecips = &recip;
+
+    MailMessage result = ConvertAnsiMessage(msg);
+    REQUIRE(result.toRecipients.size() == 1);
+    CHECK(result.toRecipients[0].address == "marc@blegal.eu");
+    CHECK(result.toRecipients[0].name == "");
+}
+
+TEST_CASE("ConvertAnsiMessage does NOT promote non-email name") {
+    // Guard: only promote when the name actually looks like an email. A plain
+    // display name with no address must stay in .name so the Go validator
+    // reports the missing address to the user.
+    char name[] = "Isabel Perez";
+    MapiRecipDesc recip{};
+    recip.ulRecipClass = MAPI_TO;
+    recip.lpszName = name;
+    recip.lpszAddress = nullptr;
+
+    MapiMessage msg{};
+    msg.nRecipCount = 1;
+    msg.lpRecips = &recip;
+
+    MailMessage result = ConvertAnsiMessage(msg);
+    REQUIRE(result.toRecipients.size() == 1);
+    CHECK(result.toRecipients[0].address == "");
+    CHECK(result.toRecipients[0].name == "Isabel Perez");
+}
+
+TEST_CASE("ConvertAnsiMessage keeps name when address is already set") {
+    // When both fields are present, pass them through verbatim -- promotion
+    // is a fallback, not a rewrite.
+    char name[] = "Marc Fargas";
+    char addr[] = "marc@blegal.eu";
+    MapiRecipDesc recip{};
+    recip.ulRecipClass = MAPI_TO;
+    recip.lpszName = name;
+    recip.lpszAddress = addr;
+
+    MapiMessage msg{};
+    msg.nRecipCount = 1;
+    msg.lpRecips = &recip;
+
+    MailMessage result = ConvertAnsiMessage(msg);
+    REQUIRE(result.toRecipients.size() == 1);
+    CHECK(result.toRecipients[0].address == "marc@blegal.eu");
+    CHECK(result.toRecipients[0].name == "Marc Fargas");
+}
+
+TEST_CASE("ConvertWideMessage promotes email-shaped name to address when address empty") {
+    wchar_t name[] = L"marc@blegal.eu";
+    MapiRecipDescW recip{};
+    recip.ulRecipClass = MAPI_TO;
+    recip.lpszName = name;
+    recip.lpszAddress = nullptr;
+
+    MapiMessageW msg{};
+    msg.nRecipCount = 1;
+    msg.lpRecips = &recip;
+
+    MailMessage result = ConvertWideMessage(msg);
+    REQUIRE(result.toRecipients.size() == 1);
+    CHECK(result.toRecipients[0].address == "marc@blegal.eu");
+    CHECK(result.toRecipients[0].name == "");
+}
+
 TEST_CASE("ConvertAnsiMessage unknown recipient class routes to TO") {
     char name[] = "X";
     char addr[] = "unknown@x.com";
