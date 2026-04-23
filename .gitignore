@@ -3,6 +3,9 @@ build/
 # QUICK-260423-ntu T3a: arch-specific CMake build dirs (x86_64 / i686 clang)
 build-x64/
 build-x86/
+# QUICK-260423-tk6: scratch CMake build dir used when running the C++
+# test harness standalone with -DBUILD_TESTS=ON (see tk6-PLAN.md verification).
+build-x64-test/
 dist/
 *.dll
 *.obj

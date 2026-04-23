@@ -162,8 +162,13 @@ func (m *automode) draftOne(e mapi.EmailWithId) error {
 
 	if callErr != nil {
 		category := classifyAutomodeError(callErr)
-		// Privacy-safe log: 8-char id prefix + category ONLY (QUAL-03, T-9-09).
-		logError("automode: draft %s failed: %s", safeIDPrefix(e.Id), category)
+		// QUICK-260423-tk6: log the raw error alongside the category so
+		// "attachment not found" and similar concrete failures surface in
+		// app.log instead of being demoted to the opaque "gmail" catchall.
+		// Privacy note: the error text never contains subject/body/recipient;
+		// it comes from GmailClient / os.Stat which handle local paths only.
+		logError("automode: draft %s failed: category=%s err=%v",
+			safeIDPrefix(e.Id), category, callErr)
 		if category == "signed-out" {
 			// D-10: mark so post-re-auth drains skip this backlog row.
 			m.app.markBacklogSkipped(e.Id)
@@ -172,6 +177,7 @@ func (m *automode) draftOne(e mapi.EmailWithId) error {
 			"emailId":       e.Id,
 			"success":       false,
 			"errorCategory": category,
+			"reason":        callErr.Error(),
 		})
 		// Error toast fires regardless of window state (D-11: errors always surface).
 		emitErrorToast(m.app, category, e.Id)

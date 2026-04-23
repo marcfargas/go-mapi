@@ -8,6 +8,7 @@
     state = 'idle',
     authenticated = true,
     errorCategory,
+    errorReason,
     onCreateDraft,
     onDismiss,
   }: {
@@ -15,6 +16,8 @@
     state?: 'idle' | 'in-flight' | 'drafted-flash' | 'error';
     authenticated?: boolean;
     errorCategory?: ErrorCategory;
+    /** QUICK-260423-tk6: raw Go error text, surfaced by AutoDraftErrorBadge. */
+    errorReason?: string;
     onCreateDraft: (id: string) => void;
     onDismiss: (id: string) => void;
   } = $props();
@@ -89,7 +92,7 @@
     >Dismiss</button>
   </span>
   {#if state === 'error' && errorCategory}
-    <AutoDraftErrorBadge category={errorCategory} />
+    <AutoDraftErrorBadge category={errorCategory} reason={errorReason} />
   {/if}
 </li>
 

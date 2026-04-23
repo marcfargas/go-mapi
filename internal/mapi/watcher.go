@@ -138,7 +138,10 @@ func (ew *EmailWatcher) GetEmails() map[string]*MailMessage {
 // calling with an unknown id (already-processed, never-existed, or raced with
 // a concurrent Delete) returns nil. Caller does not need to pre-check.
 //
-// Privacy-first: no retention — the file is removed immediately on success.
+// Privacy-first: no retention — the file is removed immediately on success,
+// along with the sibling <stem>\ attachments dir written by the DLL
+// (QUICK-260423-tk6). Layout invariant: for a JSON file named "<stem>.json",
+// attachments live in "<watchDir>\<stem>\*" (no trailing separator).
 // Phase 9 NOTIF-03 toast activation + automode double-signal tolerance
 // depend on this; see 09-RESEARCH.md §7 for the full rationale.
 func (ew *EmailWatcher) MarkProcessed(id string) error {
@@ -164,6 +167,11 @@ func (ew *EmailWatcher) MarkProcessed(id string) error {
 		ew.mu.Unlock()
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
+	// Best-effort cleanup of the sibling attachments dir (QUICK-260423-tk6).
+	// Must not block MarkProcessed on failure — the JSON is the source of
+	// truth; a stray attachments dir is worse than a missing JSON but not
+	// worse than failing the user's draft-create flow.
+	ew.removeAttachmentsDir(filename)
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
@@ -209,6 +217,9 @@ func (ew *EmailWatcher) Delete(id string) error {
 		ew.mu.Unlock()
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
+	// Best-effort cleanup of the sibling attachments dir (QUICK-260423-tk6) —
+	// same privacy-first contract as MarkProcessed.
+	ew.removeAttachmentsDir(filename)
 
 	delete(ew.emails, id)
 	delete(ew.fileToID, filename)
@@ -220,6 +231,26 @@ func (ew *EmailWatcher) Delete(id string) error {
 	// finding: Dismiss button had no visible effect in the UI).
 	ew.dispatchQueueChanged(snap)
 	return nil
+}
+
+// removeAttachmentsDir is the shared implementation of QUICK-260423-tk6's
+// cleanup invariant. For a JSON file named "<stem>.json", the DLL writes
+// attachments into the sibling dir "<watchDir>\<stem>\". Both MarkProcessed
+// and Delete invoke this on the JSON's removal path so the attachments
+// tear down with the email. Best-effort: failures are silent — leaving a
+// stray dir is acceptable; blocking draft-create is not.
+func (ew *EmailWatcher) removeAttachmentsDir(filename string) {
+	if !strings.HasSuffix(filename, ".json") {
+		return
+	}
+	stem := strings.TrimSuffix(filename, ".json")
+	if stem == "" {
+		return
+	}
+	attachDir := filepath.Join(ew.watchDir, stem)
+	// RemoveAll is safe when the dir doesn't exist (nil error). Swallow any
+	// other error — we do not want privacy cleanup to fail the draft flow.
+	_ = os.RemoveAll(attachDir)
 }
 
 func (ew *EmailWatcher) processExistingFiles() error {

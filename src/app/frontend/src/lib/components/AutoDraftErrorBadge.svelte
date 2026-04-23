@@ -1,7 +1,14 @@
 <script lang="ts">
   import type { ErrorCategory } from '../settings';
 
-  let { category }: { category: ErrorCategory } = $props();
+  let {
+    category,
+    reason,
+  }: {
+    category: ErrorCategory;
+    /** QUICK-260423-tk6: raw Go error text, appended to the tooltip/aria-label. */
+    reason?: string;
+  } = $props();
 
   const label = $derived(
     category === 'signed-out'
@@ -10,14 +17,20 @@
         ? 'Network error'
         : 'Gmail error',
   );
+
+  // Compose a tooltip that includes the raw reason when present so the user
+  // can tell "attachment not found" apart from a Gmail 5xx without reading
+  // app.log. Keep the category label first so quick-scanners still see it.
+  const tooltip = $derived(reason ? `${label}: ${reason}` : label);
 </script>
 
 <span
   class="badge"
   role="status"
   tabindex="0"
-  title={label}
-  aria-label={`Auto-draft failed: ${label}`}
+  title={tooltip}
+  aria-label={`Auto-draft failed: ${tooltip}`}
+  data-testid="auto-draft-error-badge"
 >!</span>
 
 <style>

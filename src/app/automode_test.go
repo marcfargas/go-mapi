@@ -315,6 +315,13 @@ func TestAutomodeGmail5xx(t *testing.T) {
 	if m["errorCategory"] != "gmail" {
 		t.Errorf("expected errorCategory=gmail for 500 response, got %v", m["errorCategory"])
 	}
+	// QUICK-260423-tk6: failure payload must include the raw error text so the
+	// UI can surface it. Empty reason hides the root cause behind the opaque
+	// "gmail" catchall — exactly the visibility bug the quick task resolves.
+	reason, _ := m["reason"].(string)
+	if reason == "" {
+		t.Error("expected non-empty reason on failure payload (tk6 visibility)")
+	}
 }
 
 // TestAutomodePauseRespected: paused=true → drain returns immediately, zero emits.

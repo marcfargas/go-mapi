@@ -37,3 +37,35 @@ endif()
 # Register the test with CTest so `ctest --output-on-failure` in CI runs it.
 add_test(NAME message_converter_tests
          COMMAND message_converter_tests)
+
+# QUICK-260423-tk6: fs_utils unit tests (attachment-copy helpers).
+#
+# Exercises the new GenerateUniqueStem / GetAttachmentsDirForStem /
+# EnsureDirExists / CopyFileToDir / WriteErrorForStem helpers. Links
+# fs_utils.cpp directly — unlike message_converter, fs_utils is not
+# in an OBJECT library because it's only consumed by the DLL itself.
+add_executable(fs_utils_tests
+    fs_utils_tests.cpp
+    ../fs_utils.cpp
+)
+
+target_include_directories(fs_utils_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+set_target_properties(fs_utils_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+if(MSVC)
+    target_compile_options(fs_utils_tests PRIVATE /W4 /WX-)
+    target_link_libraries(fs_utils_tests PRIVATE kernel32.lib user32.lib shell32.lib)
+elseif(MINGW)
+    target_compile_options(fs_utils_tests PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_link_libraries(fs_utils_tests PRIVATE kernel32 user32 shell32 -static-libgcc -static-libstdc++)
+    target_link_options(fs_utils_tests PRIVATE -static)
+endif()
+
+add_test(NAME fs_utils_tests
+         COMMAND fs_utils_tests)

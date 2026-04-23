@@ -141,4 +141,25 @@ std::wstring JsonWriter::WriteMailToFile(const MailMessage& msg) {
     return L"";
 }
 
+std::wstring JsonWriter::WriteMailToFileWithStem(const MailMessage& msg,
+                                                 const std::wstring& stem) {
+    // QUICK-260423-tk6: variant that accepts a caller-supplied stem so the
+    // DLL orchestration layer can copy attachments into a sibling dir keyed
+    // off the same stem before writing the JSON.
+    if (stem.empty()) return L"";
+    if (!FsUtils::EnsureOutputDirectory()) {
+        return L"";
+    }
+
+    std::wstring outputDir = FsUtils::GetQueueDirectory();
+    std::wstring fullPath = outputDir + stem + L".json";
+
+    std::string jsonContent = MessageToJson(msg);
+    if (FsUtils::WriteFile(fullPath, jsonContent)) {
+        return fullPath;
+    }
+
+    return L"";
+}
+
 } // namespace go_mapi

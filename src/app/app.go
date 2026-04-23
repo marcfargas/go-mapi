@@ -549,12 +549,19 @@ func (a *App) CreateDraftForID(id string) error {
 	})
 	if callErr != nil {
 		category := classifyAutomodeError(callErr)
-		logError("CreateDraftForID: draft %s failed: %s", safeIDPrefix(id), category)
+		// QUICK-260423-tk6: include the raw error alongside the category so
+		// Marc (and app.log triage) can distinguish "attachment not found"
+		// from a Gmail 5xx without tailing interceptor logs. The category
+		// set is unchanged — the reason is a diagnostic string, not a new
+		// classification axis.
+		logError("CreateDraftForID: draft %s failed: category=%s err=%v",
+			safeIDPrefix(id), category, callErr)
 		if a.ctx != nil {
 			wruntime.EventsEmit(a.ctx, "auto-draft-result", map[string]any{
 				"emailId":       id,
 				"success":       false,
 				"errorCategory": category,
+				"reason":        callErr.Error(),
 			})
 		}
 		// Error toast fires regardless of window state (D-11: errors always surface).
