@@ -659,6 +659,92 @@ func TestMarkProcessedUnknownIdReturnsNil(t *testing.T) {
 	}
 }
 
+// TestMarkProcessed_RemovesSiblingAttachmentsDir: QUICK-260423-tk6 cleanup
+// invariant. The DLL writes <stem>.json alongside a sibling <stem>/ dir that
+// holds copied attachments. When the Wails app processes the email, it must
+// remove BOTH — privacy-first: no retention.
+func TestMarkProcessed_RemovesSiblingAttachmentsDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	// Seed the JSON (stem = "mp-tk6") and a sibling attachments dir.
+	stem := "mp-tk6"
+	data := makeValidEmail(t, "TK6 MarkProcessed Attach", "2024-01-05T00:00:00Z")
+	writeFile(t, filepath.Join(watchDir, stem+".json"), data)
+	attachDir := filepath.Join(watchDir, stem)
+	if err := os.MkdirAll(attachDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(attachDir) error = %v", err)
+	}
+	writeFile(t, filepath.Join(attachDir, "report.pdf"), []byte("PDF-DATA"))
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	if err := ew.MarkProcessed(id); err != nil {
+		t.Fatalf("MarkProcessed(%q) error = %v", id, err)
+	}
+
+	// Sibling attachments dir must be gone (privacy-first: no retention).
+	if _, statErr := os.Stat(attachDir); !os.IsNotExist(statErr) {
+		t.Errorf("sibling attachments dir still exists after MarkProcessed: %v", statErr)
+	}
+}
+
+// TestDelete_RemovesSiblingAttachmentsDir: mirrors the MarkProcessed test —
+// Dismiss must also tear down the attachments dir.
+func TestDelete_RemovesSiblingAttachmentsDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	os.MkdirAll(watchDir, 0755)
+
+	stem := "del-tk6"
+	data := makeValidEmail(t, "TK6 Delete Attach", "2024-01-06T00:00:00Z")
+	writeFile(t, filepath.Join(watchDir, stem+".json"), data)
+	attachDir := filepath.Join(watchDir, stem)
+	if err := os.MkdirAll(attachDir, 0755); err != nil {
+		t.Fatalf("MkdirAll(attachDir) error = %v", err)
+	}
+	writeFile(t, filepath.Join(attachDir, "resume.pdf"), []byte("PDF"))
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher() error = %v", err)
+	}
+	if err := ew.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ew.Stop()
+
+	snap := cb.waitSnapshot(t, 3*time.Second)
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 email in snapshot, got %d", len(snap))
+	}
+	id := snap[0].Id
+
+	if err := ew.Delete(id); err != nil {
+		t.Fatalf("Delete(%q) error = %v", id, err)
+	}
+
+	if _, statErr := os.Stat(attachDir); !os.IsNotExist(statErr) {
+		t.Errorf("sibling attachments dir still exists after Delete: %v", statErr)
+	}
+}
+
 // Verify Snapshot returns a sorted copy (sort package used for assertion).
 func TestEmailWatcher_Snapshot_ReturnsSnapshot(t *testing.T) {
 	tmpDir := t.TempDir()
