@@ -106,9 +106,26 @@ Safe-Invoke 'HKLM Mail clients' {
         Append-Block
     Append-Line ''
     Append-Line 'Default value at HKLM:\SOFTWARE\Clients\Mail :'
-    Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Clients\Mail' -ErrorAction Stop |
-        Format-List '(default)', '*' |
-        Append-Block
+    # Guarded (Default) read — under StrictMode, referencing a non-existent
+    # property throws NullReference. A fresh install may have no (Default)
+    # value under HKLM\SOFTWARE\Clients\Mail (see tests/live/*-165325.txt).
+    # Also, piping the registry PSObject through `Format-List *` tickles a
+    # StrictMode NullReference inside the formatter on some Windows locales
+    # (observed on es-ES Windows 11) — iterate user-facing properties
+    # ourselves to stay within the StrictMode envelope.
+    $props = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Clients\Mail' -ErrorAction SilentlyContinue
+    if ($props -and ($props.PSObject.Properties.Name -contains '(default)')) {
+        Append-Line "  (default) = $($props.'(default)')"
+    } else {
+        Append-Line "  (default) = <not set>"
+    }
+    if ($props) {
+        foreach ($p in $props.PSObject.Properties) {
+            if ($p.Name -like 'PS*') { continue }
+            if ($p.Name -eq '(default)') { continue }
+            Append-Line "  $($p.Name) = $($p.Value)"
+        }
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -122,9 +139,21 @@ Safe-Invoke 'HKLM WOW6432 Mail clients' {
             Append-Block
         Append-Line ''
         Append-Line 'Default value at HKLM:\SOFTWARE\WOW6432Node\Clients\Mail :'
-        Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\WOW6432Node\Clients\Mail' -ErrorAction Stop |
-            Format-List '(default)', '*' |
-            Append-Block
+        # Guarded (Default) read + manual property enumeration — see
+        # native-view comment above for the StrictMode + Format-List rationale.
+        $props = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\WOW6432Node\Clients\Mail' -ErrorAction SilentlyContinue
+        if ($props -and ($props.PSObject.Properties.Name -contains '(default)')) {
+            Append-Line "  (default) = $($props.'(default)')"
+        } else {
+            Append-Line "  (default) = <not set>"
+        }
+        if ($props) {
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -like 'PS*') { continue }
+                if ($p.Name -eq '(default)') { continue }
+                Append-Line "  $($p.Name) = $($p.Value)"
+            }
+        }
     } else {
         Append-Line '(No HKLM:\SOFTWARE\WOW6432Node\Clients\Mail key — 32-bit view not present)'
     }
@@ -140,15 +169,34 @@ foreach ($root in @('HKLM:\SOFTWARE\Clients\Mail\go-mapi',
     Append-Line "Key: $root"
     Safe-Invoke "Dump $root" {
         if (Test-Path -LiteralPath $root) {
-            Get-ItemProperty -LiteralPath $root | Format-List * | Append-Block
+            # Guarded property dump — under StrictMode, piping the registry
+            # PSObject through `Format-List *` has been observed to throw
+            # NullReference on some Windows locales (es-ES Windows 11),
+            # presumably from an internal formatter property access.
+            # Enumerate user-facing properties ourselves instead.
+            $props = Get-ItemProperty -LiteralPath $root -ErrorAction SilentlyContinue
+            if ($props) {
+                foreach ($p in $props.PSObject.Properties) {
+                    if ($p.Name -like 'PS*') { continue }
+                    Append-Line "  $($p.Name) = $($p.Value)"
+                }
+            } else {
+                Append-Line '  (no values on this key)'
+            }
             # Dump all subkeys recursively
             Get-ChildItem -LiteralPath $root -Recurse -ErrorAction SilentlyContinue |
                 ForEach-Object {
                     Append-Line ''
                     Append-Line "Subkey: $($_.Name)"
-                    Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue |
-                        Format-List * |
-                        Append-Block
+                    $subProps = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+                    if ($subProps) {
+                        foreach ($p in $subProps.PSObject.Properties) {
+                            if ($p.Name -like 'PS*') { continue }
+                            Append-Line "  $($p.Name) = $($p.Value)"
+                        }
+                    } else {
+                        Append-Line '  (no values on this subkey)'
+                    }
                 }
         } else {
             Append-Line '(key not present)'

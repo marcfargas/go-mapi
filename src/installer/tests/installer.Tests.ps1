@@ -40,6 +40,9 @@ BeforeAll {
     $script:FirewallRule = 'go-mapi OAuth loopback'
     $script:ExpectedAumid = 'com.marcfargas.gomapi'
     $script:CredTarget   = 'go-mapi:oauth-tokens'
+    # QUICK-260423-ntu T3d — dual-bitness install surfaces
+    $script:InstallDir32 = "${env:ProgramFiles(x86)}\go-mapi"
+    $script:MapiKey32    = 'HKLM:\SOFTWARE\WOW6432Node\Clients\Mail\go-mapi'
 
     Write-Host ("[Setup] SetupExe    = {0}" -f $script:SetupExe)
     Write-Host ("[Setup] InstallDir  = {0}" -f $script:InstallDir)
@@ -97,6 +100,51 @@ Describe "go-mapi installer round-trip" {
             $rule.Direction | Should -Be 'Inbound'
             $rule.Action    | Should -Be 'Allow'
         }
+
+        # QUICK-260423-ntu item 14 — install-time running-process guard (silent)
+        It "14. silent install succeeds when go-mapi.exe is already running in InstallDir" {
+            # Pre-condition: install completed in item 1. Launch a decoy process
+            # from the installed path, then re-run the installer in /S mode and
+            # assert the exe is still runnable post-install (i.e. the installer
+            # closed the old instance cleanly, overwrote it, and did NOT abort).
+            $exe = Join-Path $script:InstallDir 'go-mapi.exe'
+            $decoy = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+            try {
+                Start-Sleep -Seconds 1
+                $proc = Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait -PassThru
+                $proc.ExitCode | Should -Be 0
+                Test-Path $exe | Should -BeTrue
+            } finally {
+                # Belt-and-braces cleanup in case the installer did not close it
+                if (-not $decoy.HasExited) { $decoy.Kill() }
+            }
+        }
+
+        # QUICK-260423-ntu item 16 — x86 DLL deposited alongside x64 DLL
+        It "16. go-mapi.dll is deposited in both ProgramFiles and ProgramFiles(x86)" {
+            Test-Path (Join-Path $script:InstallDir   'go-mapi.dll') | Should -BeTrue
+            Test-Path (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -BeTrue
+        }
+
+        # QUICK-260423-ntu item 17 — each DLL has the matching PE bitness
+        It "17. x64 DLL is PE32+ and x86 DLL is PE32" {
+            function Get-PeMagic($p) {
+                $b = [IO.File]::ReadAllBytes($p)
+                $e = [BitConverter]::ToInt32($b, 0x3C)
+                return [BitConverter]::ToUInt16($b, $e + 4 + 20)
+            }
+            Get-PeMagic (Join-Path $script:InstallDir   'go-mapi.dll') | Should -Be 0x20B
+            Get-PeMagic (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -Be 0x10B
+        }
+
+        # QUICK-260423-ntu item 18 — WOW6432Node DLLPath points at the x86 DLL
+        It "18. HKLM WOW6432Node MAPI key is registered with 32-bit DLLPath" {
+            # Path-based read: HKLM:\SOFTWARE\WOW6432Node\... resolves directly
+            # without SetRegView, so Get-ItemProperty hits the 32-bit hive.
+            Test-Path $script:MapiKey32 | Should -BeTrue
+            $props = Get-ItemProperty -Path $script:MapiKey32
+            $props.DLLPath | Should -Match '(?i)Program Files \(x86\)\\go-mapi\\go-mapi\.dll$'
+        }
     }
 
     Context "Silent uninstall" {
@@ -148,6 +196,39 @@ Describe "go-mapi installer round-trip" {
         # D-21 item 13
         It "13. Start Menu shortcut is gone" {
             Test-Path $script:Shortcut | Should -BeFalse
+        }
+
+        # QUICK-260423-ntu item 15 — uninstall-time running-process guard (silent)
+        It "15. silent uninstall closes a running go-mapi.exe in InstallDir and removes the binary" {
+            # Re-install first because item 7 already uninstalled.
+            Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait
+            $exe = Join-Path $script:InstallDir 'go-mapi.exe'
+            $decoy = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+            try {
+                Start-Sleep -Seconds 1
+                $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+                $proc = Start-Process -FilePath $uninst -ArgumentList '/S' -Wait -PassThru
+                $proc.ExitCode | Should -Be 0
+                Start-Sleep -Seconds 2   # NSIS batch-wrapper self-delete
+                Test-Path $exe | Should -BeFalse -Because "uninstaller should have closed the running instance and deleted the binary"
+                $decoy.HasExited | Should -BeTrue
+            } finally {
+                if (-not $decoy.HasExited) { $decoy.Kill() }
+            }
+        }
+
+        # QUICK-260423-ntu item 19 — x86 DLL + install dir removed by uninstall
+        It "19. ProgramFiles(x86)\go-mapi is gone after uninstall" {
+            $exists = Test-Path $script:InstallDir32
+            if ($exists) {
+                (Get-ChildItem $script:InstallDir32 -Force -ErrorAction SilentlyContinue).Count | Should -Be 0
+            }
+            Test-Path (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -BeFalse
+        }
+
+        # QUICK-260423-ntu item 20 — WOW6432Node MAPI key removed
+        It "20. HKLM WOW6432Node MAPI handler key is gone after uninstall" {
+            Test-Path $script:MapiKey32 | Should -BeFalse
         }
     }
 }
