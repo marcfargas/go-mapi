@@ -29,7 +29,7 @@ Milestone: v3.0 Wails Pivot
 Phase: 11 (Auto-Update + v3.0 Release) — EXECUTING
 Plan: 1 of 5
 Status: Executing Phase 11
-Last activity: 2026-04-23 - Completed quick task 260423-qpx: address fallback for legacy MAPI apps + fix dev-build update compare
+Last activity: 2026-04-23 - Completed quick task 260423-tk6: DLL copies attachments to queue + surface draft-failure reason in UI
 
 Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 is planned and ready for execution
 
@@ -106,6 +106,7 @@ Recent decisions carried into v3.0:
 | 260423-ntu | 32-bit DLL support + uninstaller running-process guard + diagnostic script null-ref fixes | 2026-04-23 | 3744b00 | [260423-ntu-32-bit-dll-support-uninstaller-process-c](./quick/260423-ntu-32-bit-dll-support-uninstaller-process-c/) |
 | 260423-olq | Wails build wrapper reads .env.local and injects OAuth via ldflags | 2026-04-23 | adc8c16 | [260423-olq-wails-build-wrapper-reads-env-local-and-](./quick/260423-olq-wails-build-wrapper-reads-env-local-and-/) |
 | 260423-qpx | Address fallback for legacy Simple MAPI apps + fix dev-build update compare | 2026-04-23 | 5876088 | [260423-qpx-address-fallback-for-legacy-mapi-apps-fi](./quick/260423-qpx-address-fallback-for-legacy-mapi-apps-fi/) |
+| 260423-tk6 | DLL copies attachments into queue-owned dir + surface draft-failure reason in UI | 2026-04-23 | 30b35c6 | [260423-tk6-dll-copies-attachments-to-queue-surface-](./quick/260423-tk6-dll-copies-attachments-to-queue-surface-/) |
 
 ## Session Continuity
 
