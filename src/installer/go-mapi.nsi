@@ -18,6 +18,9 @@
 ;   D-12 — %ProgramData%\go-mapi\uninst\ directory for backup JSON
 ;   T-10-01-01 — ordering invariant enforced below (Call BackupPreviousMailClient
 ;                precedes WriteRegStr HKLM "SOFTWARE\Clients\Mail" "" "go-mapi")
+;   QUICK-260423-msq — DLL queue relocated from %TEMP%\go-mapi\ to
+;                %LOCALAPPDATA%\go-mapi\queue\ (DLL creates it at DllMain; installer does not
+;                pre-create it — no install-time action required for the path itself).
 
 Unicode True
 

@@ -3,7 +3,7 @@
 
 **go-mapi**
 
-go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Windows "Send to Mail recipient" calls and routes them to Gmail as drafts. A C++ MAPI DLL writes email JSON to `%TEMP%\go-mapi\`; the Wails app (Go backend + Svelte 5 frontend) watches that directory, signs the user in via Google OAuth desktop flow (PKCE loopback), and creates Gmail drafts on request. It's for Windows users who want their legacy desktop apps to compose email through Gmail without installing Outlook.
+go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Windows "Send to Mail recipient" calls and routes them to Gmail as drafts. A C++ MAPI DLL writes email JSON to `%LOCALAPPDATA%\go-mapi\queue\`; the Wails app (Go backend + Svelte 5 frontend) watches that directory, signs the user in via Google OAuth desktop flow (PKCE loopback), and creates Gmail drafts on request. It's for Windows users who want their legacy desktop apps to compose email through Gmail without installing Outlook.
 
 **Core Value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
 
@@ -46,7 +46,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 ## Key Dependencies
 - github.com/wailsapp/wails/v2 v2.12.0 - Wails framework (Go side)
 - fyne.io/systray v1.12.0 - System tray icon, menu, click handling
-- github.com/fsnotify/fsnotify v1.9.0 - `%TEMP%\go-mapi\` watcher (transitive via `internal/mapi`)
+- github.com/fsnotify/fsnotify v1.9.0 - `%LOCALAPPDATA%\go-mapi\queue\` watcher (transitive via `internal/mapi`)
 - github.com/zalando/go-keyring v0.2.8 - Windows Credential Manager for OAuth token storage
 - golang.org/x/oauth2 v0.36.0 - PKCE loopback flow helpers
 - github.com/pkg/browser - System-browser opener for OAuth consent
@@ -175,7 +175,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - `singleinstance.go` — Windows kernel mutex
 - `sessionend.go` — `WM_QUERYENDSESSION` handler (clean exit on logoff/shutdown)
 - `watcher_bridge.go` — bridges `internal/mapi.EmailWatcher` to Wails event emission
-- `paths.go` — `%APPDATA%\go-mapi\` + `%TEMP%\go-mapi\` resolution + env-var precedence
+- `paths.go` — `%APPDATA%\go-mapi\` + `%LOCALAPPDATA%\go-mapi\queue\` resolution + env-var precedence
 - `logging.go` — `%APPDATA%\go-mapi\app.log` writer
 - Tests co-located: `auth_test.go`, `watcher_bridge_test.go`, `singleinstance_test.go`, `sessionend_test.go`, `app_test.go`, `paths_test.go`, `auth_keyring_windows_test.go` (Windows-only)
 
@@ -212,7 +212,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - Validates enum-like field: `BodyFormat` must be "plain" or "html"
 - Validates recipient structure: all recipients must have address
 - Early return on first validation error
-- Errors moved to `%TEMP%\go-mapi\errors\` directory with `.error` file containing reason
+- Errors moved to `%LOCALAPPDATA%\go-mapi\queue\errors\` directory with `.error` file containing reason
 - Strips MAPI prefixes (SMTP:, mailto:) case-insensitively (`normalizeAddress`, `normalizeRecipients`)
 ## Special Patterns
 - Content-based SHA256 hash combining message body + filename → deterministic queue ID (hex string, 64 chars)
@@ -229,19 +229,19 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 
 ## Pattern Overview
 - Two components linked by filesystem IPC: C++ MAPI DLL (writes JSON) + Go/Svelte Wails app (watches + processes)
-- Privacy-first: no retention — emails are deleted from `%TEMP%\go-mapi\` after draft creation or dismissal
+- Privacy-first: no retention — emails are deleted from `%LOCALAPPDATA%\go-mapi\queue\` after draft creation or dismissal
 - Single Wails process owns: tray icon, main window, watcher goroutine, AuthManager, GmailClient
 - Async event handling throughout: watcher notifications, Wails events, OAuth callbacks
 - Minimal dependencies; stdlib preferred; no chrome APIs anywhere
 ## Layers
 **MAPI Interceptor (C++ DLL, `src/interceptor/`)**
-- Purpose: Capture MAPI calls from Windows applications, convert to JSON, write to `%TEMP%\go-mapi\`
+- Purpose: Capture MAPI calls from Windows applications, convert to JSON, write to `%LOCALAPPDATA%\go-mapi\queue\`
 - Contains: DLL entry point, MAPI function stubs, message conversion, file I/O
 - Depends on: Windows SDK, MinGW C++ runtime
 - Used by: Windows "Send to Mail recipient" feature; feeds the Wails app's watcher
 - Unchanged from v1.
 
-**Filesystem IPC (`%TEMP%\go-mapi\`)**
+**Filesystem IPC (`%LOCALAPPDATA%\go-mapi\queue\`)**
 - Purpose: Bridge Windows native context to the Wails app via filesystem events
 - Contains: Email JSON files (`*.json`), `errors/` subdirectory for invalid messages
 - Watched by: `internal/mapi.EmailWatcher` (fsnotify + debounce)
@@ -268,7 +268,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - Phase 9 lands the queue view + Manual / Auto-draft toggle
 ## Data Flow
 **Email arrival → UI:**
-1. Windows app calls `MAPISendMail`/`W` → `go-mapi.dll` writes JSON to `%TEMP%\go-mapi\`
+1. Windows app calls `MAPISendMail`/`W` → `go-mapi.dll` writes JSON to `%LOCALAPPDATA%\go-mapi\queue\`
 2. `internal/mapi.EmailWatcher` (fsnotify) sees the new file, debounces 500ms, validates JSON
 3. Watcher invokes the `WatcherCallback` registered by `src/app/watcher_bridge.go`
 4. The bridge calls `wruntime.EventsEmit(ctx, "queue-changed", payload)`
@@ -330,7 +330,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - Responsibilities: render `<App />`, subscribe to `auth-changed` and `queue-changed` events
 ## Error Handling
 **MAPI DLL:**
-- Parse errors: write to `%TEMP%\go-mapi\errors\{filename}.error` with reason
+- Parse errors: write to `%LOCALAPPDATA%\go-mapi\queue\errors\{filename}.error` with reason
 - File write errors: silent — MAPI errors must not block the calling app
 
 **`internal/mapi`:**
@@ -350,7 +350,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - Auth status drives screen routing: unauthenticated → SignInScreen; invalidGrant → ReAuthBanner; authenticated → SignedInHeader + queue
 ## Cross-Cutting Concerns
 **Logging**
-- Approach: file-based for the Wails app (`%APPDATA%\go-mapi\app.log`); DLL logs to `%TEMP%\go-mapi\interceptor.log`
+- Approach: file-based for the Wails app (`%APPDATA%\go-mapi\app.log`); DLL logs to `%LOCALAPPDATA%\go-mapi\queue\interceptor.log`
 - Pattern: timestamp (RFC3339) + level (INFO/ERROR) + message
 - Helpers: `logInfo()` / `logError()` in `src/app/logging.go`
 
