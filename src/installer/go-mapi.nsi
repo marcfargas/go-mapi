@@ -83,6 +83,15 @@ Section "Install" SecInstall
   File "${__FILEDIR__}\..\app\build\bin\go-mapi.exe"
   File "${__FILEDIR__}\..\interceptor\build\bin\go-mapi.dll"
 
+  ; QUICK-260423-msq — diagnostic scripts shipped alongside the app for the
+  ; future in-app "Report bug" flow. PS 5.1-compatible, non-admin, read-only.
+  ; Installed to $INSTDIR\diagnostics\ so the Wails app can invoke them at a
+  ; known relative path when the user triggers a bug report.
+  SetOutPath "$INSTDIR\diagnostics"
+  File "${__FILEDIR__}\..\..\scripts\diagnostics\collect-registration.ps1"
+  File "${__FILEDIR__}\..\..\scripts\diagnostics\collect-runtime.ps1"
+  SetOutPath "$INSTDIR"
+
   ; D-10 + T-10-01-01 — MUST run BEFORE the HKLM Mail (Default) overwrite below
   ; so the pre-install mail client name is captured correctly.
   Call BackupPreviousMailClient
@@ -482,6 +491,11 @@ Section "Uninstall"
   Delete "$INSTDIR\go-mapi.dll"
   Delete "$INSTDIR\uninstall.exe"
   Delete "$INSTDIR\install.log"
+
+  ; 9b. Diagnostic scripts (QUICK-260423-msq)
+  Delete "$INSTDIR\diagnostics\collect-registration.ps1"
+  Delete "$INSTDIR\diagnostics\collect-runtime.ps1"
+  RMDir  "$INSTDIR\diagnostics"
 
   ; 10. Install dir (RMDir non-recursive — only removes if empty)
   RMDir "$INSTDIR"

@@ -11,6 +11,7 @@
     "build": "npm run build:interceptor && cd src/app && wails build -platform windows/amd64",
     "build:interceptor": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Config Release",
     "build:interceptor:debug": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Config Debug -Tests",
+    "build:installer": "cd src/installer && makensis -DGOMAPI_VERSION=3.0.0-dev go-mapi.nsi",
     "test": "npm run -w @marcfargas/go-mapi-app-frontend build && go test ./internal/mapi/... ./src/app/... && npm run -w @marcfargas/go-mapi-app-frontend test:run",
     "test:interceptor": "powershell -ExecutionPolicy Bypass -Command \"src/interceptor/build/bin/go-mapi-test-harness.exe src/interceptor/build/bin/go-mapi.dll\"",
     "test:dll:sandbox": "powershell -ExecutionPolicy Bypass -File tests/sandbox/run-sandbox-test.ps1",
