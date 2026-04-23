@@ -40,6 +40,9 @@ BeforeAll {
     $script:FirewallRule = 'go-mapi OAuth loopback'
     $script:ExpectedAumid = 'com.marcfargas.gomapi'
     $script:CredTarget   = 'go-mapi:oauth-tokens'
+    # QUICK-260423-ntu T3d — dual-bitness install surfaces
+    $script:InstallDir32 = "${env:ProgramFiles(x86)}\go-mapi"
+    $script:MapiKey32    = 'HKLM:\SOFTWARE\WOW6432Node\Clients\Mail\go-mapi'
 
     Write-Host ("[Setup] SetupExe    = {0}" -f $script:SetupExe)
     Write-Host ("[Setup] InstallDir  = {0}" -f $script:InstallDir)
@@ -116,6 +119,32 @@ Describe "go-mapi installer round-trip" {
                 if (-not $decoy.HasExited) { $decoy.Kill() }
             }
         }
+
+        # QUICK-260423-ntu item 16 — x86 DLL deposited alongside x64 DLL
+        It "16. go-mapi.dll is deposited in both ProgramFiles and ProgramFiles(x86)" {
+            Test-Path (Join-Path $script:InstallDir   'go-mapi.dll') | Should -BeTrue
+            Test-Path (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -BeTrue
+        }
+
+        # QUICK-260423-ntu item 17 — each DLL has the matching PE bitness
+        It "17. x64 DLL is PE32+ and x86 DLL is PE32" {
+            function Get-PeMagic($p) {
+                $b = [IO.File]::ReadAllBytes($p)
+                $e = [BitConverter]::ToInt32($b, 0x3C)
+                return [BitConverter]::ToUInt16($b, $e + 4 + 20)
+            }
+            Get-PeMagic (Join-Path $script:InstallDir   'go-mapi.dll') | Should -Be 0x20B
+            Get-PeMagic (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -Be 0x10B
+        }
+
+        # QUICK-260423-ntu item 18 — WOW6432Node DLLPath points at the x86 DLL
+        It "18. HKLM WOW6432Node MAPI key is registered with 32-bit DLLPath" {
+            # Path-based read: HKLM:\SOFTWARE\WOW6432Node\... resolves directly
+            # without SetRegView, so Get-ItemProperty hits the 32-bit hive.
+            Test-Path $script:MapiKey32 | Should -BeTrue
+            $props = Get-ItemProperty -Path $script:MapiKey32
+            $props.DLLPath | Should -Match '(?i)Program Files \(x86\)\\go-mapi\\go-mapi\.dll$'
+        }
     }
 
     Context "Silent uninstall" {
@@ -186,6 +215,20 @@ Describe "go-mapi installer round-trip" {
             } finally {
                 if (-not $decoy.HasExited) { $decoy.Kill() }
             }
+        }
+
+        # QUICK-260423-ntu item 19 — x86 DLL + install dir removed by uninstall
+        It "19. ProgramFiles(x86)\go-mapi is gone after uninstall" {
+            $exists = Test-Path $script:InstallDir32
+            if ($exists) {
+                (Get-ChildItem $script:InstallDir32 -Force -ErrorAction SilentlyContinue).Count | Should -Be 0
+            }
+            Test-Path (Join-Path $script:InstallDir32 'go-mapi.dll') | Should -BeFalse
+        }
+
+        # QUICK-260423-ntu item 20 — WOW6432Node MAPI key removed
+        It "20. HKLM WOW6432Node MAPI handler key is gone after uninstall" {
+            Test-Path $script:MapiKey32 | Should -BeFalse
         }
     }
 }
