@@ -106,17 +106,24 @@ Append-Line "Queue root: $queueRoot"
 
 if (Test-Path -LiteralPath $queueRoot) {
     Safe-Invoke 'Queue tree' {
-        $entries = Get-ChildItem -LiteralPath $queueRoot -Recurse -Force -ErrorAction Stop
-        $entries |
-            Select-Object FullName, Length, LastWriteTime |
-            Format-Table -AutoSize |
-            Append-Block
+        # Wrap in @() so an empty directory yields an empty array rather than
+        # $null — piping $null to Select-Object/Format-Table under StrictMode
+        # surfaces as NullReference (observed in tests/live/*-165335.txt).
+        $entries = @(Get-ChildItem -LiteralPath $queueRoot -Recurse -Force -ErrorAction SilentlyContinue)
+        if ($entries.Count -gt 0) {
+            $entries |
+                Select-Object FullName, Length, LastWriteTime |
+                Format-Table -AutoSize |
+                Append-Block
+        } else {
+            Append-Line '(queue directory is present but empty)'
+        }
         $topJson = @(Get-ChildItem -LiteralPath $queueRoot -Filter '*.json' -File -ErrorAction SilentlyContinue)
         Append-Line ''
         Append-Line "Top-level *.json count: $($topJson.Count)"
     }
 } else {
-    Append-Line '(queue directory does not exist — DLL has not been loaded by any process yet, or the installer did not run)'
+    Append-Line '(queue directory does not exist yet — this is expected on a fresh install before the first MAPI call; will be created by the DLL on first use)'
 }
 
 # -----------------------------------------------------------------------------
