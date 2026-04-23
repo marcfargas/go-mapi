@@ -33,6 +33,12 @@ export interface AutoDraftResult {
   emailId: string;
   success: boolean;
   errorCategory?: ErrorCategory;
+  /**
+   * QUICK-260423-tk6 — raw Go error text populated on failure (optional;
+   * absent on success). Surfaced in the UI so users can distinguish
+   * "attachment not found" from a Gmail 5xx without reading app.log.
+   */
+  reason?: string;
 }
 
 /**

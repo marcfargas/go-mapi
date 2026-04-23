@@ -114,6 +114,24 @@ describe('QueueRow', () => {
     expect(getByRole('status', { name: /signed out/i })).toBeTruthy();
   });
 
+  it('QUICK-260423-tk6: errorReason is surfaced in the badge tooltip', () => {
+    const { getByTestId } = render(QueueRow, {
+      props: {
+        item: mkItem(),
+        state: 'error',
+        errorCategory: 'gmail',
+        errorReason: 'attachment not found: C:\\TEMP\\foo\\bar.pdf',
+        onCreateDraft: vi.fn(),
+        onDismiss: vi.fn(),
+      },
+    });
+    const badge = getByTestId('auto-draft-error-badge');
+    // Tooltip should include both the category label AND the raw reason.
+    expect(badge.getAttribute('title')).toContain('Gmail error');
+    expect(badge.getAttribute('title')).toContain('attachment not found');
+    expect(badge.getAttribute('aria-label')).toContain('attachment not found');
+  });
+
   it('state=drafted-flash shows ✓ Drafted in subject column', () => {
     const { getByText } = render(QueueRow, {
       props: {

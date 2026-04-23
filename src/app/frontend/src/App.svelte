@@ -46,6 +46,11 @@
   let mode = $state<Mode>('manual');
   let paused = $state(false);
   let autoDraftErrors = $state(new Map<string, ErrorCategory>());
+  // QUICK-260423-tk6: parallel map of raw Go error text per failed emailId.
+  // Populated on auto-draft-result failure, cleared on success or queue prune.
+  // Passed through to QueueRow → AutoDraftErrorBadge so the badge tooltip /
+  // subtitle can show *why* the draft failed (not just the opaque category).
+  let autoDraftReasons = $state(new Map<string, string>());
   let flashingIds = $state(new Set<string>());
   let inflightIds = $state(new Set<string>());
 
@@ -89,6 +94,14 @@
         }
         if (errChanged) autoDraftErrors = nextErrors;
 
+        // Prune the tk6 reasons map in lockstep with autoDraftErrors.
+        const nextReasons = new Map(autoDraftReasons);
+        let reasonChanged = false;
+        for (const id of nextReasons.keys()) {
+          if (!ids.has(id)) { nextReasons.delete(id); reasonChanged = true; }
+        }
+        if (reasonChanged) autoDraftReasons = nextReasons;
+
         const nextFlashing = new Set(flashingIds);
         let flashChanged = false;
         for (const id of nextFlashing) {
@@ -129,6 +142,10 @@
         const next = new Map(autoDraftErrors);
         next.delete(r.emailId);
         autoDraftErrors = next;
+        // Clear tk6 reason tracking on success too — the row will flash green
+        // (if visible) then leave the queue on the next queue-update.
+        const nextReasons = new Map(autoDraftReasons);
+        if (nextReasons.delete(r.emailId)) autoDraftReasons = nextReasons;
         // D-04: only flash in-window when visible + focused; Go fires toast when hidden.
         if (isWindowVisibleAndFocused()) {
           flashingIds = new Set([...flashingIds, r.emailId]);
@@ -140,6 +157,13 @@
         const next = new Map(autoDraftErrors);
         next.set(r.emailId, r.errorCategory);
         autoDraftErrors = next;
+        // QUICK-260423-tk6: stash raw reason so AutoDraftErrorBadge can show
+        // it. Gracefully tolerate missing reason (older Go builds).
+        if (r.reason) {
+          const nextReasons = new Map(autoDraftReasons);
+          nextReasons.set(r.emailId, r.reason);
+          autoDraftReasons = nextReasons;
+        }
       }
     }));
 
@@ -282,6 +306,7 @@
           state={rowStateFor(item.id)}
           authenticated={auth.authenticated}
           errorCategory={autoDraftErrors.get(item.id)}
+          errorReason={autoDraftReasons.get(item.id)}
           onCreateDraft={handleCreateDraft}
           onDismiss={handleDismiss}
         />
