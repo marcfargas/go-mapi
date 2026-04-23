@@ -97,6 +97,25 @@ Describe "go-mapi installer round-trip" {
             $rule.Direction | Should -Be 'Inbound'
             $rule.Action    | Should -Be 'Allow'
         }
+
+        # QUICK-260423-ntu item 14 — install-time running-process guard (silent)
+        It "14. silent install succeeds when go-mapi.exe is already running in InstallDir" {
+            # Pre-condition: install completed in item 1. Launch a decoy process
+            # from the installed path, then re-run the installer in /S mode and
+            # assert the exe is still runnable post-install (i.e. the installer
+            # closed the old instance cleanly, overwrote it, and did NOT abort).
+            $exe = Join-Path $script:InstallDir 'go-mapi.exe'
+            $decoy = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+            try {
+                Start-Sleep -Seconds 1
+                $proc = Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait -PassThru
+                $proc.ExitCode | Should -Be 0
+                Test-Path $exe | Should -BeTrue
+            } finally {
+                # Belt-and-braces cleanup in case the installer did not close it
+                if (-not $decoy.HasExited) { $decoy.Kill() }
+            }
+        }
     }
 
     Context "Silent uninstall" {
@@ -148,6 +167,25 @@ Describe "go-mapi installer round-trip" {
         # D-21 item 13
         It "13. Start Menu shortcut is gone" {
             Test-Path $script:Shortcut | Should -BeFalse
+        }
+
+        # QUICK-260423-ntu item 15 — uninstall-time running-process guard (silent)
+        It "15. silent uninstall closes a running go-mapi.exe in InstallDir and removes the binary" {
+            # Re-install first because item 7 already uninstalled.
+            Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait
+            $exe = Join-Path $script:InstallDir 'go-mapi.exe'
+            $decoy = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+            try {
+                Start-Sleep -Seconds 1
+                $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+                $proc = Start-Process -FilePath $uninst -ArgumentList '/S' -Wait -PassThru
+                $proc.ExitCode | Should -Be 0
+                Start-Sleep -Seconds 2   # NSIS batch-wrapper self-delete
+                Test-Path $exe | Should -BeFalse -Because "uninstaller should have closed the running instance and deleted the binary"
+                $decoy.HasExited | Should -BeTrue
+            } finally {
+                if (-not $decoy.HasExited) { $decoy.Kill() }
+            }
         }
     }
 }

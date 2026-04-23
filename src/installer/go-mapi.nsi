@@ -75,6 +75,13 @@ BrandingText "${PRODUCT_NAME} ${PRODUCT_VERSION} — LGPL-3.0"
 ;------------------------------------------------------------------------------
 
 Section "Install" SecInstall
+  ; QUICK-260423-ntu T2 — if a previous install's go-mapi.exe is running in
+  ; $INSTDIR, give it a chance to close cleanly (WM_CLOSE via taskkill
+  ; without /F triggers the intentionalQuit path in src/app/main.go) before
+  ; we overwrite the binary. Silent mode auto-retries; interactive mode
+  ; prompts the user. MUST be the first statement in the section.
+  Call EnsureAppNotRunning
+
   SetOutPath "$INSTDIR"
 
   ; Staged binary paths — produced by:
@@ -187,6 +194,138 @@ BackupNull:
 AlreadyUs:
   DetailPrint "Upgrade detected — preserving existing previous-mail-client.json"
   Return
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; EnsureAppNotRunning — QUICK-260423-ntu T2 (installer scope)
+;
+; If a go-mapi.exe process is running, offer clean-close-and-retry. Uses
+; `tasklist` (core Windows tool, no plugin) for detection and `taskkill`
+; WITHOUT /F for graceful shutdown — WM_CLOSE maps to the same
+; intentionalQuit path in src/app/main.go that the tray "Quit" menu item
+; triggers. Polls every 500ms up to 20 iterations (10s budget) for the
+; process to exit; aborts on timeout.
+;
+; Image-name match only (no WMIC path-narrowing) — go-mapi.exe is unique
+; enough in practice that a duplicate unrelated process is an acceptable
+; v3.0 risk, and WMIC has been removed on recent Windows 11 builds.
+;
+; Silent mode (`/S` — used by CI Pester harness) auto-selects "close and
+; retry" so the test harness does not hang on a MessageBox.
+;
+; The un.EnsureAppNotRunning copy below is a byte-for-byte duplicate with
+; the `un.` prefix — NSIS requires it for uninstaller-scope functions.
+;------------------------------------------------------------------------------
+
+Function EnsureAppNotRunning
+  Push $0
+  Push $1
+
+  ; Quick probe — is any go-mapi.exe running at all?
+  nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq go-mapi.exe" /NH /FO CSV'
+  Pop $0   ; exit code
+  Pop $1   ; stdout
+
+  Push $1
+  Push "go-mapi.exe"
+  Call StrContains
+  Pop $0   ; "1" = found, "0" = not found
+  StrCmp $0 "1" EANR_Found EANR_NotFound
+
+EANR_Found:
+  DetailPrint "go-mapi.exe is running — attempting graceful close"
+  IfSilent EANR_SilentRetry EANR_AskUser
+
+EANR_AskUser:
+  MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "go-mapi is currently running. Click OK to close it and continue, or Cancel to abort the installer." IDOK EANR_SilentRetry IDCANCEL EANR_Cancel
+
+EANR_Cancel:
+  DetailPrint "User cancelled — aborting installer"
+  Pop $1
+  Pop $0
+  Abort "Installer aborted by user (go-mapi was running)."
+
+EANR_SilentRetry:
+  ; Send WM_CLOSE to every go-mapi.exe instance (no /F — honours
+  ; intentionalQuit path). /IM matches by image name; /T includes children.
+  nsExec::ExecToStack 'taskkill /IM go-mapi.exe'
+  Pop $0
+  Pop $1
+  DetailPrint "taskkill /IM go-mapi.exe rc=$0"
+
+  ; Poll loop — 20 iterations * 500ms = 10s budget
+  StrCpy $0 0
+EANR_PollLoop:
+  Sleep 500
+  nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq go-mapi.exe" /NH /FO CSV'
+  Pop $1   ; exit code (discard)
+  Pop $1   ; stdout
+  Push $1
+  Push "go-mapi.exe"
+  Call StrContains
+  Pop $1
+  StrCmp $1 "0" EANR_Exited
+  IntOp $0 $0 + 1
+  IntCmp $0 20 EANR_Timeout
+  Goto EANR_PollLoop
+
+EANR_Timeout:
+  DetailPrint "ERROR: go-mapi.exe did not exit within 10s"
+  Pop $1
+  Pop $0
+  IfSilent EANR_SilentAbort
+  MessageBox MB_OK|MB_ICONSTOP "go-mapi did not close within 10 seconds. Please close it manually and re-run the installer."
+EANR_SilentAbort:
+  Abort "go-mapi.exe still running after 10s close poll."
+
+EANR_Exited:
+  DetailPrint "go-mapi.exe exited after $0 poll iterations"
+  Pop $1
+  Pop $0
+  Return
+
+EANR_NotFound:
+  Pop $1
+  Pop $0
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; StrContains (installer scope) — shared by EnsureAppNotRunning.
+;
+; Mirror of un.StrContains (lives in the uninstall section because the
+; uninstaller already needed it for backup-JSON parsing). We keep a separate
+; installer-scope copy rather than un.-prefixing both to avoid NSIS function
+; scope restrictions.
+;
+; Push haystack, push needle. Pops "1" (found) or "0". Case-sensitive.
+;------------------------------------------------------------------------------
+
+Function StrContains
+  Exch $R1   ; needle
+  Exch
+  Exch $R2   ; haystack
+  Push $R3   ; needle-length
+  Push $R4   ; haystack cursor
+  Push $R5   ; needle cursor
+  StrLen $R3 $R1
+  StrCpy $R4 0
+SC_Loop:
+  StrCpy $R5 $R2 $R3 $R4
+  StrCmp $R5 $R1 SC_Found
+  StrCmp $R5 "" SC_NotFound
+  IntOp $R4 $R4 + 1
+  Goto SC_Loop
+SC_Found:
+  StrCpy $R1 "1"
+  Goto SC_Done
+SC_NotFound:
+  StrCpy $R1 "0"
+SC_Done:
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Exch $R1
 FunctionEnd
 
 ;------------------------------------------------------------------------------
@@ -446,6 +585,11 @@ FunctionEnd
 ;------------------------------------------------------------------------------
 
 Section "Uninstall"
+  ; QUICK-260423-ntu T2 — MUST be the first statement: if go-mapi.exe is
+  ; still running when the uninstaller starts, WM_CLOSE it and wait up to
+  ; 10s for the intentionalQuit path to fire before any Delete runs.
+  Call un.EnsureAppNotRunning
+
   ; D-18: 10-step full scrub. Steps execute in order; failures log but do
   ; not abort — we want to get as close to a clean state as possible even
   ; when some steps fail (e.g. firewall rule GPO-locked, AV-locked file).
@@ -677,4 +821,81 @@ un.SE_Done:
   Exch        ; swap top two: stack was [prev$R2, prev$R1] -> [prev$R1, prev$R2]
   Pop $R2     ; restore prev$R2
   Exch $R1    ; swap prev$R1 on stack with result in $R1: stack top = result, $R1 = prev$R1
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; un.EnsureAppNotRunning — QUICK-260423-ntu T2 (uninstaller scope)
+;
+; Byte-for-byte duplicate of EnsureAppNotRunning above with the un. prefix
+; required by NSIS for uninstaller-scope functions. NSIS macros would avoid
+; the duplication but the body is small enough that inline is clearer.
+; Uses un.StrContains (already defined above).
+;------------------------------------------------------------------------------
+
+Function un.EnsureAppNotRunning
+  Push $0
+  Push $1
+
+  nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq go-mapi.exe" /NH /FO CSV'
+  Pop $0
+  Pop $1
+
+  Push $1
+  Push "go-mapi.exe"
+  Call un.StrContains
+  Pop $0
+  StrCmp $0 "1" unEANR_Found unEANR_NotFound
+
+unEANR_Found:
+  DetailPrint "go-mapi.exe is running — attempting graceful close"
+  IfSilent unEANR_SilentRetry unEANR_AskUser
+
+unEANR_AskUser:
+  MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "go-mapi is currently running. Click OK to close it and continue, or Cancel to abort the uninstaller." IDOK unEANR_SilentRetry IDCANCEL unEANR_Cancel
+
+unEANR_Cancel:
+  DetailPrint "User cancelled — aborting uninstaller"
+  Pop $1
+  Pop $0
+  Abort "Uninstaller aborted by user (go-mapi was running)."
+
+unEANR_SilentRetry:
+  nsExec::ExecToStack 'taskkill /IM go-mapi.exe'
+  Pop $0
+  Pop $1
+  DetailPrint "taskkill /IM go-mapi.exe rc=$0"
+
+  StrCpy $0 0
+unEANR_PollLoop:
+  Sleep 500
+  nsExec::ExecToStack 'tasklist /FI "IMAGENAME eq go-mapi.exe" /NH /FO CSV'
+  Pop $1
+  Pop $1
+  Push $1
+  Push "go-mapi.exe"
+  Call un.StrContains
+  Pop $1
+  StrCmp $1 "0" unEANR_Exited
+  IntOp $0 $0 + 1
+  IntCmp $0 20 unEANR_Timeout
+  Goto unEANR_PollLoop
+
+unEANR_Timeout:
+  DetailPrint "ERROR: go-mapi.exe did not exit within 10s"
+  Pop $1
+  Pop $0
+  IfSilent unEANR_SilentAbort
+  MessageBox MB_OK|MB_ICONSTOP "go-mapi did not close within 10 seconds. Please close it manually and re-run the uninstaller."
+unEANR_SilentAbort:
+  Abort "go-mapi.exe still running after 10s close poll."
+
+unEANR_Exited:
+  DetailPrint "go-mapi.exe exited after $0 poll iterations"
+  Pop $1
+  Pop $0
+  Return
+
+unEANR_NotFound:
+  Pop $1
+  Pop $0
 FunctionEnd
