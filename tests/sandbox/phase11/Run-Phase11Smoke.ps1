@@ -128,13 +128,24 @@ function Install-GoMapi {
 }
 
 function Launch-App {
-    $shortcut = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\go-mapi.lnk"
-    if (-not (Test-Path -LiteralPath $shortcut)) {
-        Write-StepLog WARN "Start Menu shortcut missing: $shortcut"
+    # NSIS installer resolves $SMPROGRAMS without SetShellVarContext all, so the
+    # shortcut can land in either the all-users or per-user Start Menu depending
+    # on the elevation account. Check both, then fall back to the exe directly.
+    $candidates = @(
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\go-mapi.lnk",
+        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\go-mapi.lnk",
+        "$env:ProgramFiles\go-mapi\go-mapi.exe"
+    )
+    $launchTarget = $null
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { $launchTarget = $c; break }
+    }
+    if (-not $launchTarget) {
+        Write-StepLog WARN "No launch target found. Tried: $($candidates -join '; ')"
         return $null
     }
-    Write-StepLog INFO "Launching app from Start Menu"
-    Start-Process -FilePath $shortcut | Out-Null
+    Write-StepLog INFO "Launching app: $launchTarget"
+    Start-Process -FilePath $launchTarget | Out-Null
     # Wait for app process to appear, up to 15s.
     for ($i = 0; $i -lt 30; $i++) {
         $p = Get-Process -Name 'go-mapi' -ErrorAction SilentlyContinue

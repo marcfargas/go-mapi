@@ -3,7 +3,7 @@ phase: 11-autoupdate-release
 plan: 05
 subsystem: release-verification
 tags: [sandbox, smoke-test, release-verification, evidence]
-status: checkpoint-pending
+status: completed
 requirements: [REL-06]
 ---
 

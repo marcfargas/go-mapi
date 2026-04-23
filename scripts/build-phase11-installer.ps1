@@ -20,8 +20,14 @@
 #           -ldflags "-X main.Version=3.0.0-rc.1 \
 #                     -X main.oauthClientID=$GOMAPI_OAUTH_CLIENT_ID \
 #                     -X main.oauthClientSecret=$GOMAPI_OAUTH_CLIENT_SECRET \
-#                     -X github.com/marcfargas/go-mapi/app.aumidOverride=com.marcfargas.gomapi \
+#                     -X main.aumidOverride=com.marcfargas.gomapi \
 #                     -s -w"
+#
+# NOTE: `aumidOverride` lives in `package main` (src/app/toast.go). The Go
+# linker only recognises the `main.<var>` form for main-package symbols; the
+# full-module-path form (`github.com/marcfargas/go-mapi/app.aumidOverride`)
+# is silently ignored, leaving the binary with the dev AUMID. This matches
+# the ldflag form used by `.github/workflows/installer-release.yml` for GA.
 # - Fresh `go-mapi.dll` at `src\interceptor\build\bin\` (`npm run build:interceptor`).
 #
 # Output:

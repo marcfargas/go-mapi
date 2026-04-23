@@ -47,6 +47,13 @@
         </MappedFolder>
     </MappedFolders>
     <LogonCommand>
-        <Command>powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\phase11\Run-Phase11Smoke.ps1</Command>
+        <!--
+          cmd /c start "..." is required: a raw `powershell.exe` LogonCommand
+          runs in a hidden console under Windows Sandbox, which silently eats
+          Read-Host prompts. `start` detaches a new visible console window and
+          -NoExit keeps it open on script completion so the human can read the
+          verdict. Window title is cosmetic but helps locate the console.
+        -->
+        <Command>cmd.exe /c start "Phase11-Smoke" powershell.exe -ExecutionPolicy Bypass -NoProfile -NoExit -File C:\phase11\Run-Phase11Smoke.ps1</Command>
     </LogonCommand>
 </Configuration>
