@@ -8,7 +8,7 @@
     "tests/e2e"
   ],
   "scripts": {
-    "build": "npm run build:interceptor && set CC=x86_64-w64-mingw32-clang&& set CXX=x86_64-w64-mingw32-clang++&& cd src/app && wails build -platform windows/amd64",
+    "build": "npm run build:interceptor && powershell -ExecutionPolicy Bypass -File scripts/build-wails.ps1",
     "build:interceptor": "npm run build:interceptor:x64 && npm run build:interceptor:x86",
     "build:interceptor:x64": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Arch x64 -Config Release",
     "build:interceptor:x86": "powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Arch x86 -Config Release",
