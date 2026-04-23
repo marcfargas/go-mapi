@@ -253,21 +253,19 @@ func (s *updateService) cadenceExpired(now time.Time, lastISO string) bool {
 
 // isNewerVersion returns true iff latest > current using semver-ish
 // comparison tolerant of "vX.Y.Z" tag prefixes and dev-mode strings.
-// Dev builds (anything containing "dev" or "0.0.0") are treated as
-// strictly older than any tagged release so local dev sessions still
-// see update banners.
+//
+// Dev / prerelease builds (e.g. "3.0.0-dev") are compared by semver rules:
+// a tagged release of the same main version is newer, but an older main
+// version is NOT newer. Prior to QUICK-260423-qpx this function shortcut
+// isDevVersion(current) -> true unconditionally, which caused a 3.0.0-dev
+// user to see v2.1.0 as an "upgrade" when that was the newest stable tag
+// on GitHub. The compareSemver path below gets this right out of the
+// box because splitPrerelease treats the prerelease segment per semver
+// (release > prerelease on equal main; main segments dominate otherwise).
 func isNewerVersion(current, latest string) bool {
 	if latest == "" {
 		return false
 	}
-	if isDevVersion(current) {
-		return true
-	}
-	// Reuse go-selfupdate's Release.GreaterThan via a throwaway Release
-	// literal — it accepts a bare version string through its Version()
-	// accessor, but the helper we want is the package-level comparison
-	// logic it wraps (hashicorp/go-version under the hood). Simplest
-	// durable call: build a Release with only the version set.
 	return selfupdateGreaterThan(latest, current)
 }
 

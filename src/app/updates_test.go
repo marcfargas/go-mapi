@@ -258,6 +258,48 @@ func TestUpdateServiceDevVersionSeesUpdate(t *testing.T) {
 	}
 }
 
+// QUICK-260423-qpx: dev-build version compare must not offer a downgrade.
+// Before the fix, isDevVersion() shortcut returned true unconditionally
+// for any "*-dev" current, so a 3.0.0-dev build would see v2.1.0 (the
+// newest stable GitHub release at the time) as an "upgrade" and show
+// the user a downgrade offer.
+func TestIsNewerVersion_DevBuildNotOfferedDowngrade(t *testing.T) {
+	cases := []struct {
+		name    string
+		current string
+		latest  string
+		want    bool
+	}{
+		// The bug: 3.0.0-dev > 2.1.0, so no upgrade banner.
+		{"3.0.0-dev vs 2.1.0: no downgrade", "3.0.0-dev", "2.1.0", false},
+
+		// Tagged 3.0.0 > 3.0.0-dev (release beats prerelease per semver).
+		{"3.0.0-dev vs 3.0.0: tagged wins", "3.0.0-dev", "3.0.0", true},
+
+		// Minor/patch bumps after the dev cut still show up.
+		{"3.0.0-dev vs 3.0.1: patch wins", "3.0.0-dev", "3.0.1", true},
+		{"3.0.0-dev vs 3.1.0: minor wins", "3.0.0-dev", "3.1.0", true},
+
+		// 0.0.0-dev (ldflags fallback default) is a "nothing yet" marker --
+		// still gets told about every real release.
+		{"0.0.0-dev vs 3.0.0: always offer", "0.0.0-dev", "3.0.0", true},
+
+		// Regular stable compares unaffected.
+		{"2.1.0 vs 3.0.0: regular upgrade", "2.1.0", "3.0.0", true},
+		{"3.0.0 vs 2.1.0: no downgrade", "3.0.0", "2.1.0", false},
+		{"3.0.0 vs 3.0.0: no self-offer", "3.0.0", "3.0.0", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isNewerVersion(tc.current, tc.latest)
+			if got != tc.want {
+				t.Errorf("isNewerVersion(current=%q, latest=%q) = %v, want %v",
+					tc.current, tc.latest, got, tc.want)
+			}
+		})
+	}
+}
+
 // Test 4: fetch failure returns error to caller for logging but does not
 // mutate user-visible state beyond refreshing LastCheckedAt.
 func TestUpdateServiceFetchFailureIsReturnedNotPropagatedAsUserState(t *testing.T) {
