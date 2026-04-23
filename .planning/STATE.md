@@ -29,7 +29,7 @@ Milestone: v3.0 Wails Pivot
 Phase: 11 (Auto-Update + v3.0 Release) — EXECUTING
 Plan: 1 of 5
 Status: Executing Phase 11
-Last activity: 2026-04-21 -- Phase 11 execution started
+Last activity: 2026-04-23 - Completed quick task 260423-msq: Relocate DLL queue to %LOCALAPPDATA% + diagnostic scripts
 
 Progress: [████████████████████] 100% planned work complete through Phase 10; Phase 11 is planned and ready for execution
 
@@ -97,6 +97,12 @@ Recent decisions carried into v3.0:
 ### Resolved
 
 - ~~RAM profile under RDS conditions is unvalidated~~ — RESOLVED 2026-04-14: Phase 7 Plan 04 measured 43.24 MB mean per session on 5 concurrent sessions (n=4 clean), well under 80 MB gate; verdict PASS. Full report: 07-VERIFICATION.md.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260423-msq | Relocate DLL queue to %LOCALAPPDATA%\go-mapi\queue\ + diagnostic scripts | 2026-04-23 | 395cb7e | [260423-msq-relocate-dll-queue-to-localappdata-and-a](./quick/260423-msq-relocate-dll-queue-to-localappdata-and-a/) |
 
 ## Session Continuity
 
