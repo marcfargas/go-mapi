@@ -4,17 +4,20 @@ MAPI to Gmail bridge for Windows — a Wails (Go + WebView2) desktop app that ro
 
 ## Status
 
+**Shipping: v3.0 (Wails pivot).** The v2.x Chrome/Edge extension + Go native-host is **retired** and lives only at the `v2.1.0` git tag for archaeology. The browser-store listings are frozen with deprecation messaging pointing here. **Do not run v2.x and v3.0 side-by-side** — uninstall v2.x first, then install v3.0.
+
 | Component | Status | Notes |
 |-----------|--------|-------|
-| MAPI interception (ANSI + Unicode) | Stable | C++ DLL unchanged from v1 |
-| Wails desktop app (system tray + WebView2) | In progress | Phase 7 PASS — 43.24 MB mean per session (2026-04-14, 5 concurrent RDS sessions) |
-| OAuth desktop flow (PKCE loopback + Windows Credential Manager) | In progress | Phase 8 shipped 2026-04-18 |
-| Queue viewer + Auto-draft mode | Planned | Phase 9 |
-| Windows toast notifications | Planned | Phase 9 |
-| NSIS installer + WebView2 bootstrap + AppUserModelID | Planned | Phase 10 |
-| Notify-only autoupdate + release pipeline | Planned | Phase 11 |
+| MAPI interception (ANSI + Unicode) | Shipped | C++ DLL unchanged from v1 |
+| Wails desktop app (system tray + WebView2) | Shipped | Phase 7 RAM gate PASS — 43.24 MB mean per session (5 concurrent RDS sessions, 2026-04-14) |
+| OAuth desktop flow (PKCE loopback + Windows Credential Manager) | Shipped | Phase 8 closed 2026-04-18 |
+| Queue viewer + Auto-draft mode | Shipped | Phase 9 |
+| Windows toast notifications | Shipped | Phase 9 — XML-path WinRT toasts with `MarkProcessed`/`Delete` dispatch |
+| NSIS installer + WebView2 bootstrap + AppUserModelID | Shipped | Phase 10 — single-file `go-mapi-setup.exe`, machine-wide MAPI registration |
+| Notify-only autoupdate + release pipeline | Shipped | Phase 11 — stable `releases/latest/download/go-mapi-setup.exe`, in-app "update available" banner |
+| Playwright/CDP end-to-end harness | Shipped | Phase 11 — fake Gmail + fake OAuth, 5/5 E2E specs green on CI |
 
-This is **v3.0** (Wails pivot). The v2.x browser-based UI + Go IPC host is archived at the v2.1.x git tag; it is no longer maintained and will be unpublished from the relevant browser add-on stores when v3.0 ships. To inspect the v2.x source: `git checkout v2.1.0`.
+To inspect the retired v2.x source: `git checkout v2.1.0`. No further v2.x fixes will land.
 
 ## Architecture
 
@@ -54,9 +57,19 @@ Two components linked by a filesystem drop:
 ## Install
 
 > **Upgrading from go-mapi v2.x?**
-> Please uninstall any prior **go-mapi v2.x** **before** installing v3.0 — via **Settings → Apps → Installed apps** (this removes the Chrome/Edge extension + native-host). The v3.0 installer does not migrate v2 artifacts; running both side-by-side is unsupported.
+> Please uninstall any prior **go-mapi v2.x** **before** installing v3.0 — via **Settings → Apps → Installed apps** (this removes the Chrome/Edge extension + native-host). The v3.0 installer does not migrate v2 artifacts; running both side-by-side is unsupported. **v2.x is retired** and will not receive further updates.
 
-The v3.0 installer ships in Phase 10. Until then, dev install only — see [Development](#development) below.
+### End-user install
+
+1. Download the latest installer: <https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe>
+2. Run it as administrator (required because the installer registers go-mapi as a machine-wide MAPI handler under `HKLM\SOFTWARE\Clients\Mail`).
+3. On first launch, sign in with your Google account — the app opens your default browser for OAuth consent.
+
+The installer bundles the Microsoft Edge WebView2 Evergreen Runtime bootstrapper and the C++ MAPI DLL. No manual dependencies are required on end-user machines.
+
+### Updates
+
+go-mapi checks for new releases against the public GitHub Releases feed and surfaces an in-app "update available" banner when a newer version is published. **Updates are manual, not in-process:** clicking the banner opens the GitHub Release page in your default browser, and you download and run the new installer yourself. go-mapi does not replace its own binary.
 
 ### Uninstalling on multi-user machines (RDS / shared Windows Server)
 

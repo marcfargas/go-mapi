@@ -1,16 +1,24 @@
 ## go-mapi v3.0
 
-Standalone Windows desktop app (replacing the Chrome/Edge extension) that intercepts "Send to Mail recipient" calls and routes them to Gmail as drafts. Powered by Wails v2 + Svelte 5 + WebView2 + a C++17 MAPI DLL.
+A standalone Windows desktop app that routes legacy "Send to Mail recipient" calls to Gmail as drafts. Wails v2 + Svelte 5 + WebView2 + C++17 MAPI DLL.
 
-### Installation
+### ⚠️ v2.x is retired
 
-1. Download `go-mapi-setup.exe` from the assets below.
-2. Run the installer as administrator. The installer requires admin elevation because it registers go-mapi as a machine-wide MAPI handler under `HKLM\SOFTWARE\Clients\Mail`.
-3. First launch: sign in with your Google account. The first-run will open your default browser for OAuth consent.
+> **The v2.x Chrome/Edge extension + Go native-host is retired and receives no further updates.** Its store listings are frozen with deprecation messaging. If you are on v2.x:
+>
+> 1. **Uninstall v2.x first** via **Settings → Apps → Installed apps** — this removes both the browser extension and the native-host.
+> 2. **Then install v3.0.** go-mapi does not migrate v2 artifacts, and running both side-by-side is unsupported.
 
-### Upgrading from v2.x
+### Install
 
-> **Uninstall v2.x first.** Go to **Settings → Apps → Installed apps** and remove any prior go-mapi v2.x (the Chrome/Edge extension + native-host). Then install v3.0. go-mapi does not migrate v2 artifacts automatically; running both side-by-side is unsupported.
+1. Download `go-mapi-setup.exe` from the assets below, or use the stable URL:
+   `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`
+2. Run the installer as administrator. Admin elevation is required because the installer registers go-mapi as a machine-wide MAPI handler under `HKLM\SOFTWARE\Clients\Mail`.
+3. First launch: sign in with your Google account — the app opens your default browser for OAuth consent.
+
+### Updates are manual
+
+go-mapi surfaces an in-app "update available" banner when a newer release is published, but does **not** replace its own binary. Clicking the banner opens this release page in your browser; you download and run the new installer yourself. Manual path is an explicit design decision, not a limitation.
 
 ### System requirements
 
@@ -20,12 +28,12 @@ Standalone Windows desktop app (replacing the Chrome/Edge extension) that interc
 
 ### Release artifacts
 
-- `go-mapi-setup.exe` — single-file signed installer (~20 MB, includes WebView2 bootstrapper + MAPI DLL + Wails binary)
+- `go-mapi-setup.exe` — single-file installer (~7 MB, bundles WebView2 bootstrapper + MAPI DLL + Wails binary)
 
 ### License
 
-LGPL-3.0 — see [LICENSE](https://github.com/marcfargas/go-mapi/blob/main/LICENSE) in the repository.
+LGPL-3.0 — see [LICENSE](https://github.com/marcfargas/go-mapi/blob/main/LICENSE).
 
 ---
 
-See the [README](https://github.com/marcfargas/go-mapi#readme) for usage details, privacy model, and uninstall instructions.
+Full docs: [README](https://github.com/marcfargas/go-mapi#readme). Privacy model, uninstall steps, and the v2.x → v3.0 cutover note live there.
