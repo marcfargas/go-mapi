@@ -67,7 +67,7 @@ std::string FsUtils::GetRandomSuffix() {
     return oss.str();
 }
 
-std::wstring FsUtils::GenerateUniqueFilename() {
+std::wstring FsUtils::GenerateUniqueStem() {
     // Get current time
     auto now = std::time(nullptr);
     struct tm tm_buf;
@@ -79,14 +79,95 @@ std::wstring FsUtils::GenerateUniqueFilename() {
 
     // Add random suffix
     std::string randomSuffix = GetRandomSuffix();
-    std::string filename = "msg_" + timestamp + "_" + randomSuffix + ".json";
+    std::string stem = "msg_" + timestamp + "_" + randomSuffix;
 
-    // Convert to wide string
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, filename.c_str(), (int)filename.length(), NULL, 0);
-    std::wstring wfilename(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, filename.c_str(), (int)filename.length(), &wfilename[0], size_needed);
+    // Convert to wide string (ASCII input, so length conversion is trivial).
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, stem.c_str(), (int)stem.length(), NULL, 0);
+    std::wstring wstem(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, stem.c_str(), (int)stem.length(), &wstem[0], size_needed);
 
-    return wfilename;
+    return wstem;
+}
+
+std::wstring FsUtils::GenerateUniqueFilename() {
+    return GenerateUniqueStem() + L".json";
+}
+
+std::wstring FsUtils::GetAttachmentsDirForStem(const std::wstring& stem) {
+    // Sibling of the JSON file: %LOCALAPPDATA%\go-mapi\queue\<stem>
+    // (no trailing separator — callers append the basename themselves).
+    std::wstring base = GetBaseQueueDir();
+    if (base.empty()) return L"";
+    return base + L"\\" + stem;
+}
+
+bool FsUtils::EnsureDirExists(const std::wstring& path) {
+    if (path.empty()) return false;
+    int rc = SHCreateDirectoryExW(nullptr, path.c_str(), nullptr);
+    return rc == ERROR_SUCCESS || rc == ERROR_ALREADY_EXISTS || rc == ERROR_FILE_EXISTS;
+}
+
+// Helper: UTF-8 → UTF-16 for a source path argument.
+static std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.length(), nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring out(n, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.length(), &out[0], n);
+    return out;
+}
+
+bool FsUtils::CopyFileToDir(const std::string& srcUtf8,
+                            const std::wstring& destDir,
+                            const std::string& destBasenameUtf8,
+                            std::wstring& outNewPath,
+                            uint32_t& outSize) {
+    if (srcUtf8.empty() || destDir.empty() || destBasenameUtf8.empty()) {
+        return false;
+    }
+
+    std::wstring srcWide = Utf8ToWide(srcUtf8);
+    std::wstring destBasenameWide = Utf8ToWide(destBasenameUtf8);
+    if (srcWide.empty() || destBasenameWide.empty()) {
+        return false;
+    }
+
+    std::wstring destPath = destDir;
+    if (destPath.back() != L'\\') destPath += L'\\';
+    destPath += destBasenameWide;
+
+    // bFailIfExists = TRUE: we never overwrite. The stem's timestamp+suffix
+    // already makes the destination dir unique per message, so collisions
+    // here mean something is wrong (caller should bail).
+    if (!CopyFileW(srcWide.c_str(), destPath.c_str(), TRUE)) {
+        return false;
+    }
+
+    // Read back the file size so the JSON's attach.size is populated accurately.
+    WIN32_FILE_ATTRIBUTE_DATA attr{};
+    if (!GetFileAttributesExW(destPath.c_str(), GetFileExInfoStandard, &attr)) {
+        // Copy succeeded but we can't stat — treat as failure so the caller
+        // rolls back; we'd rather write nothing than write a half-valid JSON.
+        DeleteFileW(destPath.c_str());
+        return false;
+    }
+
+    outNewPath = destPath;
+    // nFileSizeHigh should be 0 for anything below ~4GB; clamp defensively.
+    if (attr.nFileSizeHigh != 0) {
+        outSize = 0xFFFFFFFFu;
+    } else {
+        outSize = static_cast<uint32_t>(attr.nFileSizeLow);
+    }
+    return true;
+}
+
+bool FsUtils::WriteErrorForStem(const std::wstring& stem,
+                                const std::string& reason) {
+    if (stem.empty()) return false;
+    if (!EnsureOutputDirectory()) return false;
+    std::wstring errPath = GetBaseQueueDir() + L"\\errors\\" + stem + L".error";
+    return WriteFile(errPath, reason);
 }
 
 bool FsUtils::WriteFile(const std::wstring& filePath, const std::string& content) {

@@ -37,6 +37,12 @@ public:
     // Returns the full path to the created file, empty string on failure
     static std::wstring WriteMailToFile(const MailMessage& msg);
 
+    // QUICK-260423-tk6 — variant that lets the caller supply the stem (no
+    // extension). Used by the DLL orchestration layer so the JSON file and
+    // its sibling attachments dir share a deterministic identity.
+    static std::wstring WriteMailToFileWithStem(const MailMessage& msg,
+                                                const std::wstring& stem);
+
 private:
     // Escape JSON string values (quotes, backslashes, newlines, etc.)
     static std::string EscapeJsonString(const std::string& str);
