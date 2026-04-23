@@ -149,4 +149,4 @@ tests/protocol-fixtures/     # JSON fixtures consumed by internal/mapi integrati
 
 ## License
 
-LGPL-3.0-or-later. See [COPYING](COPYING) for the full GPL-3.0 text and [LICENSE](LICENSE) for the LGPL-3.0 additional permissions.
+LGPL-3.0-or-later. See [LICENSE](LICENSE) for the full text.
