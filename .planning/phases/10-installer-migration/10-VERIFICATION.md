@@ -1,7 +1,9 @@
 ---
 phase: 10-installer-migration
 verified: 2026-04-20T14:20:00Z
-status: human_needed
+status: verified
+accepted_by_user: 2026-04-24
+acceptance_note: "Installer ships and is in real-world use on developer + target RDS machines. WR-01/WR-02/WR-03 accepted as deferrable; 32-bit DLL / SetShellVarContext / sign-in-retry edge cases tracked as pending todos."
 score: 5/5 roadmap success criteria structurally satisfied (2 environment-gated, pending live-CI + manual install verification)
 overrides_applied: 0
 human_verification:
@@ -162,7 +164,26 @@ The 10-REVIEW.md surfaced three warnings:
 
 These are noted, not blocking the phase goal. Final closure (status -> passed) requires the five human verification items above.
 
+### User Acceptance
+
+**Accepted:** 2026-04-24 by Marc Fargas.
+
+The installer is built and deployed in real-world use on the author's dev box and the target RDS machines. The installer-smoke.yml Pester suite, installer-release.yml signed pipeline, WebView2-less bootstrap path, prior-default-mail-client restore, and v2.x migration walkthrough have all been exercised implicitly through shipping.
+
+Remaining concerns are re-classified from verification gaps to open follow-up todos:
+
+- **WR-01 (DetectWebView2 inverted StrCmp)** — accepted; Go-side `checkWebView2` rejects `pv=0.0.0.0` so the graceful-fallback contract holds end-to-end.
+- **WR-02 (JSON quoting in previousClient)** — accepted as a deferrable edge case.
+- **WR-03 (OAuth secret in smoke artifact)** — accepted; Desktop OAuth PKCE `client_secret` is not session-takeover class per the project's desktop-OAuth memory.
+- `2026-04-23-installer-overwrite-locked-32bit-dll.md` — 32-bit DLL overwrite when legacy app holds it.
+- `2026-04-23-nsi-setshellvarcontext-all.md` — installer scope refinement.
+- `2026-04-23-signin-retry-after-failure.md` — sign-in retry UX.
+- `2026-04-17-oauth-verification-youtube-demo-video.md` — OAuth app verification demo.
+
+Closing this verification as `verified` per user acceptance.
+
 ---
 
 _Verified: 2026-04-20T14:20:00Z_
+_User-accepted: 2026-04-24_
 _Verifier: Claude (gsd-verifier)_

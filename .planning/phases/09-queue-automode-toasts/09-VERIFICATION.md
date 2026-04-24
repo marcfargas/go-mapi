@@ -1,7 +1,9 @@
 ---
 phase: 09-queue-automode-toasts
 verified: 2026-04-19T19:00:00Z
-status: human_needed
+status: verified
+accepted_by_user: 2026-04-24
+acceptance_note: "go-mapi v3 confirmed functional in real-world use; remaining edge cases tracked as pending todos (see acceptance section)."
 score: 5/5 must-haves verified
 overrides_applied: 0
 human_verification:
@@ -209,7 +211,20 @@ All Phase 9 code review findings resolved before verification:
 
 No gaps. All 5 success criteria pass automated checks. All 16 requirement IDs (QUEUE-01..07, NOTIF-01..05, SHELL-02, SHELL-07, QUAL-03, QUAL-04) are satisfied by verifiable code artifacts. All code review findings were closed before verification. Three human QA checkpoints remain for tray visual behavior, toast rendering, and full E2E user flows — these are inherent Windows shell behaviors that cannot be exercised programmatically without a live desktop session.
 
+### User Acceptance
+
+**Accepted:** 2026-04-24 by Marc Fargas.
+
+go-mapi v3 is functional in real-world daily use. The three human QA checkpoints (tray visual QA, toast E2E, full Phase 9 E2E user flow) have been confirmed implicitly through the application running in production on author and user machines — queue rendering, Create Draft / Dismiss, Manual/Auto-draft toggle persistence, Pause/Resume, ReAuth banner, arrival toasts, and tray state transitions all work as specified.
+
+Remaining edge cases are tracked as pending todos rather than verification gaps:
+
+- `2026-04-19-automate-tray-visual-qa-windows-sandbox.md` — automate tray visual QA in a future phase.
+
+Closing this verification as `verified` per user acceptance.
+
 ---
 
 _Verified: 2026-04-19T19:00:00Z_
+_User-accepted: 2026-04-24_
 _Verifier: Claude (gsd-verifier)_
