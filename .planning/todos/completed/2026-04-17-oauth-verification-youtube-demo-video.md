@@ -38,3 +38,10 @@ Earliest opportunity: after Plan 08-05 completes (welcome/sign-in screen, pre-au
 Record on the same clean VM used for Phase 7 RAM measurement to keep the demo reproducible. Upload as an unlisted YouTube video, paste the URL back into GCP Console → OAuth consent screen → Prepare for verification.
 
 If `gmail.send` is dropped per the earlier "concern" note (v3.0 doesn't ship Auto-send), remove the send demo step and resubmit scope justifications accordingly before recording.
+
+## Completion — 2026-04-24
+
+- Video recorded + uploaded (unlisted): https://youtu.be/gxTpMXVdP40
+- Submitted via GCP Console → OAuth consent screen → Prepare for verification.
+- Google verification is still **pending** (normal 4-8 week review window) but this **does NOT block v3.0 GA** — the app works end-to-end against an unverified OAuth client; users just see the standard "app not verified" interstitial during sign-in.
+- Requires `go-mapi.app` homepage + privacy URL to be live alongside the binary — tracked separately on the go-mapi-www workstream.
