@@ -43,6 +43,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [x] **Phase 9: Queue, Automode + Toasts** — Email queue UI, Manual/Auto-draft toggle, and Windows toast notifications
 - [x] **Phase 10: Installer + Migration** — NSIS installer with AppUserModelID, WebView2 bootstrap, v2.x cleanup, uninstall, and release/smoke groundwork landed in 10-05 and 10-06
 - [ ] **Phase 11: Autoupdate + Release** — Notify-only autoupdate, GitHub release pipeline, extension store retirement, smoke test
+- [ ] **Phase 11.1: Installer hardening + enterprise deploy + silent auto-update (INSERTED)** — All Users install scope made mandatory, NSIS SetShellVarContext fixes, 32-bit DLL reinstall fix, machine-wide %PROGRAMDATA% config, yaml examples, silent auto-update install option, CI + README refresh for enterprise story
 
 ## Phase Details
 
@@ -162,6 +163,20 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [ ] 11-05-PLAN.md — Windows Sandbox clean-machine smoke harness + evidence gate (REL-06)
 - [x] 11-06-PLAN.md — Playwright/CDP E2E harness — closes UI roundtrip regression class (REL-08; inserted 2026-04-22 after 11-05 manual smoke caught queue-row staleness bugs Vitest mocks could not see; 5/5 specs green, self-verification confirmed Test 2 catches the pre-fix watcher dispatch bug)
 
+### Phase 11.1: Installer hardening + enterprise deploy + silent auto-update (INSERTED)
+**Goal**: Ship v3.0 with a complete enterprise-deploy story — an admin can drop a machine config file and run `go-mapi-setup.exe` to get a fleet-ready endpoint that installs system-wide and updates itself unattended, instead of forcing a quick v3.0.1 follow-on. Single-user install is explicitly dropped (MAPI handler registration is inherently machine-wide), so the installer and all its paths are unconditionally All Users.
+**Depends on**: Phase 11 (11-01/02/03/06 already shipped — updater backend + tray UI + main-window banner + E2E harness are prerequisites for the config-gated silent-update path)
+**Requirements**: TBD (run `/gsd-plan-phase 11.1` to break down)
+**Success Criteria** (what must be TRUE):
+  1. Installer is system-wide only: `RequestExecutionLevel admin` enforced, `SetShellVarContext all` applied everywhere, Start Menu shortcut lands in `%ProgramData%\Microsoft\Windows\Start Menu\Programs\` (T2 fix), Current User scope removed from NSIS + docs
+  2. In-place reinstall succeeds without a manual uninstall step — the 32-bit `go-mapi.dll` overwrite bug (T4) is investigated, root-caused, and fixed with a regression test in the Pester smoke harness
+  3. A machine-wide config file at `%PROGRAMDATA%\go-mapi\go-mapi.machine.yaml` is loaded at `NewApp()` startup with admin-only write ACLs enforced at install time; a user-scope `%APPDATA%\go-mapi\go-mapi.user.yaml` layers on top with `locked:` keys respected; effective config is exposed to the frontend via a Wails binding
+  4. Both `go-mapi.machine.yaml.example` + `go-mapi.user.yaml.example` ship with inline-documented keys (schema_version, defaults, allowed values, scope, lockability); installer copies machine example to `%PROGRAMDATA%\go-mapi\` (not as the live file) and user example to install dir as documentation
+  5. Installer exposes a tri-state Auto-update install option ("None / Notify / Silent") with `Notify` as default; silent auto-update runs via a Windows Scheduled Task under SYSTEM (or a dedicated service account) that downloads + verifies + stages the new binary without elevating the interactive user; `Silent` is gated by the machine config flag and refuses to run if config is absent
+  6. CI (`build.yml`) builds + uploads the new installer variants and example config artefacts; README is rewritten with an enterprise-install section covering the tri-state option, the machine config surface, silent-update prerequisites, and the All Users caveat
+  7. Pester smoke harness (extends Phase 10's) covers: fresh install with each of the three update modes, reinstall-over-existing, machine config presence verification, uninstaller scrub of `%PROGRAMDATA%\go-mapi\` and the Scheduled Task
+**Plans**: TBD (run `/gsd-plan-phase 11.1` to break down)
+
 ## Progress
 
 | Phase | Milestone | Plans Complete | Status | Completed |
@@ -178,6 +193,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 9. Queue, Automode + Toasts | v3.0 | 9/9 | Complete | 2026-04-19 |
 | 10. Installer + Migration | v3.0 | 6/6 | Complete | 2026-04-20 |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
+| 11.1. Installer hardening + enterprise deploy + silent auto-update (INSERTED) | v3.0 | 0/? | Not started | - |
 
 ---
-*Roadmap updated: 2026-04-21 — Phase 10 accepted complete for progression; remaining verification debt is explicitly waived for planning purposes and Phase 11 is next*
+*Roadmap updated: 2026-04-24 — Phase 11.1 inserted (installer hardening + enterprise deploy + silent auto-update). Phase 11's remaining 11-04 Task 2+3 (store delisting + GA tag) sequence AFTER v3.0 ships and `go-mapi-www` is live — explicitly non-blocking.*
