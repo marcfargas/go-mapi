@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"os"
+	"time"
 
 	"github.com/pkg/browser"
 	"github.com/wailsapp/wails/v2"
@@ -16,6 +18,17 @@ var assets embed.FS
 var Version = "0.0.0-dev" // overridden via -ldflags "-X main.Version=..."
 
 func main() {
+	// PHASE 11.1 (D-10, RESEARCH §Pitfall 7): silent-update guard. MUST be the
+	// first statement in main(). The Task Scheduler runs us as SYSTEM in
+	// session 0 — WebView2 init would crash there, single-instance acquire is
+	// not needed (separate session namespace), and no user is present to
+	// approve OAuth re-auth. The silent path runs its own routine and exits.
+	if len(os.Args) >= 2 && os.Args[1] == "--update-check-silent" {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
+		defer cancel()
+		os.Exit(runSilentUpdate(ctx))
+	}
+
 	raised, siErr := acquireSingleInstance()
 	if siErr != nil {
 		logError("single-instance: %v", siErr)
