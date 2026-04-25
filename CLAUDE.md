@@ -74,7 +74,7 @@ go-mapi is a two-component Wails (Go + WebView2) desktop app that intercepts Win
 - WebView2 Evergreen runtime (bootstrapped by the v3.0 installer per Phase 10 INST-02)
 - Gmail or Google Workspace account
 ## Build Pipeline
-- `npm run build:interceptor` → MinGW + CMake → `src/interceptor/build/bin/go-mapi.dll`
+- `npm run build:interceptor` → MinGW + CMake → `src/interceptor/build-x64/bin/go-mapi.dll` and `src/interceptor/build-x86/bin/go-mapi.dll`
 - `cd src/app && wails build -platform windows/amd64` → `src/app/build/bin/go-mapi.exe` (embeds frontend via `go:embed`)
 - `go test ./internal/mapi/... ./src/app/...` (add `-race` to match per-PR CI gate)
 - `npm run -w @marcfargas/go-mapi-app-frontend test:run` (Vitest)

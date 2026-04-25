@@ -108,7 +108,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force staged | Out-Null
           Copy-Item src/app/build/bin/go-mapi.exe staged/
-          Copy-Item src/interceptor/build/bin/go-mapi.dll staged/
+          Copy-Item src/interceptor/build-x64/bin/go-mapi.dll staged/go-mapi-x64.dll
+          Copy-Item src/interceptor/build-x86/bin/go-mapi.dll staged/go-mapi-x86.dll
 
       # SignPath v2 (errata: CONTEXT D-23 referenced @v1 — PATTERNS.md §Planner-Facing
       # Correction Log entry 2 mandates @v2).
@@ -137,7 +138,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item staged-signed/go-mapi.exe src/app/build/bin/go-mapi.exe -Force
-          Copy-Item staged-signed/go-mapi.dll src/interceptor/build/bin/go-mapi.dll -Force
+          Copy-Item staged-signed/go-mapi-x64.dll src/interceptor/build-x64/bin/go-mapi.dll -Force
+          Copy-Item staged-signed/go-mapi-x86.dll src/interceptor/build-x86/bin/go-mapi.dll -Force
 
       - name: Verify NSIS + compile installer
         shell: pwsh
@@ -179,11 +181,47 @@ jobs:
             Write-Host "Using UNSIGNED installer: $unsigned (SIGNPATH_API_TOKEN absent or signing skipped)"
           }
 
-      - name: Attach installer to GitHub Release
+      - name: Generate SHA256SUMS.txt
+        shell: pwsh
+        run: |
+          # D-17 (Phase 11.1): publish a SHA-256 manifest alongside release assets
+          # so the silent updater (Plan 11.1-04) can verify integrity via
+          # selfupdate.ChecksumValidator with UniqueFilename SHA256SUMS.txt.
+          # Format: lowercase-64-char-hex + two spaces + filename. sha256sum
+          # convention (matches go-selfupdate / goreleaser parser expectations).
+          # Filenames here MUST match the basenames at the GitHub Release URL
+          # (https://github.com/marcfargas/go-mapi/releases/latest/download/<name>).
+
+          $assets = @(
+            @{ Path = '${{ steps.final.outputs.path }}';              Name = 'go-mapi-setup.exe' }
+            @{ Path = 'src/app/build/bin/go-mapi.exe';                Name = 'go-mapi.exe' }
+            @{ Path = 'src/interceptor/build-x64/bin/go-mapi.dll';    Name = 'go-mapi-x64.dll' }
+            @{ Path = 'src/interceptor/build-x86/bin/go-mapi.dll';    Name = 'go-mapi-x86.dll' }
+          )
+
+          $lines = foreach ($a in $assets) {
+            if (-not (Test-Path $a.Path)) {
+              throw "SHA256SUMS: missing asset $($a.Path) (expected name $($a.Name))"
+            }
+            $h = (Get-FileHash -Path $a.Path -Algorithm SHA256).Hash.ToLower()
+            "$h  $($a.Name)"
+          }
+
+          # ASCII (no BOM) + LF line endings. Set-Content -NoNewline gives no
+          # trailing newline; we append one explicitly so the manifest ends with LF.
+          $manifest = ($lines -join "`n") + "`n"
+          Set-Content -LiteralPath SHA256SUMS.txt -Value $manifest -Encoding ASCII -NoNewline
+
+          Write-Host "Generated SHA256SUMS.txt:"
+          Get-Content SHA256SUMS.txt | Write-Host
+
+      - name: Attach installer + SHA256SUMS.txt to GitHub Release
         if: ${{ github.event_name == 'push' && (github.event.inputs.dry_run != 'true') }}
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.final.outputs.path }}
+          files: |
+            ${{ steps.final.outputs.path }}
+            SHA256SUMS.txt
           draft: false
           prerelease: false
           body_path: .github/release-template.md
