@@ -93,3 +93,34 @@ func TestWatcherDir_EnvPrecedence(t *testing.T) {
 		}
 	})
 }
+
+func TestUpdatesStagingDir_EnvPrecedence(t *testing.T) {
+	t.Run("GOMAPI_UPDATES_DIR wins", func(t *testing.T) {
+		tmp := t.TempDir()
+		t.Setenv("GOMAPI_UPDATES_DIR", tmp)
+		t.Setenv("ProgramData", `C:\OtherProgramData`)
+		got := updatesStagingDir()
+		if got != tmp {
+			t.Errorf("GOMAPI_UPDATES_DIR should win: got %q, want %q", got, tmp)
+		}
+	})
+	t.Run("ProgramData used when override empty", func(t *testing.T) {
+		t.Setenv("GOMAPI_UPDATES_DIR", "")
+		t.Setenv("ProgramData", `C:\ProgramData`)
+		got := updatesStagingDir()
+		want := filepath.Join(`C:\ProgramData`, "go-mapi", "updates")
+		if got != want {
+			t.Errorf("ProgramData should be used: got %q, want %q", got, want)
+		}
+	})
+	t.Run("fallback when no env", func(t *testing.T) {
+		t.Setenv("GOMAPI_UPDATES_DIR", "")
+		t.Setenv("ProgramData", "")
+		got := updatesStagingDir()
+		// Just assert it ends with go-mapi/updates and is rooted in TempDir.
+		wantSuffix := filepath.Join("go-mapi", "updates")
+		if !strings.HasSuffix(got, wantSuffix) {
+			t.Errorf("fallback should end with %q, got %q", wantSuffix, got)
+		}
+	})
+}

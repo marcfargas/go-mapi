@@ -56,3 +56,24 @@ func appDataDir() string {
 	}
 	return filepath.Join(".", "go-mapi")
 }
+
+// updatesStagingDir returns %ProgramData%\go-mapi\updates\ — the silent-update
+// staging area: download asset, verify SHA-256, atomic-swap installed binary.
+// Inherits %ProgramData% default ACL: SYSTEM + Administrators full, Users read.
+// (RESEARCH §Don't Hand-Roll — Phase 10 D-12 already relies on this for %ProgramData%\go-mapi\uninst\.)
+//
+// Precedence:
+//  1. GOMAPI_UPDATES_DIR — test override (mirrors GOMAPI_APPDATA_DIR / GOMAPI_WATCH_DIR).
+//  2. %ProgramData%\go-mapi\updates — production path (machine-scope).
+//  3. Platform fallback (filepath.Join(os.TempDir(), "go-mapi", "updates")) for POSIX CI compile.
+//
+// Callers must os.MkdirAll the result before writing.
+func updatesStagingDir() string {
+	if dir := os.Getenv("GOMAPI_UPDATES_DIR"); dir != "" {
+		return dir
+	}
+	if pd := os.Getenv("ProgramData"); pd != "" {
+		return filepath.Join(pd, "go-mapi", "updates")
+	}
+	return filepath.Join(os.TempDir(), "go-mapi", "updates")
+}
