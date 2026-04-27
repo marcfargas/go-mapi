@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
 status: executing
-stopped_at: Phase 11.1-04 complete — silent updater download+verify+swap pipeline landed; ready for Plan 11.1-05 (Scheduled Task XML + NSIS wiring)
-last_updated: "2026-04-27T20:23:32.442Z"
-last_activity: 2026-04-27
+stopped_at: Phase 11.1-05 complete — Scheduled Task XML + NSIS /AUTOUPDATE plumbing landed and sandbox-UAT-verified (all six A–F checks PASS after four post-implementation NSIS fixes); ready for Plan 11.1-06 (README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09)
+last_updated: "2026-04-28T00:30:00.000Z"
+last_activity: 2026-04-28
 progress:
   total_phases: 7
   completed_phases: 5
   total_plans: 45
-  completed_plans: 42
-  percent: 93
+  completed_plans: 43
+  percent: 96
 ---
 
 # Project State
@@ -27,11 +27,11 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 Milestone: v3.0 Wails Pivot
 Phase: 11.1 (installer-hardening-enterprise-deploy-silent-auto-update) — EXECUTING
-Plan: 5 of 6 (next: 11.1-05 Scheduled Task XML + NSIS /AUTOUPDATE wiring)
+Plan: 5 of 6 (next: 11.1-06 README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09)
 Status: Ready to execute
-Last activity: 2026-04-27 — Phase 11.1-04 (silent updater download/verify/swap) landed
+Last activity: 2026-04-28 — Phase 11.1-05 (Scheduled Task + NSIS /AUTOUPDATE wiring) landed; sandbox UAT all-pass after four post-impl NSIS fixes
 
-Progress: [█████████░] 93%
+Progress: [█████████▌] 96%
 
 ## Performance Metrics
 
@@ -77,6 +77,11 @@ Recent decisions carried into v3.0:
 - [Phase 10]: All six Phase 10 plans have completion summaries on 2026-04-20. Remaining work is human/CI verification debt recorded in `10-VERIFICATION.md` and `10-HUMAN-UAT.md`; per user direction, that debt is accepted for progression and does not block Phase 11.
 - Phase 11.1-04: errChecksumFailed sentinel + filename-only abort log keeps go-selfupdate's hex-digest validator errors out of update.log (Pitfall 6 / T-11.1.04-06)
 - Phase 11.1-04: Verify-BEFORE-write (not just verify-BEFORE-swap) — downloadAndVerify runs ChecksumValidator on in-memory bytes BEFORE os.WriteFile so an unverified asset never hits disk; strengthens T-11.1.04-02 mitigation
+- Phase 11.1-05: Programmatic XML emission via FileWriteUTF16LE (with /BOM on first call) replaces the original "stage tasks/*.xml + nsExec PowerShell INSTDIR_PLACEHOLDER substitute" pattern — sandbox UAT proved nested-quote escaping prevented the PS substitution from running at all; programmatic generation eliminates the entire substitution step
+- Phase 11.1-05: NSIS Unicode-build's plain FileWrite writes ANSI/UTF-8 single-byte chars (NOT UTF-16 LE) despite older docs implying otherwise — schtasks /XML rejects the corrupt output. FileWriteUTF16LE is the correct primitive for UTF-16 LE emission
+- Phase 11.1-05: schtasks /create /XML rejects /RL HIGHEST as incompatible (rc=-2147467259, locale-dependent error message) — RunLevel must be pinned via <RunLevel> inside the XML body, not on the command line
+- Phase 11.1-05: $APPDATA\..\..\ProgramData NSIS path math resolves to <userprofile>\ProgramData (non-existent) under default `current` shell-var context — not %ProgramData% as legacy comments claimed; ReadEnvStr PROGRAMDATA is the reliable replacement. Other call sites in go-mapi.nsi (Backup/RestorePreviousMailClient, existing uninst\ removal) still use the broken pattern; deferred follow-up
+- Phase 11.1-05: Sandbox-UAT (`tests/sandbox` Windows Sandbox harness) is the proven Wave-2 verification gate for installer-touching plans — caught four NSIS defects that neither makensis compile nor Pester discovery surfaced; pattern for all future installer plans
 
 ### Roadmap Evolution
 
@@ -111,9 +116,10 @@ Recent decisions carried into v3.0:
 | 260423-qpx | Address fallback for legacy Simple MAPI apps + fix dev-build update compare | 2026-04-23 | 5876088 | [260423-qpx-address-fallback-for-legacy-mapi-apps-fi](./quick/260423-qpx-address-fallback-for-legacy-mapi-apps-fi/) |
 | 260423-tk6 | DLL copies attachments into queue-owned dir + surface draft-failure reason in UI | 2026-04-23 | 30b35c6 | [260423-tk6-dll-copies-attachments-to-queue-surface-](./quick/260423-tk6-dll-copies-attachments-to-queue-surface-/) |
 | Phase 11.1 P11.1-04 | 905s | 2 tasks | 2 files |
+| Phase 11.1 P11.1-05 | ~50min impl + sandbox UAT round-trip | 3 tasks (+1 UAT-fix) | 3 files (1 new, 2 modified) |
 
 ## Session Continuity
 
-Last session: 2026-04-27T20:23:32.431Z
-Stopped at: Phase 11.1-04 complete — silent updater download+verify+swap pipeline landed; ready for Plan 11.1-05 (Scheduled Task XML + NSIS wiring)
-Resume: finish go-mapi-www (c:/dev/go-mapi-www), update Chrome Web Store + Edge Add-ons listings with deprecation copy, paste proof into `.planning/phases/11-autoupdate-release/11-RELEASE-EVIDENCE.md`, then run `/gsd-execute-phase 11` and reply `approved` at the checkpoint
+Last session: 2026-04-28T00:30:00.000Z
+Stopped at: Phase 11.1-05 complete — Scheduled Task XML + NSIS /AUTOUPDATE plumbing landed; sandbox UAT all-pass after four post-impl NSIS fixes (commit 52af618). Ready for Plan 11.1-06 (README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09).
+Resume: run `/gsd-execute-phase 11.1` to start Plan 11.1-06 — it owns the README "Enterprise installation" section, the ROADMAP success-criteria rewrite (D-20), and the REQUIREMENTS REL-09 insertion. After 11.1-06 lands, Phase 11.1 is complete and the queued Phase 11 close-out (Chrome/Edge delisting + GA tag, gated on go-mapi-www) becomes the next move.
