@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
 status: executing
-stopped_at: Phase 11.1-05 complete — Scheduled Task XML + NSIS /AUTOUPDATE plumbing landed and sandbox-UAT-verified (all six A–F checks PASS after four post-implementation NSIS fixes); ready for Plan 11.1-06 (README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09)
-last_updated: "2026-04-28T00:30:00.000Z"
-last_activity: 2026-04-28
+stopped_at: Phase 11.1 COMPLETE — all 6 plans shipped (11.1-01..11.1-06). Plan 11.1-06 landed README enterprise-install section, ROADMAP D-20 rewrite, REQUIREMENTS REL-08 traceability backfill + REL-09 add. Next move is Phase 11 close-out (11-04 Task 2+3 — Chrome/Edge delisting + GA tag), still paused on c:/dev/go-mapi-www.
+last_updated: "2026-04-27T22:30:00.000Z"
+last_activity: 2026-04-27
 progress:
   total_phases: 7
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 45
-  completed_plans: 43
-  percent: 96
+  completed_plans: 44
+  percent: 98
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 11.1 — installer-hardening-enterprise-deploy-silent-auto-update
+**Current focus:** Phase 11 close-out (11-04 Task 2+3 — Chrome/Edge store delisting + GA tag push), paused on c:/dev/go-mapi-www. Phase 11.1 (installer hardening + silent auto-update) is COMPLETE.
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 11.1 (installer-hardening-enterprise-deploy-silent-auto-update) — EXECUTING
-Plan: 5 of 6 (next: 11.1-06 README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09)
-Status: Ready to execute
-Last activity: 2026-04-28 — Phase 11.1-05 (Scheduled Task + NSIS /AUTOUPDATE wiring) landed; sandbox UAT all-pass after four post-impl NSIS fixes
+Phase: 11.1 COMPLETE (6/6 plans) — Phase 11 close-out remains queued (paused on go-mapi-www)
+Plan: 6 of 6 — Phase 11.1 complete (next: Phase 11 close-out / 11-04 Task 2+3 once www lands)
+Status: Phase 11.1 ready for verification / close-out
+Last activity: 2026-04-27 — Plan 11.1-06 landed (README ## Enterprise installation section + ROADMAP D-20 rewrite + REQUIREMENTS REL-08 traceability backfill + REL-09 add); Phase 11.1 closes here (3 commits: 0d7ab4b, 3b81abd, 6729004)
 
-Progress: [█████████▌] 96%
+Progress: [█████████▊] 98%
 
 ## Performance Metrics
 
@@ -82,6 +82,9 @@ Recent decisions carried into v3.0:
 - Phase 11.1-05: schtasks /create /XML rejects /RL HIGHEST as incompatible (rc=-2147467259, locale-dependent error message) — RunLevel must be pinned via <RunLevel> inside the XML body, not on the command line
 - Phase 11.1-05: $APPDATA\..\..\ProgramData NSIS path math resolves to <userprofile>\ProgramData (non-existent) under default `current` shell-var context — not %ProgramData% as legacy comments claimed; ReadEnvStr PROGRAMDATA is the reliable replacement. Other call sites in go-mapi.nsi (Backup/RestorePreviousMailClient, existing uninst\ removal) still use the broken pattern; deferred follow-up
 - Phase 11.1-05: Sandbox-UAT (`tests/sandbox` Windows Sandbox harness) is the proven Wave-2 verification gate for installer-touching plans — caught four NSIS defects that neither makensis compile nor Pester discovery surfaced; pattern for all future installer plans
+- Phase 11.1-06: REL-08 was defined in REQUIREMENTS.md §Release & Autoupdate but missing from the Traceability table (silent gap from the 2026-04-22 insert); Plan 11.1-06 backfilled the row to Phase 11 alongside the new REL-09 row to Phase 11.1, bringing Coverage to 45/45
+- Phase 11.1-06: Doc plans should also refresh the v3.0 milestone-summary bullet at the top of ROADMAP.md, not just the §Phase Details entry — leaving the summary stale leaves the document self-contradictory after a D-20-class scope retraction
+- Phase 11.1: Phase complete (6/6 plans, 2026-04-27). Delivered scope: All Users only install, T2 + T4 NSIS fixes, /AUTOUPDATE=1 binary opt-in checkbox, SYSTEM Scheduled Task `go-mapi Auto Update`, SHA-256 verification via go-selfupdate ChecksumValidator + SHA256SUMS.txt CI publish, MoveFileEx atomic swap, Pester items 21-25, README enterprise-install section, REL-09 added to REQUIREMENTS
 
 ### Roadmap Evolution
 
@@ -117,9 +120,10 @@ Recent decisions carried into v3.0:
 | 260423-tk6 | DLL copies attachments into queue-owned dir + surface draft-failure reason in UI | 2026-04-23 | 30b35c6 | [260423-tk6-dll-copies-attachments-to-queue-surface-](./quick/260423-tk6-dll-copies-attachments-to-queue-surface-/) |
 | Phase 11.1 P11.1-04 | 905s | 2 tasks | 2 files |
 | Phase 11.1 P11.1-05 | ~50min impl + sandbox UAT round-trip | 3 tasks (+1 UAT-fix) | 3 files (1 new, 2 modified) |
+| Phase 11.1 P11.1-06 | 282s | 3 tasks | 3 modified (README, ROADMAP, REQUIREMENTS) + 1 SUMMARY |
 
 ## Session Continuity
 
-Last session: 2026-04-28T00:30:00.000Z
-Stopped at: Phase 11.1-05 complete — Scheduled Task XML + NSIS /AUTOUPDATE plumbing landed; sandbox UAT all-pass after four post-impl NSIS fixes (commit 52af618). Ready for Plan 11.1-06 (README enterprise section + ROADMAP D-20 rewrite + REQUIREMENTS REL-09).
-Resume: run `/gsd-execute-phase 11.1` to start Plan 11.1-06 — it owns the README "Enterprise installation" section, the ROADMAP success-criteria rewrite (D-20), and the REQUIREMENTS REL-09 insertion. After 11.1-06 lands, Phase 11.1 is complete and the queued Phase 11 close-out (Chrome/Edge delisting + GA tag, gated on go-mapi-www) becomes the next move.
+Last session: 2026-04-27T22:30:00.000Z
+Stopped at: Phase 11.1 COMPLETE — Plan 11.1-06 landed README enterprise-install section + ROADMAP D-20 rewrite + REQUIREMENTS REL-08 traceability backfill + REL-09 add (commits 0d7ab4b, 3b81abd, 6729004). All 6 plans of Phase 11.1 shipped.
+Resume: Phase 11 close-out is the next move — specifically 11-04 Task 2+3 (Chrome/Edge store delisting + GA tag push + v3.0 release). Still paused on c:/dev/go-mapi-www landing per project_phase11_release_gated_on_www memory. Once www ships, run `/gsd-execute-phase 11` to resume 11-04.
