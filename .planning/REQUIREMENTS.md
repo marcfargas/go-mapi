@@ -59,12 +59,13 @@ Requirements for the v3.0 milestone — standalone Wails desktop app replacing t
 
 - [ ] **REL-01**: Chrome/Edge extension listings are retired on v3.0 GA via frozen/deprecated Chrome Web Store and Edge Add-ons pages that redirect users to the desktop app, with proof of the store-side action captured
 - [ ] **REL-02**: `go-mapi-setup.exe` published to stable URL `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`
-- [ ] **REL-03**: In-app version check uses `creativeprojects/go-selfupdate` to query GitHub Releases on startup and once per 24h
-- [ ] **REL-04**: When a newer version is available, app shows a tray notification with "Download" action that opens the release page in the browser — no in-process binary replacement
+- [ ] **REL-03**: In-app version check uses `creativeprojects/go-selfupdate` to query GitHub Releases on startup and once per 24h *(extended in Phase 11.1 — see REL-09 for the silent-update path)*
+- [ ] **REL-04**: When a newer version is available, app shows a tray notification with "Download" action that opens the release page in the browser — no in-process binary replacement *(Phase 11.1 adds an out-of-process SYSTEM Scheduled Task path alongside the notify-only baseline — REL-09; extended in Phase 11.1)*
 - [ ] **REL-05**: User can opt out of update checks via a settings toggle
 - [ ] **REL-06**: End-to-end smoke test on Windows Sandbox: fresh install → sign-in → email queued via MAPI → draft created → uninstall clean
 - [ ] **REL-07**: README rewritten to describe the v3.0 install + setup flow; v2.x is retired and not maintained as in-tree legacy documentation
 - [ ] **REL-08**: An end-to-end Playwright/CDP harness drives the real Wails app + WebView2 against a fake Gmail endpoint and a fake keyring (under a `//go:build e2e` shim), with regression coverage for the Wails↔Svelte UI roundtrip class of bug — added 2026-04-22 after Phase 11 manual smoke caught queue-row staleness symptoms that Vitest with mocked bindings could not see
+- [ ] **REL-09**: Silent auto-update — a SYSTEM-context Windows Scheduled Task downloads release assets from the stable URL, verifies SHA-256 against `SHA256SUMS.txt` (parsed via go-selfupdate `ChecksumValidator{UniqueFilename: "SHA256SUMS.txt"}`), and atomically swaps `go-mapi.exe` (and the x64 + x86 `go-mapi.dll`) using `MoveFileEx` rename-while-running, without elevating the interactive user or restarting it. Install-time opt-in via UI checkbox or `/AUTOUPDATE=1` parameter (default OFF). Uninstaller idempotently removes the Scheduled Task and the `%ProgramData%\go-mapi\updates\` staging directory.
 
 ### Quality Gates (non-functional)
 
@@ -152,16 +153,18 @@ Which phases cover which requirements. Updated by roadmapper 2026-04-12.
 | REL-05 | Phase 11 | Pending |
 | REL-06 | Phase 11 | Pending |
 | REL-07 | Phase 11 | Pending |
+| REL-08 | Phase 11 | Pending |
+| REL-09 | Phase 11.1 | Pending |
 | QUAL-01 | Phase 7 | Pending |
 | QUAL-02 | Phase 7 | Pending |
 | QUAL-03 | Phase 8 | Complete |
 | QUAL-04 | Phase 8.1 | Complete |
 
 **Coverage:**
-- v3.0 requirements: 44 total (note: original count of 43 was off by one — all categories re-counted from requirements text)
-- Mapped to phases: 44
+- v3.0 requirements: 45 total (REL-08 backfilled to traceability table by Phase 11.1 — was missing despite being defined in §Release & Autoupdate; REL-09 added in Phase 11.1; original count of 43 was off by one; all categories re-counted from requirements text)
+- Mapped to phases: 45
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-12*
-*Last updated: 2026-04-12 — traceability table filled by roadmapper; all 44 requirements mapped to phases 7-11*
+*Last updated: 2026-04-25 — REL-08 traceability row backfilled (mapped to Phase 11; was missing from the table); REL-09 added (silent auto-update via SYSTEM Scheduled Task + SHA-256 verification) and mapped to Phase 11.1; REL-03 + REL-04 annotated to reference the silent-path extension.*
