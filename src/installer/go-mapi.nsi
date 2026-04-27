@@ -92,13 +92,27 @@ Section "Install" SecInstall
   ; (= $PROGRAMFILES64\go-mapi) for native MAPI callers; x86 DLL lands in
   ; $PROGRAMFILES32\go-mapi for legacy 32-bit MAPI callers. Registry
   ; DLLPath writes below route each view to the matching-bitness DLL.
+  ; PHASE 11.1 T4 (D-04): explicit Delete + SetOverwrite try collapses transient
+  ; AV/filter holds into a no-op rather than aborting the installer. RESEARCH
+  ; §Pattern 1 + §Pitfall 1. NSIS default SetOverwrite is `on`, which makes
+  ; reinstall fail hard on any transient lock; `try` skips silently if write
+  ; fails (the explicit Delete clears the prior version first so it does not).
+  ClearErrors
+  Delete "$INSTDIR\go-mapi.exe"
+  Delete "$INSTDIR\go-mapi.dll"
+  SetOverwrite try
   File "${__FILEDIR__}\..\app\build\bin\go-mapi.exe"
   File "${__FILEDIR__}\..\interceptor\build-x64\bin\go-mapi.dll"
+  SetOverwrite on
 
-  ; x86 DLL goes into $PROGRAMFILES32\go-mapi (auto-resolved by NSIS on 64-bit Windows)
+  ; x86 DLL — same T4 treatment in $PROGRAMFILES32 view.
   CreateDirectory "$PROGRAMFILES32\go-mapi"
   SetOutPath "$PROGRAMFILES32\go-mapi"
+  ClearErrors
+  Delete "$PROGRAMFILES32\go-mapi\go-mapi.dll"
+  SetOverwrite try
   File "${__FILEDIR__}\..\interceptor\build-x86\bin\go-mapi.dll"
+  SetOverwrite on
 
   ; Reset $OUTDIR for the rest of the install section
   SetOutPath "$INSTDIR"
@@ -145,10 +159,15 @@ Section "Install" SecInstall
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoModify"        1
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}" "NoRepair"        1
 
+  ; D-03: best-effort cleanup of stale per-user shortcut from pre-11.1 builds.
+  SetShellVarContext current
+  Delete "$SMPROGRAMS\go-mapi.lnk"
+  ; (next call to CreateShortcutAndAUMID below already wrapped to all-users)
+
   ; Stub calls — bodies are filled in by later plans. Each stub emits a
   ; DetailPrint so the installer log documents which milestone owns the work.
   Call InstallWebView2           ; plan 10-02
-  Call CreateShortcutAndAUMID    ; plan 10-03
+  Call CreateShortcutAndAUMID    ; plan 10-03 (D-03)
   Call AddFirewallRule           ; plan 10-03
 SectionEnd
 
@@ -570,9 +589,11 @@ FunctionEnd
 ;------------------------------------------------------------------------------
 
 Function CreateShortcutAndAUMID
-  ; D-13: Start Menu shortcut — all-users (admin install → $SMPROGRAMS resolves
-  ; to %ProgramData%\Microsoft\Windows\Start Menu\Programs\).
-  ; Signature: CreateShortcut link target parameters iconfile iconindex startoptions keyboardshortcut description
+  ; D-03 (Phase 11.1): tight SetShellVarContext all wrap around the All Users
+  ; shortcut create. Pitfall 2: this also redirects $APPDATA, $LOCALAPPDATA,
+  ; $DESKTOP — keep the wrap tight so the existing %ProgramData% walk at
+  ; lines 666-676 stays in default `current` context.
+  SetShellVarContext all
   CreateShortcut "$SMPROGRAMS\go-mapi.lnk" \
       "$INSTDIR\go-mapi.exe" \
       "" \
@@ -586,6 +607,7 @@ Function CreateShortcutAndAUMID
   ; D-15: production AUMID is com.marcfargas.gomapi (matches the ${AUMID} define).
   ApplicationID::Set "$SMPROGRAMS\go-mapi.lnk" "${AUMID}"
   Pop $0
+  SetShellVarContext current
   StrCmp $0 "0" AumidOk
   DetailPrint "WARNING: AUMID stamp rc=$0 — Action Center persistence may break"
   ; Do NOT halt the installer — continue install; Pester test (plan 10-05) will surface this in CI.
@@ -648,7 +670,9 @@ Section "Uninstall"
   DetailPrint "firewall delete rule rc=$0"
 
   ; 2. Start Menu shortcut (plan 10-03 stamped the AUMID on this .lnk)
+  SetShellVarContext all
   Delete "$SMPROGRAMS\go-mapi.lnk"
+  SetShellVarContext current
 
   ; 3. MAPI handler key (native view)
   DeleteRegKey HKLM "SOFTWARE\Clients\Mail\go-mapi"
