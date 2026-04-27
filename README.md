@@ -82,6 +82,122 @@ Other users on the same machine who signed in to go-mapi retain their own creden
 
 This limitation is by design: Credential Manager entries and `%APPDATA%` are protected by the Windows per-user data-protection model, and the uninstaller (even when elevated) cannot enumerate and impersonate every profile on the machine.
 
+> For unattended or managed deployments (RDS, MSI/SCCM/Intune fleet roll-outs), see [Enterprise installation](#enterprise-installation) below.
+
+## Enterprise installation
+
+For administrators deploying go-mapi to a fleet (Windows Server / RDS hosts, MSI / SCCM / Intune push, etc.). For single-user installs, the consumer instructions above cover everything.
+
+### Elevation and scope
+
+`go-mapi-setup.exe` is **All Users only**. The MAPI handler is registered under `HKLM\SOFTWARE\Clients\Mail\go-mapi`, which is inherently machine-wide; there is no per-user install path. The installer requires UAC elevation. Run as an administrator (or via a managed-deployment context that elevates) — there is no "Just for me" option.
+
+### Unattended (silent) install
+
+Silent install with all defaults:
+
+```
+go-mapi-setup.exe /S /D=C:\Program Files\go-mapi
+```
+
+Add `/AUTOUPDATE=1` to register a Windows Scheduled Task that keeps go-mapi updated automatically (see [Automatic updates](#automatic-updates) below):
+
+```
+go-mapi-setup.exe /S /AUTOUPDATE=1 /D=C:\Program Files\go-mapi
+```
+
+Default is `/AUTOUPDATE=0` (no Scheduled Task; manual update notification only — same as the consumer install).
+
+### Automatic updates
+
+When installed with `/AUTOUPDATE=1` (or with the "Enable automatic updates" checkbox ticked during interactive install), the installer registers a Windows Scheduled Task:
+
+| Property | Value |
+|---|---|
+| Task name | `go-mapi Auto Update` |
+| Path | `\go-mapi Auto Update` (root of Task Scheduler) |
+| Run as | `SYSTEM` (no per-user credential, no logon required) |
+| Schedule | Daily 03:00 with ±30 minute random delay |
+| Also runs | At system startup (5 minute delay) |
+| Network | `RunOnlyIfNetworkAvailable=true` (skips offline runs) |
+| Catch-up | `StartWhenAvailable=true` (runs after wake/reboot if missed) |
+| Concurrency | `MultipleInstancesPolicy=IgnoreNew` (no overlapping runs) |
+| Time limit | 12 hours per run (`ExecutionTimeLimit=PT12H`) |
+
+The task fires `go-mapi.exe --update-check-silent`, which:
+
+1. Fetches `SHA256SUMS.txt` from the stable Release URL.
+2. Downloads the new binary (or installer) into `%ProgramData%\go-mapi\updates\staging\`.
+3. Verifies the SHA-256 digest **before** writing the binary into the install path.
+4. Atomically swaps the running `go-mapi.exe` (and the x64 + x86 `go-mapi.dll`) using `MoveFileEx`'s rename-while-running pattern. The interactive go-mapi instance keeps running with its old in-memory file mapping until next launch.
+5. Logs to `%ProgramData%\go-mapi\updates\update.log` (admin-readable; no PII, no message content, no hex digests).
+
+The task does **not** restart the running interactive go-mapi.exe. The new binary takes effect on the next launch.
+
+#### Managing the Scheduled Task post-install
+
+Disable temporarily (e.g. during maintenance windows):
+
+```
+schtasks /change /tn "go-mapi Auto Update" /disable
+```
+
+Re-enable:
+
+```
+schtasks /change /tn "go-mapi Auto Update" /enable
+```
+
+Run the update check immediately (testing / forced refresh):
+
+```
+schtasks /run /tn "go-mapi Auto Update"
+```
+
+Inspect last run + status:
+
+```
+schtasks /query /tn "go-mapi Auto Update" /v /fo LIST
+```
+
+Or open Task Scheduler (`taskschd.msc`) and navigate to `\go-mapi Auto Update`.
+
+The task is removed automatically by the go-mapi uninstaller. To convert an existing notify-only install to silent-update, re-run `go-mapi-setup.exe /AUTOUPDATE=1` over the existing install — the installer is idempotent.
+
+### Integrity verification
+
+Every release publishes `SHA256SUMS.txt` alongside the installer at:
+
+```
+https://github.com/marcfargas/go-mapi/releases/latest/download/SHA256SUMS.txt
+```
+
+Format follows the `sha256sum` convention (one line per asset, `<lowercase-hex>  <filename>`). The silent updater verifies downloads automatically; for manual verification:
+
+```
+$expected = (Invoke-WebRequest 'https://github.com/marcfargas/go-mapi/releases/latest/download/SHA256SUMS.txt').Content
+$actual = (Get-FileHash -Algorithm SHA256 .\go-mapi-setup.exe).Hash.ToLower()
+Write-Host "Expected: $expected"
+Write-Host "Actual:   $actual  go-mapi-setup.exe"
+```
+
+SignPath signing (when present on the release) is additive — verify both the SHA-256 digest AND the Authenticode signature for defense-in-depth.
+
+### Multi-user RDS limitation
+
+The uninstaller scrubs the running admin's profile and machine-wide locations (`HKLM\SOFTWARE\Clients\Mail\go-mapi`, `%ProgramFiles%\go-mapi\`, `%ProgramData%\go-mapi\`, `\go-mapi Auto Update`). It does **not** enumerate every user profile on a multi-user / RDS host to scrub `%APPDATA%\go-mapi\` or per-user shortcuts left by older builds. On RDS hosts where many users have run go-mapi, residue may persist in user profiles after uninstall.
+
+This is a known carry-forward limitation from Phase 10 (the v3.0 install milestone). Workaround: an admin can run `Remove-Item -Recurse -Force "$Profile\..\..\..\*\AppData\Roaming\go-mapi"` per RDP session as needed, or wait for the v3.x roadmap entry that adds enumerate-all-profiles uninstall.
+
+### Privacy posture
+
+go-mapi makes network calls only to:
+
+- `https://github.com/marcfargas/go-mapi/releases/latest/download/...` (update check + asset download).
+- Google OAuth + Gmail API (when the user signs in / drafts mail).
+
+No telemetry. No content retention. No hash-of-installed-binary reporting. Silent-update logs at `%ProgramData%\go-mapi\updates\update.log` record the version transition and download success/failure only — no message body, no recipient data, no SHA-256 digests of installed binaries.
+
 ## Development
 
 ### Prerequisites (one-time)
