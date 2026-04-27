@@ -744,19 +744,76 @@ Function RegisterScheduledTask
   StrCmp $AutoUpdateFlag "1" 0 SkipTask
   DetailPrint "Auto-update opt-in: registering Scheduled Task 'go-mapi Auto Update'"
 
-  SetOutPath "$INSTDIR"
-  File "${__FILEDIR__}\tasks\go-mapi-auto-update.xml"
+  ; Generate the Task Scheduler XML programmatically with $INSTDIR baked in.
+  ; The earlier "stage tasks/go-mapi-auto-update.xml + nsExec PowerShell
+  ; substitution" pattern shipped in Plan 11.1-05 e9b2693 proved unreliable —
+  ; the XML retained INSTDIR_PLACEHOLDER literal because the nested-quote
+  ; escaping in the nsExec command line prevented PowerShell from running the
+  ; substitution at all. Programmatic generation eliminates the entire
+  ; substitution step.
+  ;
+  ; FileWriteUTF16LE (with /BOM on the first call) writes proper UTF-16 LE
+  ; bytes preceded by the 0xFF 0xFE BOM — the encoding schtasks /XML requires
+  ; on Win 10/11. NOTE: NSIS Unicode-build's plain `FileWrite` writes ANSI/
+  ; UTF-8 bytes (single-byte per char), NOT UTF-16 LE, despite what some
+  ; older NSIS docs imply — verified empirically in Plan 11.1-05 sandbox UAT
+  ; (the staged file had a 0xFF 0xFE BOM followed by single-byte ASCII for
+  ; "<?xml...", which schtasks decoded as garbage Chinese characters and
+  ; rejected as malformed XML). FileWriteUTF16LE is the correct primitive.
+  ;
+  ; The committed src/installer/tasks/go-mapi-auto-update.xml file remains as
+  ; the canonical reference for the task shape — it is no longer staged at
+  ; install time, but downstream docs and future maintainers can read it.
+  FileOpen $0 "$INSTDIR\go-mapi-auto-update.xml" w
+  FileWriteUTF16LE /BOM $0 '<?xml version="1.0" encoding="UTF-16"?>$\r$\n'
+  FileWriteUTF16LE $0 '<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">$\r$\n'
+  FileWriteUTF16LE $0 '  <RegistrationInfo>$\r$\n'
+  FileWriteUTF16LE $0 '    <Description>go-mapi silent auto-update — fetches and applies updates without elevating the interactive user.</Description>$\r$\n'
+  FileWriteUTF16LE $0 '    <URI>\go-mapi Auto Update</URI>$\r$\n'
+  FileWriteUTF16LE $0 '  </RegistrationInfo>$\r$\n'
+  FileWriteUTF16LE $0 '  <Triggers>$\r$\n'
+  FileWriteUTF16LE $0 '    <CalendarTrigger>$\r$\n'
+  FileWriteUTF16LE $0 '      <StartBoundary>2026-01-01T03:00:00</StartBoundary>$\r$\n'
+  FileWriteUTF16LE $0 '      <Enabled>true</Enabled>$\r$\n'
+  FileWriteUTF16LE $0 '      <RandomDelay>PT30M</RandomDelay>$\r$\n'
+  FileWriteUTF16LE $0 '      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>$\r$\n'
+  FileWriteUTF16LE $0 '    </CalendarTrigger>$\r$\n'
+  FileWriteUTF16LE $0 '    <BootTrigger>$\r$\n'
+  FileWriteUTF16LE $0 '      <Enabled>true</Enabled>$\r$\n'
+  FileWriteUTF16LE $0 '      <Delay>PT5M</Delay>$\r$\n'
+  FileWriteUTF16LE $0 '    </BootTrigger>$\r$\n'
+  FileWriteUTF16LE $0 '  </Triggers>$\r$\n'
+  FileWriteUTF16LE $0 '  <Principals>$\r$\n'
+  FileWriteUTF16LE $0 '    <Principal id="Author">$\r$\n'
+  FileWriteUTF16LE $0 '      <UserId>S-1-5-18</UserId>$\r$\n'
+  FileWriteUTF16LE $0 '      <RunLevel>HighestAvailable</RunLevel>$\r$\n'
+  FileWriteUTF16LE $0 '    </Principal>$\r$\n'
+  FileWriteUTF16LE $0 '  </Principals>$\r$\n'
+  FileWriteUTF16LE $0 '  <Settings>$\r$\n'
+  FileWriteUTF16LE $0 '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>$\r$\n'
+  FileWriteUTF16LE $0 '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>$\r$\n'
+  FileWriteUTF16LE $0 '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>$\r$\n'
+  FileWriteUTF16LE $0 '    <AllowHardTerminate>true</AllowHardTerminate>$\r$\n'
+  FileWriteUTF16LE $0 '    <StartWhenAvailable>true</StartWhenAvailable>$\r$\n'
+  FileWriteUTF16LE $0 '    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>$\r$\n'
+  FileWriteUTF16LE $0 '    <Enabled>true</Enabled>$\r$\n'
+  FileWriteUTF16LE $0 '    <ExecutionTimeLimit>PT12H</ExecutionTimeLimit>$\r$\n'
+  FileWriteUTF16LE $0 '  </Settings>$\r$\n'
+  FileWriteUTF16LE $0 '  <Actions Context="Author">$\r$\n'
+  FileWriteUTF16LE $0 '    <Exec>$\r$\n'
+  FileWriteUTF16LE $0 '      <Command>"$INSTDIR\go-mapi.exe"</Command>$\r$\n'
+  FileWriteUTF16LE $0 '      <Arguments>--update-check-silent</Arguments>$\r$\n'
+  FileWriteUTF16LE $0 '    </Exec>$\r$\n'
+  FileWriteUTF16LE $0 '  </Actions>$\r$\n'
+  FileWriteUTF16LE $0 '</Task>$\r$\n'
+  FileClose $0
 
-  ; Substitute INSTDIR_PLACEHOLDER -> $INSTDIR. powershell.exe (NOT pwsh) per
-  ; Phase 10 specifics — PS 5.1 is the lowest common denominator on end-user
-  ; machines. Get-Content -Raw + -replace + Set-Content keeps the UTF-16 LE
-  ; BOM intact (-Encoding Unicode on output).
-  nsExec::ExecToLog 'powershell.exe -NoProfile -Command "$$x = Get-Content -LiteralPath ''$INSTDIR\go-mapi-auto-update.xml'' -Raw -Encoding Unicode; $$x = $$x -replace ''INSTDIR_PLACEHOLDER'', [regex]::Escape(''$INSTDIR''); Set-Content -LiteralPath ''$INSTDIR\go-mapi-auto-update.xml'' -Value $$x -Encoding Unicode -NoNewline"'
-  Pop $0
-  DetailPrint "INSTDIR substitution rc=$0"
-
-  ; /F idempotent re-install. /RU + /RL defensive overrides of XML <Principals>.
-  ExecWait 'schtasks /create /XML "$INSTDIR\go-mapi-auto-update.xml" /TN "go-mapi Auto Update" /F /RU SYSTEM /RL HIGHEST' $0
+  ; /F idempotent re-install. /RU SYSTEM is defensive (XML already pins
+  ; <UserId>S-1-5-18</UserId>). NOTE: /RL is INCOMPATIBLE with /XML — schtasks
+  ; rejects with "la opción /XML solo puede usarse con /S /U /P /RU /RP /F /IT
+  ; /TN" if both are passed. RunLevel comes from <RunLevel>HighestAvailable</RunLevel>
+  ; in the XML instead.
+  ExecWait 'schtasks /create /XML "$INSTDIR\go-mapi-auto-update.xml" /TN "go-mapi Auto Update" /F /RU SYSTEM' $0
   DetailPrint "schtasks /create rc=$0"
 
   ; One-shot stage file — definition now lives in Task Scheduler database.
@@ -814,11 +871,15 @@ Section "Uninstall"
   Call un.RestorePreviousMailClient
 
   ; Phase 11.1 D-18 case 6: scrub silent-update staging dir (Plan 11.1-04 writes
-  ; here under SYSTEM context; Plan 11.1-05 owns the cleanup). Tight `current`
-  ; shell-var context preserved per RESEARCH §Pitfall 2 — the `$APPDATA\..\..\`
-  ; relative walk to %ProgramData% only resolves correctly while $APPDATA is
-  ; left at its default (current-user) meaning.
-  RMDir /r "$APPDATA\..\..\ProgramData\go-mapi\updates"
+  ; here under SYSTEM context; Plan 11.1-05 owns the cleanup).
+  ; Use ReadEnvStr to read %PROGRAMDATA% directly. The `$APPDATA\..\..\ProgramData`
+  ; pattern used elsewhere in this file (BackupPreviousMailClient, RestorePreviousMailClient)
+  ; resolves to `<userprofile>\ProgramData` under default `current` context — a
+  ; non-existent path. Verified by Plan 11.1-05 sandbox UAT (Test B updates_dir_after=true
+  ; while planted file remained at C:\ProgramData\go-mapi\updates). ReadEnvStr is
+  ; reliable across user/SYSTEM contexts.
+  ReadEnvStr $0 PROGRAMDATA
+  RMDir /r "$0\go-mapi\updates"
 
   ; Phase 11.1 W7: belt-and-braces cleanup of *.old.<pid> orphans left by
   ; silent-updater swaps (Plan 11.1-04 swapInPlace renames the old binary

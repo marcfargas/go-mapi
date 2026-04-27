@@ -206,9 +206,15 @@ Describe "go-mapi installer round-trip" {
 
             $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
             $task | Should -Not -BeNullOrEmpty
-            $task.Principal.UserId                    | Should -Be 'S-1-5-18'   # NT AUTHORITY\SYSTEM
-            $task.Principal.RunLevel                  | Should -Be 'Highest'
-            $task.Settings.MultipleInstances          | Should -Be 'IgnoreNew'
+            # Get-ScheduledTask under PS5.1 resolves the principal SID to its
+            # friendly name and returns enum values as ints. Both the resolved
+            # form (SYSTEM / Highest / IgnoreNew) and the raw form (S-1-5-18 /
+            # 1 / 2) are equivalent — accept either to stay portable across
+            # PS5.1 vs PS7+ runners. Verified by Plan 11.1-05 sandbox UAT under
+            # PS5.1 (returned SYSTEM / 1 / 2).
+            $task.Principal.UserId                    | Should -BeIn @('S-1-5-18','SYSTEM')
+            $task.Principal.RunLevel                  | Should -BeIn @('Highest', 1)
+            $task.Settings.MultipleInstances          | Should -BeIn @('IgnoreNew', 2)
             $task.Settings.RunOnlyIfNetworkAvailable  | Should -BeTrue
             $task.Settings.StartWhenAvailable         | Should -BeTrue
             $task.Triggers.Count                      | Should -Be 2   # CalendarTrigger + BootTrigger
