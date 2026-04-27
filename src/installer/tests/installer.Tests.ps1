@@ -44,6 +44,10 @@ BeforeAll {
     $script:InstallDir32 = "${env:ProgramFiles(x86)}\go-mapi"
     $script:MapiKey32    = 'HKLM:\SOFTWARE\WOW6432Node\Clients\Mail\go-mapi'
 
+    # Phase 11.1 D-03 / D-18 case 4: %APPDATA% path is the negative-assertion target.
+    # The %ProgramData% path is already $script:Shortcut (set by Phase 10).
+    $script:AppDataLnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\go-mapi.lnk'
+
     Write-Host ("[Setup] SetupExe    = {0}" -f $script:SetupExe)
     Write-Host ("[Setup] InstallDir  = {0}" -f $script:InstallDir)
     Write-Host ("[Setup] ProgramData = {0}" -f $script:ProgramData)
@@ -144,6 +148,44 @@ Describe "go-mapi installer round-trip" {
             Test-Path $script:MapiKey32 | Should -BeTrue
             $props = Get-ItemProperty -Path $script:MapiKey32
             $props.DLLPath | Should -Match '(?i)Program Files \(x86\)\\go-mapi\\go-mapi\.dll$'
+        }
+
+        # Phase 11.1 D-05 / D-18 case 3 — silent reinstall overwrites both DLLs (T4 regression)
+        It "21. silent reinstall over existing install overwrites both x64 and x86 DLLs" {
+            # Pre-condition: prior items already installed once into $script:InstallDir.
+            # Capture both DLLs' hashes before reinstall to detect "no overwrite happened".
+            $x64Path = Join-Path $script:InstallDir   'go-mapi.dll'
+            $x86Path = Join-Path $script:InstallDir32 'go-mapi.dll'
+            $x64Before = (Get-FileHash -Algorithm SHA256 -Path $x64Path).Hash
+            $x86Before = (Get-FileHash -Algorithm SHA256 -Path $x86Path).Hash
+
+            # Touch both files to a known earlier mtime so a silent skip leaves them stale.
+            (Get-Item $x64Path).LastWriteTime = (Get-Date).AddDays(-1)
+            (Get-Item $x86Path).LastWriteTime = (Get-Date).AddDays(-1)
+
+            # Reinstall silently WITHOUT prior uninstall — this is the T4 repro case.
+            $proc = Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait -PassThru
+            $proc.ExitCode | Should -Be 0
+
+            # Both DLLs MUST have a fresh mtime (overwrite happened).
+            (Get-Item $x64Path).LastWriteTime | Should -BeGreaterThan (Get-Date).AddMinutes(-2)
+            (Get-Item $x86Path).LastWriteTime | Should -BeGreaterThan (Get-Date).AddMinutes(-2)
+
+            # Hashes should match the prior install (same binaries shipped — confirms the
+            # overwrite happened with a real File write rather than NSIS skipping).
+            (Get-FileHash -Algorithm SHA256 -Path $x64Path).Hash | Should -Be $x64Before
+            (Get-FileHash -Algorithm SHA256 -Path $x86Path).Hash | Should -Be $x86Before
+
+            # Registry DLLPath values must still point to the right bitness in both views.
+            (Get-ItemProperty -Path $script:MapiKey).DLLPath   | Should -Match '(?i)Program Files\\go-mapi\\go-mapi\.dll$'
+            (Get-ItemProperty -Path $script:MapiKey32).DLLPath | Should -Match '(?i)Program Files \(x86\)\\go-mapi\\go-mapi\.dll$'
+        }
+
+        # Phase 11.1 D-03 / D-18 case 4 — Start Menu shortcut location regression
+        It "25. Start Menu shortcut lands at %ProgramData%\Microsoft\Windows\Start Menu\Programs (D-03 regression)" {
+            # The reinstall above ensures the shortcut is in place — no extra setup needed.
+            Test-Path $script:Shortcut    | Should -BeTrue  -Because "D-03: shortcut MUST be all-users (%ProgramData%)"
+            Test-Path $script:AppDataLnk  | Should -BeFalse -Because "D-03: per-user shortcut MUST NOT be created (%APPDATA%)"
         }
     }
 
