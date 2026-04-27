@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/creativeprojects/go-selfupdate"
 )
 
 // setupSilentLogDir redirects updatesStagingDir() to a temp dir and returns
@@ -173,6 +175,35 @@ func TestSilentSwapWithRetry_GivesUpAtDeadline(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("swapWithRetry took too long: %s — deadline=100ms not honored", elapsed)
+	}
+}
+
+// --- Plan 11.1-04 Task 2: ChecksumValidator integration tests -----------
+
+func TestSilentChecksumMismatchAborts(t *testing.T) {
+	// Build a fake manifest claiming the file's digest is all-zeros but
+	// pass content with a different SHA-256. ChecksumValidator must reject.
+	fakeManifest := []byte("0000000000000000000000000000000000000000000000000000000000000000  test-asset.bin\n")
+	validator := &selfupdate.ChecksumValidator{UniqueFilename: "SHA256SUMS.txt"}
+
+	body := []byte("the actual content has a different sha256")
+	if err := validator.Validate("test-asset.bin", body, fakeManifest); err == nil {
+		t.Fatal("expected ChecksumValidator to reject mismatched content")
+	}
+}
+
+// W8 — happy path: prove the ChecksumValidator API shape works for known-good
+// input. Without this we'd be relying on the rejection-only test plus manual
+// UAT-3 to validate the API contract — too much faith in a third-party
+// library signature.
+func TestSilentChecksumValidatesKnownGood(t *testing.T) {
+	// sha256("test") = 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+	body := []byte("test")
+	manifest := []byte("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08  test\n")
+	validator := &selfupdate.ChecksumValidator{UniqueFilename: "SHA256SUMS.txt"}
+
+	if err := validator.Validate("test", body, manifest); err != nil {
+		t.Fatalf("expected ChecksumValidator to ACCEPT matching content; got err=%v", err)
 	}
 }
 
