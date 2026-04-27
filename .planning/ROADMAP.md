@@ -179,7 +179,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 - [ ] 11.1-01-PLAN.md — NSIS T2 + T4 fixes + Pester items 21+25 regressions (INST-01, INST-04, INST-05, REL-06)
 - [ ] 11.1-02-PLAN.md — Silent updater scaffold: --update-check-silent flag + updatesStagingDir() + build-tag stub (REL-03, REL-09)
 - [ ] 11.1-03-PLAN.md — SHA256SUMS.txt release pipeline step + asset list extension (REL-02, REL-09)
-- [ ] 11.1-04-PLAN.md — Silent updater download + ChecksumValidator wiring + MoveFileEx atomic swap with retry (REL-03, REL-09)
+- [x] 11.1-04-PLAN.md — Silent updater download + ChecksumValidator wiring + MoveFileEx atomic swap with retry (REL-03, REL-09)
 - [ ] 11.1-05-PLAN.md — Scheduled Task XML + NSIS /AUTOUPDATE parser + register/remove + Pester items 22-24 + uninstaller scrub (INST-01, INST-04, INST-05, REL-06, REL-09)
 - [ ] 11.1-06-PLAN.md — README "Enterprise installation" section + ROADMAP success-criteria rewrite + REQUIREMENTS REL-09 insertion (REL-07, REL-09)
 
@@ -199,7 +199,7 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 | 9. Queue, Automode + Toasts | v3.0 | 9/9 | Complete | 2026-04-19 |
 | 10. Installer + Migration | v3.0 | 6/6 | Complete | 2026-04-20 |
 | 11. Autoupdate + Release | v3.0 | 0/? | Not started | - |
-| 11.1. Installer hardening + enterprise deploy + silent auto-update (INSERTED) | v3.0 | 0/6 | Not started | - |
+| 11.1. Installer hardening + enterprise deploy + silent auto-update (INSERTED) | v3.0 | 4/6 | In progress | - |
 
 ---
 *Roadmap updated: 2026-04-25 — Phase 11.1 plans broken down (6 plans, 3 waves). Success-criteria block here remains as the pre-CONTEXT seed; Plan 11.1-06 Task 2 owns the D-20 rewrite as part of phase execution. Authoritative scope until then: .planning/phases/11.1-installer-hardening-enterprise-deploy-silent-auto-update/11.1-CONTEXT.md.*

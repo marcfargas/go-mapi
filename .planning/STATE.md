@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v3.0
 milestone_name: Wails Pivot
-status: paused
-stopped_at: Phase 11 paused at 11-04 Task 2 — store delisting + GA tag deferred until go-mapi-www ships
-last_updated: "2026-04-23T20:17:00.000Z"
-last_activity: 2026-04-23 -- Phase 11 plan 11-04 paused at human-action checkpoint (Task 1 landed in 20d36f1; delisting + GA deferred pending go-mapi-www)
+status: executing
+stopped_at: Phase 11.1-04 complete — silent updater download+verify+swap pipeline landed; ready for Plan 11.1-05 (Scheduled Task XML + NSIS wiring)
+last_updated: "2026-04-27T20:23:32.442Z"
+last_activity: 2026-04-27
 progress:
-  total_phases: 6
+  total_phases: 7
   completed_phases: 5
-  total_plans: 39
-  completed_plans: 38
-  percent: 97
+  total_plans: 45
+  completed_plans: 42
+  percent: 93
 ---
 
 # Project State
@@ -21,17 +21,17 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** A non-technical Windows user can install go-mapi once and have every "Send to Mail recipient" action appear as a Gmail draft — without touching a terminal, a toolchain, or a registry editor.
-**Current focus:** Phase 11 — autoupdate-release
+**Current focus:** Phase 11.1 — installer-hardening-enterprise-deploy-silent-auto-update
 
 ## Current Position
 
 Milestone: v3.0 Wails Pivot
-Phase: 11 (autoupdate-release) — PAUSED at 11-04 Task 2 (human-action checkpoint)
-Plan: 11-04 (6 of 6) — Task 1 landed (20d36f1); Task 2 + 3 deferred
-Status: Paused — store delisting + GA tag held until go-mapi-www ships
-Last activity: 2026-04-23 -- Plan 11-04 paused at human-action checkpoint; Chrome/Edge delisting deferred pending go-mapi-www
+Phase: 11.1 (installer-hardening-enterprise-deploy-silent-auto-update) — EXECUTING
+Plan: 5 of 6 (next: 11.1-05 Scheduled Task XML + NSIS /AUTOUPDATE wiring)
+Status: Ready to execute
+Last activity: 2026-04-27 — Phase 11.1-04 (silent updater download/verify/swap) landed
 
-Progress: [███████████████████░] Phase 11 at 5/6 plans complete; 11-04 paused at human-action checkpoint pending go-mapi-www and store delisting
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -75,6 +75,8 @@ Recent decisions carried into v3.0:
 - [Phase 9]: Toast shim uses `QueryInterface` (returns `(*IUnknown, error)`), NOT `MustQueryInterface` (panics on failure). In Go test runners outside a real WinRT host, `MustQueryInterface` panics cascade through the test runner even with recover. Propagate errors via Go's normal error path.
 - [Phase 9]: Manual QA gate pattern for Windows shell features (tray, toast, live UI): DEFERRED in favor of Windows Sandbox + FlaUI automation todo (`.planning/todos/pending/2026-04-19-automate-tray-visual-qa-windows-sandbox.md`). Surfaces in `09-HUMAN-UAT.md`. All 3 deferred checks are tracked for closure by either a manual pass or the automation harness.
 - [Phase 10]: All six Phase 10 plans have completion summaries on 2026-04-20. Remaining work is human/CI verification debt recorded in `10-VERIFICATION.md` and `10-HUMAN-UAT.md`; per user direction, that debt is accepted for progression and does not block Phase 11.
+- Phase 11.1-04: errChecksumFailed sentinel + filename-only abort log keeps go-selfupdate's hex-digest validator errors out of update.log (Pitfall 6 / T-11.1.04-06)
+- Phase 11.1-04: Verify-BEFORE-write (not just verify-BEFORE-swap) — downloadAndVerify runs ChecksumValidator on in-memory bytes BEFORE os.WriteFile so an unverified asset never hits disk; strengthens T-11.1.04-02 mitigation
 
 ### Roadmap Evolution
 
@@ -108,9 +110,10 @@ Recent decisions carried into v3.0:
 | 260423-olq | Wails build wrapper reads .env.local and injects OAuth via ldflags | 2026-04-23 | adc8c16 | [260423-olq-wails-build-wrapper-reads-env-local-and-](./quick/260423-olq-wails-build-wrapper-reads-env-local-and-/) |
 | 260423-qpx | Address fallback for legacy Simple MAPI apps + fix dev-build update compare | 2026-04-23 | 5876088 | [260423-qpx-address-fallback-for-legacy-mapi-apps-fi](./quick/260423-qpx-address-fallback-for-legacy-mapi-apps-fi/) |
 | 260423-tk6 | DLL copies attachments into queue-owned dir + surface draft-failure reason in UI | 2026-04-23 | 30b35c6 | [260423-tk6-dll-copies-attachments-to-queue-surface-](./quick/260423-tk6-dll-copies-attachments-to-queue-surface-/) |
+| Phase 11.1 P11.1-04 | 905s | 2 tasks | 2 files |
 
 ## Session Continuity
 
-Last session: 2026-04-23T20:17:00.000Z
-Stopped at: Phase 11 paused at 11-04 Task 2 (human-action checkpoint) — store delisting + GA tag deferred until go-mapi-www ships
+Last session: 2026-04-27T20:23:32.431Z
+Stopped at: Phase 11.1-04 complete — silent updater download+verify+swap pipeline landed; ready for Plan 11.1-05 (Scheduled Task XML + NSIS wiring)
 Resume: finish go-mapi-www (c:/dev/go-mapi-www), update Chrome Web Store + Edge Add-ons listings with deprecation copy, paste proof into `.planning/phases/11-autoupdate-release/11-RELEASE-EVIDENCE.md`, then run `/gsd-execute-phase 11` and reply `approved` at the checkpoint
