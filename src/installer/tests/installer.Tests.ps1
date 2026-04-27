@@ -48,6 +48,10 @@ BeforeAll {
     # The %ProgramData% path is already $script:Shortcut (set by Phase 10).
     $script:AppDataLnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\go-mapi.lnk'
 
+    # Phase 11.1 Plan 11.1-05 — Scheduled Task assertions (D-08 / D-16 / D-18 cases 1, 2, 5, 6)
+    $script:TaskName    = 'go-mapi Auto Update'
+    $script:UpdatesDir  = Join-Path $env:ProgramData 'go-mapi\updates'
+
     Write-Host ("[Setup] SetupExe    = {0}" -f $script:SetupExe)
     Write-Host ("[Setup] InstallDir  = {0}" -f $script:InstallDir)
     Write-Host ("[Setup] ProgramData = {0}" -f $script:ProgramData)
@@ -186,6 +190,93 @@ Describe "go-mapi installer round-trip" {
             # The reinstall above ensures the shortcut is in place — no extra setup needed.
             Test-Path $script:Shortcut    | Should -BeTrue  -Because "D-03: shortcut MUST be all-users (%ProgramData%)"
             Test-Path $script:AppDataLnk  | Should -BeFalse -Because "D-03: per-user shortcut MUST NOT be created (%APPDATA%)"
+        }
+
+        # Phase 11.1 D-08 / D-18 case 1 — /AUTOUPDATE=1 registers the Scheduled Task
+        It "22. /AUTOUPDATE=1 install registers the Scheduled Task with correct principal + triggers" {
+            # Self-contained: uninstall + reinstall with /AUTOUPDATE=1.
+            $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+            if (Test-Path $uninst) {
+                Start-Process -FilePath $uninst -ArgumentList '/S' -Wait | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            $proc = Start-Process -FilePath $script:SetupExe -ArgumentList '/S','/AUTOUPDATE=1',"/D=$($script:InstallDir)" -Wait -PassThru
+            $proc.ExitCode | Should -Be 0
+            Start-Sleep -Seconds 1   # Pitfall 5: let Task Scheduler cache settle.
+
+            $task = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue
+            $task | Should -Not -BeNullOrEmpty
+            $task.Principal.UserId                    | Should -Be 'S-1-5-18'   # NT AUTHORITY\SYSTEM
+            $task.Principal.RunLevel                  | Should -Be 'Highest'
+            $task.Settings.MultipleInstances          | Should -Be 'IgnoreNew'
+            $task.Settings.RunOnlyIfNetworkAvailable  | Should -BeTrue
+            $task.Settings.StartWhenAvailable         | Should -BeTrue
+            $task.Triggers.Count                      | Should -Be 2   # CalendarTrigger + BootTrigger
+            ($task.Actions | Where-Object { $_.Execute -match 'go-mapi\.exe' }).Arguments | Should -Be '--update-check-silent'
+        }
+
+        # Phase 11.1 D-07 / D-18 case 2 — /AUTOUPDATE absent: no Scheduled Task
+        It "23. /AUTOUPDATE=0 install does NOT register the Scheduled Task" {
+            $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+            if (Test-Path $uninst) {
+                Start-Process -FilePath $uninst -ArgumentList '/S' -Wait | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait | Out-Null
+            Start-Sleep -Seconds 1
+            Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        }
+
+        # Phase 11.1 D-16 / D-18 case 5 — uninstaller idempotently removes the task
+        # AND scrubs %ProgramData%\go-mapi\updates (D-18 case 6)
+        It "24. uninstall removes the Scheduled Task even when /AUTOUPDATE=0 was used" {
+            # /AUTOUPDATE=0 install — uninstall must still run schtasks /delete /f and exit 0.
+            Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait | Out-Null
+            $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+            $proc = Start-Process -FilePath $uninst -ArgumentList '/S' -Wait -PassThru
+            $proc.ExitCode | Should -Be 0   # D-16: idempotent removal — 'task not found' is OK.
+            Start-Sleep -Seconds 2
+
+            # D-16 belt: even though /AUTOUPDATE=0 means no task was registered,
+            # the uninstaller's schtasks /delete /f ran (rc=1 swallowed). Confirm
+            # nothing is left behind in Task Scheduler post-uninstall.
+            Get-ScheduledTask -TaskName $script:TaskName -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+
+            # Uninstaller also scrubs %ProgramData%\go-mapi\updates (D-18 case 6).
+            Test-Path $script:UpdatesDir | Should -BeFalse -Because "uninstaller scrubs %ProgramData%\go-mapi\updates per D-18 case 6"
+        }
+
+        # Phase 11.1 W7 — uninstaller scrubs *.old.<pid> orphan files left by silent updater
+        It "24b. uninstaller scrubs *.old.<pid> orphan files left by silent updater (W7 regression)" {
+            # Reinstall fresh so $script:InstallDir exists with the binary.
+            $uninst = Join-Path $script:InstallDir 'uninstall.exe'
+            if (Test-Path $uninst) {
+                Start-Process -FilePath $uninst -ArgumentList '/S' -Wait | Out-Null
+                Start-Sleep -Seconds 2
+            }
+            Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait | Out-Null
+
+            # Plant orphan files mimicking what swapInPlace would leave behind.
+            $orphan64  = Join-Path $script:InstallDir   'go-mapi.exe.old.123'
+            $orphanDll = Join-Path $script:InstallDir   'go-mapi.dll.old.456'
+            $orphan32  = Join-Path $script:InstallDir32 'go-mapi.dll.old.789'
+            New-Item -ItemType File -Path $orphan64  -Force | Out-Null
+            New-Item -ItemType File -Path $orphanDll -Force | Out-Null
+            New-Item -ItemType File -Path $orphan32  -Force | Out-Null
+
+            Test-Path $orphan64  | Should -BeTrue  # sanity
+            Test-Path $orphanDll | Should -BeTrue
+            Test-Path $orphan32  | Should -BeTrue
+
+            # Uninstall — orphans MUST be gone.
+            $uninstAfter = Join-Path $script:InstallDir 'uninstall.exe'
+            $proc = Start-Process -FilePath $uninstAfter -ArgumentList '/S' -Wait -PassThru
+            $proc.ExitCode | Should -Be 0
+            Start-Sleep -Seconds 2
+
+            Test-Path $orphan64  | Should -BeFalse -Because "uninstaller MUST scrub *.old.<pid> orphans in `$INSTDIR (W7)"
+            Test-Path $orphanDll | Should -BeFalse -Because "uninstaller MUST scrub *.old.<pid> orphans in `$INSTDIR (W7)"
+            Test-Path $orphan32  | Should -BeFalse -Because "uninstaller MUST scrub *.old.<pid> orphans in `$PROGRAMFILES32\go-mapi (W7)"
         }
     }
 
