@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // setupSilentLogDir redirects updatesStagingDir() to a temp dir and returns
@@ -105,4 +106,101 @@ func readLogOrFail(t *testing.T, path string) string {
 // wrong RC in tests due to defer ordering or other side effects.
 func rcWithWorkaround(rc int) int {
 	return rc
+}
+
+// --- Plan 11.1-04 Task 1: atomic-swap primitive tests --------------------
+
+func TestSilentSwapHappyPath(t *testing.T) {
+	tmp := t.TempDir()
+	installed := filepath.Join(tmp, "binary.exe")
+	staged := filepath.Join(tmp, "staged.exe")
+	if err := os.WriteFile(installed, []byte("OLD"), 0o644); err != nil {
+		t.Fatalf("write installed: %v", err)
+	}
+	if err := os.WriteFile(staged, []byte("NEW"), 0o644); err != nil {
+		t.Fatalf("write staged: %v", err)
+	}
+
+	oldPath, err := swapInPlace(staged, installed)
+	if err != nil {
+		t.Fatalf("swapInPlace: %v", err)
+	}
+
+	// installed must now contain NEW.
+	got, err := os.ReadFile(installed)
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("installed content: got %q, want NEW", got)
+	}
+
+	// .old must contain OLD.
+	oldBytes, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("read old: %v", err)
+	}
+	if string(oldBytes) != "OLD" {
+		t.Errorf("old content: got %q, want OLD", oldBytes)
+	}
+
+	// staged must no longer exist (renamed away).
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Errorf("staged should not exist after swap, stat err=%v", err)
+	}
+}
+
+func TestSilentSwapWithRetry_GivesUpAtDeadline(t *testing.T) {
+	tmp := t.TempDir()
+	// staged does not exist → swapInPlace will always fail.
+	installed := filepath.Join(tmp, "binary.exe")
+	staged := filepath.Join(tmp, "does-not-exist.exe")
+	if err := os.WriteFile(installed, []byte("OLD"), 0o644); err != nil {
+		t.Fatalf("write installed: %v", err)
+	}
+
+	// W5 — required seam: drop initial backoff to 10ms so the retry loop
+	// runs in milliseconds, not the production 30s.
+	testBackoffOverride = 10 * time.Millisecond
+	t.Cleanup(func() { testBackoffOverride = 0 })
+
+	start := time.Now()
+	_, err := swapWithRetry(staged, installed, 100*time.Millisecond, nopLogger)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error after deadline; got nil")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("swapWithRetry took too long: %s — deadline=100ms not honored", elapsed)
+	}
+}
+
+func TestSilentCleansOldOrphans(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a few orphans + a non-orphan file.
+	orphans := []string{
+		filepath.Join(tmp, "go-mapi.exe.old.1234"),
+		filepath.Join(tmp, "go-mapi.dll.old.5678"),
+		filepath.Join(tmp, "go-mapi.exe.old.9999"),
+	}
+	keep := filepath.Join(tmp, "go-mapi.exe")
+	for _, p := range append(orphans, keep) {
+		if err := os.WriteFile(p, []byte("X"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	cleanupOldOrphans(tmp, nopLogger)
+
+	// All orphans gone.
+	for _, p := range orphans {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("orphan %s should be removed; stat err=%v", p, err)
+		}
+	}
+	// Non-orphan preserved.
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("keeper %s should still exist; err=%v", keep, err)
+	}
 }
