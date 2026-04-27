@@ -4,11 +4,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/creativeprojects/go-selfupdate"
 	"golang.org/x/sys/windows"
 )
 
@@ -46,6 +50,28 @@ const (
 // milliseconds rather than 30+ seconds. (W5 fix — without this the retry
 // test deadlocks on the production initial backoff.)
 var testBackoffOverride time.Duration
+
+// httpDoer is the seam that lets tests inject a stub HTTP client returning
+// canned manifest + asset bytes. Production uses http.DefaultClient. Mirrors
+// the releaseFetcher seam pattern in updates.go.
+type httpDoer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// silentHTTPClient is the package-level seam for tests. Default is
+// http.DefaultClient; tests assign a stub via t.Cleanup teardown.
+var silentHTTPClient httpDoer = http.DefaultClient
+
+// installRootOverride lets tests redirect the swap-destination directory
+// (the equivalent of $INSTDIR) to a temp directory. Production leaves it
+// empty so installRoot() returns os.Executable()'s parent. Mirrors
+// testBackoffOverride.
+var installRootOverride string
+
+// programFiles32Override lets tests redirect the x86 DLL destination to a
+// temp directory. Production leaves it empty so programFiles32GoMapiDLL()
+// resolves %ProgramFiles(x86)%\go-mapi\go-mapi.dll.
+var programFiles32Override string
 
 // runSilentUpdate is the entry point for `go-mapi.exe --update-check-silent`.
 // Returns process exit code (0 = success / no-update available, non-zero =
@@ -86,14 +112,166 @@ func runSilentUpdateWithService(ctx context.Context, svc *updateService) int {
 		return 0
 	}
 
-	// PLAN 11.1-04 SCOPE: download asset → verify SHA-256 via
-	// selfupdate.ChecksumValidator{UniqueFilename: "SHA256SUMS.txt"} → atomic
-	// swap via MoveFileEx rename-while-running → cleanup *.old.<pid> orphans.
-	// Until that lands, log the would-be action and exit success so a
-	// Scheduled Task registered by Plan 11.1-05 + Plan 11.1-04 has something
-	// to invoke.
-	log.printf("update available: latest=%s — download/verify/swap deferred to Plan 11.1-04", state.LatestVersion)
+	// W6: Option A (multi-asset swap) selected per 11.1-03-AUDIT.md. The
+	// release pipeline publishes go-mapi-setup.exe, go-mapi.exe, and both
+	// DLL bitnesses with matching SHA-256 entries; we download each, verify
+	// in-memory before letting bytes hit disk (V12 verify-then-swap), then
+	// per-asset MoveFileEx swap-with-retry into $INSTDIR.
+	log.printf("update available: latest=%s — beginning download/verify/swap", state.LatestVersion)
+
+	stagingRoot := updatesStagingDir()
+	stagingDir := filepath.Join(stagingRoot, "staging")
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		log.printf("mkdir staging: %v", err)
+		return 1
+	}
+	cleanupOldOrphans(installRoot(), log.printf)
+	cleanupOldOrphans(stagingDir, log.printf)
+
+	// 1. Fetch the manifest first — it's the contract for everything else.
+	manifestBytes, err := downloadCappedBody(ctx, checksumsURL, 64*1024)
+	if err != nil {
+		log.printf("manifest GET: %v", err)
+		return 1
+	}
+
+	validator := &selfupdate.ChecksumValidator{UniqueFilename: "SHA256SUMS.txt"}
+
+	// 2. Download + verify each asset into the staging dir.
+	targets := buildSwapTargets(stagingDir)
+
+	for _, t := range targets {
+		if err := downloadAndVerify(ctx, t.downloadURL, manifestBytes, t.manifestName, t.stagedPath, validator, log.printf); err != nil {
+			if errors.Is(err, errChecksumFailed) {
+				// Pitfall 6: do not %v the validator error — it carries hex
+				// digests. The "verified asset FAILED" line is the audit trail.
+				log.printf("download/verify %s aborted: checksum mismatch", t.manifestName)
+			} else {
+				log.printf("download/verify %s aborted: %v", t.manifestName, err)
+			}
+			return 1
+		}
+	}
+
+	// 3. All verified — perform swaps. Verify-BEFORE-swap (V12) is enforced
+	// by downloadAndVerify above; we never reach this loop with an
+	// unverified asset on disk.
+	for _, t := range targets {
+		if _, err := swapWithRetry(t.stagedPath, t.installedPath, silentUpdateMaxElapsed, log.printf); err != nil {
+			log.printf("swap %s aborted: %v", t.manifestName, err)
+			return 1
+		}
+		log.printf("swapped %s", t.manifestName)
+	}
+
+	// 4. Cleanup staging dir on success; leave on failure for diagnosis.
+	if err := os.RemoveAll(stagingDir); err != nil {
+		log.printf("cleanup staging (non-fatal): %v", err)
+	}
+	log.printf("silent update complete: now running %s", state.LatestVersion)
 	return 0
+}
+
+// swapTarget describes one binary that needs to be downloaded, verified,
+// and swapped during a silent update.
+type swapTarget struct {
+	manifestName  string // matches the name in SHA256SUMS.txt
+	downloadURL   string // GitHub Releases /latest/download/<name>
+	stagedPath    string // %ProgramData%\go-mapi\updates\staging\<name>
+	installedPath string // final destination ($INSTDIR\go-mapi.exe etc.)
+}
+
+// buildSwapTargets returns the Option A asset list (per 11.1-03-AUDIT). The
+// installer-only Option B variant would return only go-mapi-setup.exe and a
+// different installedPath; not used here. Encapsulated so tests can override
+// installRootOverride / programFiles32Override and get the right per-target
+// destination paths in one place.
+func buildSwapTargets(stagingDir string) []swapTarget {
+	root := installRoot()
+	pf32DLL := programFiles32GoMapiDLL()
+	base := "https://github.com/" + gitHubOwner + "/" + gitHubRepo + "/releases/latest/download/"
+	return []swapTarget{
+		{
+			manifestName:  "go-mapi.exe",
+			downloadURL:   base + "go-mapi.exe",
+			stagedPath:    filepath.Join(stagingDir, "go-mapi.exe"),
+			installedPath: filepath.Join(root, "go-mapi.exe"),
+		},
+		{
+			manifestName:  "go-mapi-x64.dll",
+			downloadURL:   base + "go-mapi-x64.dll",
+			stagedPath:    filepath.Join(stagingDir, "go-mapi-x64.dll"),
+			installedPath: filepath.Join(root, "go-mapi.dll"),
+		},
+		// x86 DLL: %ProgramFiles(x86)%\go-mapi\go-mapi.dll. installRoot()
+		// returns %ProgramFiles%\go-mapi, so derive the x86 sibling path
+		// via programFiles32GoMapiDLL().
+		{
+			manifestName:  "go-mapi-x86.dll",
+			downloadURL:   base + "go-mapi-x86.dll",
+			stagedPath:    filepath.Join(stagingDir, "go-mapi-x86.dll"),
+			installedPath: pf32DLL,
+		},
+	}
+}
+
+// downloadCappedBody GETs `url` and returns the body bounded by `cap` bytes.
+// Returns an error if the response status is not 200, the body exceeds the
+// cap, or the body cannot be read.
+func downloadCappedBody(ctx context.Context, url string, cap int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("silent: new request %s: %w", url, err)
+	}
+	resp, err := silentHTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("silent: GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("silent: GET %s: status %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, cap+1))
+	if err != nil {
+		return nil, fmt.Errorf("silent: read %s: %w", url, err)
+	}
+	if int64(len(body)) > cap {
+		return nil, fmt.Errorf("silent: %s exceeds size cap %d", url, cap)
+	}
+	return body, nil
+}
+
+// errChecksumFailed is the sentinel returned by downloadAndVerify when
+// ChecksumValidator rejects an asset. Callers must NOT log this error's
+// full text via %v — go-selfupdate embeds the expected/found hex digests
+// in its message, which would leak digests into update.log (Pitfall 6).
+// Use errors.Is(err, errChecksumFailed) to branch on this case.
+var errChecksumFailed = errors.New("silent: checksum validation failed")
+
+// downloadAndVerify GETs the asset at `url`, verifies its SHA-256 against
+// the entry for `manifestFilename` in `manifestBytes` BEFORE writing to
+// `destPath` (V12 — never let an unverified asset hit disk). On verify
+// failure, logs "verified asset FAILED" with the filename only — never the
+// hex digest (Pitfall 6) — and returns errChecksumFailed so callers can
+// abort without re-logging the validator's hex-leaking error message.
+func downloadAndVerify(ctx context.Context, url string, manifestBytes []byte, manifestFilename string, destPath string, validator *selfupdate.ChecksumValidator, log func(string, ...any)) error {
+	body, err := downloadCappedBody(ctx, url, downloadSizeCap)
+	if err != nil {
+		return err
+	}
+
+	if err := validator.Validate(manifestFilename, body, manifestBytes); err != nil {
+		// Note: the validator's err carries hex digests; we DO NOT propagate
+		// it via %w — only the sentinel. Pitfall 6 enforced.
+		log("verified asset FAILED for %s — aborting", manifestFilename)
+		return errChecksumFailed
+	}
+	log("verified asset OK for %s", manifestFilename)
+
+	if err := os.WriteFile(destPath, body, 0o644); err != nil {
+		return fmt.Errorf("silent: write %s: %w", destPath, err)
+	}
+	return nil
 }
 
 // silentLog wraps log file open / truncate-at-1MB / append + close so the
@@ -203,9 +381,10 @@ func swapWithRetry(staged, installed string, maxElapsed time.Duration, log func(
 		}
 		lastErr = err
 		log("swap attempt %d failed; retrying in %s (err=%v)", attempt, backoff, err)
-		select {
-		case <-time.After(backoff):
-		}
+		// time.Sleep — no ctx cancellation wired through swapWithRetry; the
+		// outer for-loop's deadline check is the abort signal. (staticcheck
+		// S1000/S1037: select-only-with-time.After collapses to time.Sleep.)
+		time.Sleep(backoff)
 		if backoff < swapBackoffMax {
 			backoff *= 2
 			if backoff > swapBackoffMax {
@@ -239,10 +418,28 @@ func cleanupOldOrphans(dir string, log func(string, ...any)) {
 // installRoot returns the directory containing this binary ($INSTDIR for
 // installed instances). Resolved from os.Executable() so we never embed a
 // literal path. Returns "" if Executable() fails (test environments).
+// Tests override via installRootOverride to redirect swap destinations to a
+// temp dir.
 func installRoot() string {
+	if installRootOverride != "" {
+		return installRootOverride
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return ""
 	}
 	return filepath.Dir(exe)
+}
+
+// programFiles32GoMapiDLL returns the absolute path to the x86 MAPI DLL
+// installed under %ProgramFiles(x86)%\go-mapi\go-mapi.dll. Tests override
+// via programFiles32Override to redirect to a temp dir.
+func programFiles32GoMapiDLL() string {
+	if programFiles32Override != "" {
+		return programFiles32Override
+	}
+	if pf32 := os.Getenv("ProgramFiles(x86)"); pf32 != "" {
+		return filepath.Join(pf32, "go-mapi", "go-mapi.dll")
+	}
+	return `C:\Program Files (x86)\go-mapi\go-mapi.dll`
 }
