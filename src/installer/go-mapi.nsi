@@ -58,17 +58,89 @@ BrandingText "${PRODUCT_NAME} ${PRODUCT_VERSION} — LGPL-3.0"
 ;------------------------------------------------------------------------------
 
 !include "MUI2.nsh"
+; Phase 11.1 Plan 05 — D-07 / D-08 silent auto-update wiring.
+;   FileFunc.nsh : ${GetParameters} + ${GetOptions} for /AUTOUPDATE=N parsing.
+;   nsDialogs.nsh: nsDialogs::Create + ${NSD_*} for the AutoUpdate page checkbox.
+;   LogicLib.nsh : ${If}/${Else}/${EndIf} + ${DoUntil}/${LoopUntil}/${Errors}
+;                  used by AutoUpdatePageLeave and un.ScrubOldOrphans.
+!include "FileFunc.nsh"
+!include "nsDialogs.nsh"
+!include "LogicLib.nsh"
+
+; Phase 11.1 D-07: parsed in .onInit, propagated through the AutoUpdate page,
+; consumed by RegisterScheduledTask. Strict bool — only the literal "1" enables.
+Var AutoUpdateFlag
+Var AutoUpdateCheckboxState   ; nsDialogs handle for the FinishPage-adjacent checkbox.
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "${__FILEDIR__}\..\..\LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+; Phase 11.1 D-07: AutoUpdate opt-in checkbox page. Default OFF. /AUTOUPDATE=1
+; on the command line forces enable for silent installs (the page is skipped
+; in /S mode and when the flag is already set).
+Page custom AutoUpdatePage AutoUpdatePageLeave
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+;------------------------------------------------------------------------------
+; .onInit — parse /AUTOUPDATE=N (Phase 11.1 D-07).
+;
+; Default OFF: empty string after GetOptions = parameter not specified.
+; Strict bool comparison downstream (StrCmp $AutoUpdateFlag "1") so any value
+; other than the literal "1" — including "0", "true", "yes", or anything else —
+; resolves to OFF. RESEARCH §T-11.1.05-03: the parsed value never flows into
+; ExecWait argument construction; only the fixed schtasks command line uses it.
+;------------------------------------------------------------------------------
+Function .onInit
+  ${GetParameters} $R0
+  ${GetOptions} $R0 "/AUTOUPDATE=" $AutoUpdateFlag
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; AutoUpdatePage — interactive UI checkbox (Phase 11.1 D-07).
+;
+; Skipped if /S (silent install) — silent installs use /AUTOUPDATE=N only.
+; Skipped if /AUTOUPDATE=1 was already set on the command line — no need to
+; ask again. Default state is UNCHECKED per D-07.
+;------------------------------------------------------------------------------
+Function AutoUpdatePage
+  ; Skip if /S (silent install) — silent installs use /AUTOUPDATE only.
+  IfSilent 0 +2
+    Abort
+  ; Skip if /AUTOUPDATE=1 was already set on the command line.
+  StrCmp $AutoUpdateFlag "1" 0 +3
+    DetailPrint "Auto-update pre-set via /AUTOUPDATE=1 — skipping checkbox page"
+    Abort
+
+  !insertmacro MUI_HEADER_TEXT "Automatic updates" "Enable unattended updates for this machine"
+  nsDialogs::Create 1018
+  Pop $0
+
+  ${NSD_CreateLabel} 0 0 100% 40u "go-mapi can keep itself up-to-date automatically using a Windows Scheduled Task that runs as SYSTEM. The task downloads, verifies SHA-256 integrity, and applies updates without prompting users. Recommended for managed/RDS environments."
+  Pop $0
+
+  ${NSD_CreateCheckbox} 0 50u 100% 12u "Enable automatic updates (creates a Scheduled Task)"
+  Pop $1
+  ${NSD_SetState} $1 ${BST_UNCHECKED}    ; D-07 default OFF
+  StrCpy $AutoUpdateCheckboxState $1
+
+  nsDialogs::Show
+FunctionEnd
+
+Function AutoUpdatePageLeave
+  ${NSD_GetState} $AutoUpdateCheckboxState $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $AutoUpdateFlag "1"
+  ${Else}
+    StrCpy $AutoUpdateFlag "0"
+  ${EndIf}
+  DetailPrint "AutoUpdateFlag chosen: $AutoUpdateFlag"
+FunctionEnd
 
 ;------------------------------------------------------------------------------
 ; Install section
@@ -169,6 +241,7 @@ Section "Install" SecInstall
   Call InstallWebView2           ; plan 10-02
   Call CreateShortcutAndAUMID    ; plan 10-03 (D-03)
   Call AddFirewallRule           ; plan 10-03
+  Call RegisterScheduledTask     ; Phase 11.1 D-08 (gated on $AutoUpdateFlag)
 SectionEnd
 
 ;------------------------------------------------------------------------------
@@ -649,6 +722,54 @@ Function AddFirewallRule
 FunctionEnd
 
 ;------------------------------------------------------------------------------
+; RegisterScheduledTask — Phase 11.1 D-08 / D-09 / D-14
+;
+; Gated on $AutoUpdateFlag == "1" (D-07: default OFF, only the literal "1"
+; enables — the .onInit GetOptions parser keeps strict-bool semantics).
+;
+; Steps:
+;   1. Stage tasks/go-mapi-auto-update.xml into $INSTDIR.
+;   2. Substitute INSTDIR_PLACEHOLDER -> $INSTDIR via PowerShell 5.1.
+;      [regex]::Escape on the replacement value protects against any
+;      regex meta in $INSTDIR (RESEARCH §T-11.1.05-04). -Encoding Unicode
+;      preserves the UTF-16 LE BOM that schtasks /XML requires.
+;   3. schtasks /create /XML <path> /TN "go-mapi Auto Update" /F /RU SYSTEM
+;      /RL HIGHEST. /F suppresses "task already exists" → idempotent
+;      re-install (RESEARCH §Pitfall 3). /RU + /RL are defensive overrides
+;      of the XML <Principals> block (typo guard).
+;   4. Delete the staged XML — the definition lives in Task Scheduler now.
+;------------------------------------------------------------------------------
+
+Function RegisterScheduledTask
+  StrCmp $AutoUpdateFlag "1" 0 SkipTask
+  DetailPrint "Auto-update opt-in: registering Scheduled Task 'go-mapi Auto Update'"
+
+  SetOutPath "$INSTDIR"
+  File "${__FILEDIR__}\tasks\go-mapi-auto-update.xml"
+
+  ; Substitute INSTDIR_PLACEHOLDER -> $INSTDIR. powershell.exe (NOT pwsh) per
+  ; Phase 10 specifics — PS 5.1 is the lowest common denominator on end-user
+  ; machines. Get-Content -Raw + -replace + Set-Content keeps the UTF-16 LE
+  ; BOM intact (-Encoding Unicode on output).
+  nsExec::ExecToLog 'powershell.exe -NoProfile -Command "$$x = Get-Content -LiteralPath ''$INSTDIR\go-mapi-auto-update.xml'' -Raw -Encoding Unicode; $$x = $$x -replace ''INSTDIR_PLACEHOLDER'', [regex]::Escape(''$INSTDIR''); Set-Content -LiteralPath ''$INSTDIR\go-mapi-auto-update.xml'' -Value $$x -Encoding Unicode -NoNewline"'
+  Pop $0
+  DetailPrint "INSTDIR substitution rc=$0"
+
+  ; /F idempotent re-install. /RU + /RL defensive overrides of XML <Principals>.
+  ExecWait 'schtasks /create /XML "$INSTDIR\go-mapi-auto-update.xml" /TN "go-mapi Auto Update" /F /RU SYSTEM /RL HIGHEST' $0
+  DetailPrint "schtasks /create rc=$0"
+
+  ; One-shot stage file — definition now lives in Task Scheduler database.
+  Delete "$INSTDIR\go-mapi-auto-update.xml"
+  Goto Done
+
+SkipTask:
+  DetailPrint "Auto-update opt-in not set (/AUTOUPDATE=0 or absent) — skipping Scheduled Task"
+
+Done:
+FunctionEnd
+
+;------------------------------------------------------------------------------
 ; Uninstall section
 ;
 ; Full 10-step scrub (D-18) lives in plan 10-04. This stub keeps the
@@ -656,7 +777,14 @@ FunctionEnd
 ;------------------------------------------------------------------------------
 
 Section "Uninstall"
-  ; QUICK-260423-ntu T2 — MUST be the first statement: if go-mapi.exe is
+  ; Phase 11.1 D-16: remove the Scheduled Task FIRST so it cannot fire
+  ; mid-uninstall (the task launches go-mapi.exe --update-check-silent which
+  ; would write to $INSTDIR while we are scrubbing it). schtasks /delete /f
+  ; is idempotent — rc=0 (removed) and rc=1 (not found) are both swallowed
+  ; by un.RemoveScheduledTask, so /AUTOUPDATE=0 installs uninstall cleanly too.
+  Call un.RemoveScheduledTask
+
+  ; QUICK-260423-ntu T2 — runs SECOND now (was first): if go-mapi.exe is
   ; still running when the uninstaller starts, WM_CLOSE it and wait up to
   ; 10s for the intentionalQuit path to fire before any Delete runs.
   Call un.EnsureAppNotRunning
@@ -684,6 +812,23 @@ Section "Uninstall"
 
   ; 4. Restore (Default) Mail client from backup (D-11)
   Call un.RestorePreviousMailClient
+
+  ; Phase 11.1 D-18 case 6: scrub silent-update staging dir (Plan 11.1-04 writes
+  ; here under SYSTEM context; Plan 11.1-05 owns the cleanup). Tight `current`
+  ; shell-var context preserved per RESEARCH §Pitfall 2 — the `$APPDATA\..\..\`
+  ; relative walk to %ProgramData% only resolves correctly while $APPDATA is
+  ; left at its default (current-user) meaning.
+  RMDir /r "$APPDATA\..\..\ProgramData\go-mapi\updates"
+
+  ; Phase 11.1 W7: belt-and-braces cleanup of *.old.<pid> orphans left by
+  ; silent-updater swaps (Plan 11.1-04 swapInPlace renames the old binary
+  ; aside via MoveFileEx before placing the new one). Plan 11.1-04 also
+  ; cleans these proactively at silent-update start; this catches any orphans
+  ; that survive past the last cycle. Runs before the binary scrub at step 9.
+  Push "$INSTDIR"
+  Call un.ScrubOldOrphans
+  Push "$PROGRAMFILES32\go-mapi"
+  Call un.ScrubOldOrphans
 
   ; 5. %ProgramData%\go-mapi\uninst\ — remove AFTER the restore (step 4) since
   ; the restore reads from this directory
@@ -1009,4 +1154,54 @@ unEANR_Exited:
 unEANR_NotFound:
   Pop $1
   Pop $0
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; un.RemoveScheduledTask — Phase 11.1 D-16
+;
+; Idempotent removal of the silent-update Scheduled Task. Runs unconditionally
+; — installs that did NOT register the task (e.g. /AUTOUPDATE=0) still call
+; this; rc=1 ("task not found") is swallowed. /F suppresses the confirmation
+; prompt. Logged via DetailPrint for installer-log forensic trail.
+;------------------------------------------------------------------------------
+
+Function un.RemoveScheduledTask
+  ExecWait 'schtasks /delete /tn "go-mapi Auto Update" /f' $0
+  DetailPrint "schtasks /delete rc=$0 (0=removed, 1=not found — both ok)"
+FunctionEnd
+
+;------------------------------------------------------------------------------
+; un.ScrubOldOrphans — Phase 11.1 W7
+;
+; Belt-and-braces cleanup of *.old.<pid> orphan files left behind by the
+; silent updater's MoveFileEx rename-while-running pattern (Plan 11.1-04
+; swapInPlace). Plan 11.1-04 cleans these proactively at silent-update start;
+; this uninstaller helper catches any orphans that survive past the last
+; update cycle. Pattern matches both go-mapi.exe.old.<pid> and
+; go-mapi.dll.old.<pid> via NSIS FindFirst/FindNext.
+;
+; Stack contract: caller pushes the directory path (e.g. "$INSTDIR"), function
+; pops it, scrubs all "*.old.*" matches in that directory, returns nothing.
+;------------------------------------------------------------------------------
+
+Function un.ScrubOldOrphans
+  Pop $R0   ; directory path (e.g. "$INSTDIR")
+  Push $R1
+  Push $R2
+
+  ClearErrors
+  FindFirst $R1 $R2 "$R0\*.old.*"
+  IfErrors un.SOO_Done
+un.SOO_Loop:
+  StrCmp $R2 "" un.SOO_Done
+  Delete "$R0\$R2"
+  DetailPrint "scrubbed orphan: $R0\$R2"
+  ClearErrors
+  FindNext $R1 $R2
+  IfErrors un.SOO_Done
+  Goto un.SOO_Loop
+un.SOO_Done:
+  FindClose $R1
+  Pop $R2
+  Pop $R1
 FunctionEnd
