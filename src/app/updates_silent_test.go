@@ -430,3 +430,13 @@ func TestSilentCleansOldOrphans(t *testing.T) {
 		t.Errorf("keeper %s should still exist; err=%v", keep, err)
 	}
 }
+
+// TestSilentChecksumsURLIsCanonicalStableURL pins the silent-update manifest
+// URL to the documented stable GitHub Releases endpoint (REL-09 / D-11). Drift
+// here would silently break enterprise deployments that whitelist the URL.
+func TestSilentChecksumsURLIsCanonicalStableURL(t *testing.T) {
+	const want = "https://github.com/marcfargas/go-mapi/releases/latest/download/SHA256SUMS.txt"
+	if checksumsURL != want {
+		t.Errorf("checksumsURL drift\n  got:  %q\n  want: %q", checksumsURL, want)
+	}
+}
