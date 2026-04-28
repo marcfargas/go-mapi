@@ -97,17 +97,18 @@ Recent decisions carried into v3.0:
 
 ### Pending Todos
 
-- AUTH-06: Google OAuth verification submitted 2026-04-17 (GCP client, consent screen, scope justifications done; 4-8 week review window running)
-- AUTH-06b: Record and upload YouTube demo video for OAuth verification — blocked until Plan 08-05 ships end-to-end sign-in + draft flow. See `.planning/todos/pending/2026-04-17-oauth-verification-youtube-demo-video.md`
+- (none open — AUTH-06 + AUTH-06b closed 2026-04-28; remaining items are deferred-on-purpose, see Blockers/Concerns)
 
 ### Blockers/Concerns
 
-- Google OAuth verification (AUTH-06) is a 4-8 week external dependency — late submission blocks launch
+- v3.0 GA tag push + Chrome/Edge store delisting (Phase 11 Plan 11-04 Tasks 2+3) remain ON HOLD pending `c:/dev/go-mapi-www` ship. Non-blocking for engineering; blocks public release announcement.
 - Phase 7 measurement-methodology follow-up: iter 2/3 single-instance mutex race in `measure-ram.ps1` (see 07-VERIFICATION.md §Methodology Caveats). Not a blocker; only matters if RAM gate needs re-running.
 
 ### Resolved
 
 - ~~RAM profile under RDS conditions is unvalidated~~ — RESOLVED 2026-04-14: Phase 7 Plan 04 measured 43.24 MB mean per session on 5 concurrent sessions (n=4 clean), well under 80 MB gate; verdict PASS. Full report: 07-VERIFICATION.md.
+- ~~AUTH-06: Google OAuth verification (4-8 week review window)~~ — RESOLVED 2026-04-28: verification approved.
+- ~~AUTH-06b: YouTube demo video for OAuth verification~~ — RESOLVED 2026-04-28: recorded, uploaded, accepted. Todo file already moved to `.planning/todos/completed/2026-04-17-oauth-verification-youtube-demo-video.md`.
 
 ### Quick Tasks Completed
 
