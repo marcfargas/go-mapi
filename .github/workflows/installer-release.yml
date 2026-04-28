@@ -215,6 +215,24 @@ jobs:
           Write-Host "Generated SHA256SUMS.txt:"
           Get-Content SHA256SUMS.txt | Write-Host
 
+      - name: Stage release binaries (signed-or-unsigned)
+        shell: pwsh
+        run: |
+          # REL-09 fix (todo 2026-04-28): the Phase 11.1 silent updater
+          # (src/app/updates_silent.go) downloads go-mapi.exe + go-mapi-x64.dll +
+          # go-mapi-x86.dll from releases/latest/download/<name>. They were never
+          # attached to the release until now, causing 404 on every silent run.
+          # Pick the signed branch when SignPath ran, else fall back to the
+          # unsigned staged/ tree. Filenames must match the SHA256SUMS.txt
+          # manifest (already produced above).
+          $src = if (Test-Path 'staged-signed') { 'staged-signed' } else { 'staged' }
+          New-Item -ItemType Directory -Force release-bins | Out-Null
+          Copy-Item "$src/go-mapi.exe"     release-bins/
+          Copy-Item "$src/go-mapi-x64.dll" release-bins/
+          Copy-Item "$src/go-mapi-x86.dll" release-bins/
+          Write-Host "Staged release binaries from ${src}:"
+          Get-ChildItem release-bins | ForEach-Object { Write-Host "  $($_.Name)  $($_.Length) bytes" }
+
       - name: Attach installer + SHA256SUMS.txt to GitHub Release
         if: ${{ github.event_name == 'push' && (github.event.inputs.dry_run != 'true') }}
         uses: softprops/action-gh-release@v2
@@ -222,6 +240,9 @@ jobs:
           files: |
             ${{ steps.final.outputs.path }}
             SHA256SUMS.txt
+            release-bins/go-mapi.exe
+            release-bins/go-mapi-x64.dll
+            release-bins/go-mapi-x86.dll
           draft: false
           prerelease: false
           body_path: .github/release-template.md
