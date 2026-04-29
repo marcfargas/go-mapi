@@ -51,7 +51,10 @@ BrandingText "${PRODUCT_NAME} ${PRODUCT_VERSION} — LGPL-3.0"
 
 ; Repo-local plugin directory for vendored NSIS plugins (ApplicationID.dll).
 ; `${__FILEDIR__}` resolves to src\installer\ at makensis time.
-!addplugindir "${__FILEDIR__}\plugins"
+; IMPORTANT: !addplugindir for user-added directories searches the directory
+; root directly — NOT an x86-unicode/ subdirectory (that convention applies
+; only to the NSIS built-in Plugins/ tree). Point directly at x86-unicode/.
+!addplugindir "${__FILEDIR__}\plugins\x86-unicode"
 
 ;------------------------------------------------------------------------------
 ; ModernUI2 pages
