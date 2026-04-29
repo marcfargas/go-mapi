@@ -75,6 +75,10 @@ jobs:
           }
           Write-Host "scoop mingw-mstorsjo-llvm-ucrt installed:"
           Get-ChildItem "$bin\*-w64-mingw32-clang*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
+          # Persist scoop's shims dir on PATH for subsequent steps (GitHub Actions
+          # only auto-propagates system PATH between steps; scoop appends to user
+          # PATH, which a fresh pwsh session will not see without this echo).
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Install npm workspaces
         run: npm ci
@@ -161,11 +165,28 @@ jobs:
           Copy-Item staged-signed/go-mapi-x64.dll src/interceptor/build-x64/bin/go-mapi.dll -Force
           Copy-Item staged-signed/go-mapi-x86.dll src/interceptor/build-x86/bin/go-mapi.dll -Force
 
-      - name: Verify NSIS + compile installer
+      - name: Install NSIS via scoop (extras bucket)
         shell: pwsh
         run: |
-          try { makensis /VERSION | Out-Null } catch { choco install nsis --no-progress -y }
-          makensis /DGOMAPI_VERSION=${{ steps.version.outputs.version }} src\installer\go-mapi.nsi
+          scoop bucket add extras
+          scoop install nsis
+          if ($LASTEXITCODE -ne 0) { throw "scoop install nsis failed (exit $LASTEXITCODE)" }
+          makensis /VERSION
+
+      - name: Compile installer
+        shell: pwsh
+        # cwd matters: NSIS resolves ${__FILEDIR__} relative to the script
+        # invocation path; running makensis from repo root double-resolves
+        # the ..\..\LICENSE include. Match the local `npm run build:installer`
+        # convention which cd's into src/installer first, then move the
+        # artifact back to repo root for the SignPath upload + release-asset
+        # steps that follow.
+        run: |
+          Push-Location src/installer
+          makensis /DGOMAPI_VERSION=${{ steps.version.outputs.version }} go-mapi.nsi
+          if ($LASTEXITCODE -ne 0) { Pop-Location; throw "makensis failed (exit $LASTEXITCODE)" }
+          Pop-Location
+          Move-Item src/installer/go-mapi-setup.exe go-mapi-setup.exe -Force
 
       - name: Upload installer for SignPath (pass 2)
         if: ${{ secrets.SIGNPATH_API_TOKEN != '' }}

@@ -29,7 +29,7 @@ Milestone: v3.0 Wails Pivot
 Phase: 11.1 COMPLETE (6/6 plans) — Phase 11 close-out remains queued (paused on go-mapi-www)
 Plan: 6 of 6 — Phase 11.1 complete (next: Phase 11 close-out / 11-04 Task 2+3 once www lands)
 Status: Phase 11.1 ready for verification / close-out
-Last activity: 2026-04-29 - Completed quick task 260429-b4l: Replace choco mingw with scoop mingw-mstorsjo-llvm-ucrt across 3 CI workflows (CI toolchain unblocker for v3.0.0-rc.1 tag, commit db4b23b)
+Last activity: 2026-04-29 - Completed quick task 260429-cad: Standardize CI on scoop (NSIS via scoop bucket extras) + fix build.yml stale build/ → build-x64/ paths (commit f198eab)
 
 Progress: [█████████▊] 98%
 
@@ -121,6 +121,7 @@ Recent decisions carried into v3.0:
 | 260423-tk6 | DLL copies attachments into queue-owned dir + surface draft-failure reason in UI | 2026-04-23 | 30b35c6 | [260423-tk6-dll-copies-attachments-to-queue-surface-](./quick/260423-tk6-dll-copies-attachments-to-queue-surface-/) |
 | 260429-0zg | Fix silent-updater 404 by attaching go-mapi.exe + go-mapi-x64.dll + go-mapi-x86.dll to GitHub Release (REL-09 unblocker) | 2026-04-29 | a6fa828 | [260429-0zg-fix-silent-updater-404-by-attaching-bina](./quick/260429-0zg-fix-silent-updater-404-by-attaching-bina/) |
 | 260429-b4l | Replace choco mingw with scoop mingw-mstorsjo-llvm-ucrt across 3 CI workflows (CI toolchain unblocker since 260423-ntu) | 2026-04-29 | db4b23b | [260429-b4l-add-mingw-mstorsjo-llvm-ucrt-to-ci-workf](./quick/260429-b4l-add-mingw-mstorsjo-llvm-ucrt-to-ci-workf/) |
+| 260429-cad | Standardize CI on scoop (NSIS via extras bucket) + fix build.yml stale build/ → build-x64/ paths (drops choco entirely) | 2026-04-29 | f198eab | [260429-cad-standardize-ci-on-scoop-scoop-install-ns](./quick/260429-cad-standardize-ci-on-scoop-scoop-install-ns/) |
 | Phase 11.1 P11.1-04 | 905s | 2 tasks | 2 files |
 | Phase 11.1 P11.1-05 | ~50min impl + sandbox UAT round-trip | 3 tasks (+1 UAT-fix) | 3 files (1 new, 2 modified) |
 | Phase 11.1 P11.1-06 | 282s | 3 tasks | 3 modified (README, ROADMAP, REQUIREMENTS) + 1 SUMMARY |

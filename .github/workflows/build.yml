@@ -44,6 +44,10 @@ jobs:
           }
           Write-Host "scoop mingw-mstorsjo-llvm-ucrt installed:"
           Get-ChildItem "$bin\*-w64-mingw32-clang*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
+          # Persist scoop's shims dir on PATH for subsequent steps (GitHub Actions
+          # only auto-propagates system PATH between steps; scoop appends to user
+          # PATH, which a fresh pwsh session will not see without this echo).
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Build Interceptor and Test Harness
         working-directory: src/interceptor
@@ -51,25 +55,25 @@ jobs:
 
       - name: Run Test Harness
         working-directory: src/interceptor
-        run: .\build\bin\go-mapi-test-harness.exe .\build\bin\go-mapi.dll
+        run: .\build-x64\bin\go-mapi-test-harness.exe .\build-x64\bin\go-mapi.dll
         continue-on-error: true
 
       - name: Run C++ Unit Tests (doctest via ctest)
-        working-directory: src/interceptor/build
+        working-directory: src/interceptor/build-x64
         run: ctest --output-on-failure --build-config ${{ matrix.config }}
 
       - name: Upload DLL Artifact
         uses: actions/upload-artifact@v4
         with:
           name: go-mapi-dll-${{ matrix.config }}
-          path: src/interceptor/build/bin/go-mapi.dll
+          path: src/interceptor/build-x64/bin/go-mapi.dll
           if-no-files-found: warn
 
       - name: Upload Test Harness Artifact
         uses: actions/upload-artifact@v4
         with:
           name: go-mapi-tests-${{ matrix.config }}
-          path: src/interceptor/build/bin/go-mapi-test-harness.exe
+          path: src/interceptor/build-x64/bin/go-mapi-test-harness.exe
           if-no-files-found: warn
 
   build-wails-app:
