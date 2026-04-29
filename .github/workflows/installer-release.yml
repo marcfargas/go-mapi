@@ -115,7 +115,7 @@ jobs:
           "version=$version"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
           $preStr = if ($isPrerelease) { 'true' } else { 'false' }
           "prerelease=$preStr"         | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
-          Write-Host "Release version: $version (prerelease: $isPrerelease)"
+          Write-Host "Release version: $version (prerelease: $preStr)"
 
       # Phase 11 plan 06 guard: prove this workflow would not ship e2e hooks.
       # Fails fast if '-tags e2e', GOMAPI_DEBUG_BROWSER_ARGS, or any GOMAPI_E2E_*
