@@ -113,7 +113,8 @@ jobs:
           # Surface to downstream steps + detect prerelease (any '-' in the version)
           $isPrerelease = $version -match '-'
           "version=$version"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
-          "prerelease=$isPrerelease"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+          $preStr = if ($isPrerelease) { 'true' } else { 'false' }
+          "prerelease=$preStr"         | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
           Write-Host "Release version: $version (prerelease: $isPrerelease)"
 
       # Phase 11 plan 06 guard: prove this workflow would not ship e2e hooks.
