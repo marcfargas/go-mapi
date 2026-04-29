@@ -5,6 +5,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      version:
+        description: 'Version string for dry-run (e.g. 3.0.0-rc.1). Ignored on tag-push runs.'
+        required: false
+        default: '0.0.0-dev'
       dry_run:
         description: 'Dry run — build + sign but do not publish GitHub release'
         required: false
@@ -84,26 +88,33 @@ jobs:
       - name: Install npm workspaces
         run: npm ci
 
-      # D-26: wails.json info.productVersion is the version authority. Validate it
-      # matches the pushed tag (strip leading 'v'). Throws on mismatch.
-      - name: Extract + validate version against tag
+      # D-26: derive the release version from the trigger and patch wails.json
+      # in-runner so PE metadata, ldflags, and NSIS all see the same value.
+      # The repo's wails.json productVersion is intentionally a placeholder
+      # (0.0.0-dev) — the git tag is the sole authority for release version.
+      - name: Derive version + patch wails.json
         id: version
         shell: pwsh
         run: |
-          $json = Get-Content src/app/wails.json -Raw | ConvertFrom-Json
-          $wailsVer = $json.info.productVersion
-          if (-not $wailsVer) {
-            throw "src/app/wails.json is missing info.productVersion — plan 10-06 task 1 did not land."
+          if ("${{ github.event_name }}" -eq 'push') {
+            $version = "${{ github.ref_name }}" -replace '^v',''
+          } else {
+            $version = "${{ inputs.version }}"
           }
-          $tagVer = "${{ github.ref_name }}" -replace '^v',''
-          if ("${{ github.event_name }}" -eq 'workflow_dispatch') {
-            Write-Host "workflow_dispatch: skipping tag-vs-wails.json validation (using wails.json=$wailsVer)"
-          }
-          elseif ($wailsVer -ne $tagVer) {
-            throw "Tag $tagVer does not match src/app/wails.json info.productVersion=$wailsVer. Bump wails.json before pushing the tag."
-          }
-          "version=$wailsVer" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
-          Write-Host "Release version: $wailsVer"
+          if (-not $version) { throw "Empty version — refusing to build." }
+
+          # Patch wails.json so Wails picks the right value for PE metadata
+          # (FileVersion / ProductVersion resources). Ephemeral — not committed.
+          $path = 'src/app/wails.json'
+          $json = Get-Content $path -Raw | ConvertFrom-Json
+          $json.info.productVersion = $version
+          $json | ConvertTo-Json -Depth 10 | Set-Content $path -Encoding utf8
+
+          # Surface to downstream steps + detect prerelease (any '-' in the version)
+          $isPrerelease = $version -match '-'
+          "version=$version"           | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+          "prerelease=$isPrerelease"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
+          Write-Host "Release version: $version (prerelease: $isPrerelease)"
 
       # Phase 11 plan 06 guard: prove this workflow would not ship e2e hooks.
       # Fails fast if '-tags e2e', GOMAPI_DEBUG_BROWSER_ARGS, or any GOMAPI_E2E_*
@@ -286,7 +297,7 @@ jobs:
             release-bins/go-mapi-x64.dll
             release-bins/go-mapi-x86.dll
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.version.outputs.prerelease }}
           body_path: .github/release-template.md
 
       - name: Upload release artifact (workflow_dispatch dry-run debug)
