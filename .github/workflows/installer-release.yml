@@ -50,11 +50,31 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
 
-      - name: Install MinGW (interceptor build)
-        run: |
-          choco install mingw --no-progress -y
-          echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $env:GITHUB_PATH
+      - name: Install mingw-mstorsjo-llvm-ucrt (interceptor build toolchain)
         shell: pwsh
+        run: |
+          # build.ps1 (since QUICK-260423-ntu) requires the triple-prefixed clang driver
+          # from scoop's mingw-mstorsjo-llvm-ucrt package — choco's mingw uses a different
+          # driver layout and is unusable for our x64 + x86 dual build. The package also
+          # bundles cmake + ninja, so no separate cmake/ninja install is needed here.
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          # windows-latest pwsh sessions run elevated (as runneradmin); scoop's installer
+          # aborts under elevation unless SCOOP_INSTALL_AS_ADMIN=1 is set (or -RunAsAdmin
+          # is passed). Setting the env var is a no-op when non-elevated and clears the
+          # gate when elevated, so it's safe in both modes.
+          $env:SCOOP_INSTALL_AS_ADMIN = "1"
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw "scoop install mingw-mstorsjo-llvm-ucrt failed (exit $LASTEXITCODE)" }
+          # Sanity check — fail fast if either triple-prefixed driver is missing.
+          # build.ps1 reads from this exact path; it is hardcoded, not PATH-derived.
+          $bin = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin"
+          foreach ($exe in @('x86_64-w64-mingw32-clang.exe','i686-w64-mingw32-clang.exe')) {
+            if (-not (Test-Path "$bin\$exe")) { throw "Missing $exe in $bin" }
+          }
+          Write-Host "scoop mingw-mstorsjo-llvm-ucrt installed:"
+          Get-ChildItem "$bin\*-w64-mingw32-clang*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Install npm workspaces
         run: npm ci
