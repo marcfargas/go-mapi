@@ -99,6 +99,8 @@ Recent decisions carried into v3.0:
 
 - **REL-09 BLOCKER (audit 2026-04-29):** Silent updater 404s in production — `installer-release.yml` only attaches `go-mapi-setup.exe` + `SHA256SUMS.txt` but `updates_silent.go:194-215` downloads three additional binaries from `releases/latest/download/`. Fix: extend `softprops/action-gh-release@v2` `files:` block. See `.planning/todos/pending/2026-04-28-silent-updater-404s-publish-3-binaries-to-github-releases.md`.
 - **Feature: merge queued emails into one draft** — multi-select in the queue UI to combine N emails into a single Gmail draft (use case: user generates multiple reports and wants one email). See `.planning/todos/pending/2026-04-30-merge-multiple-queued-emails-into-one.md`.
+- **Feature: edit recipients / subject / body in the queue UI** — pre-send editability so users don't need to bounce to Gmail; possibly with a small WYSIWYG (Tiptap?). See `.planning/todos/pending/2026-04-30-edit-recipients-subject-body-in-queue-ui.md`.
+- **Feature: rethreading — send queued email as a Gmail thread reply** — per-item "Reply to thread…" picker driven by a configurable `RethreadingFilter` (default `in:inbox`). Sets `threadId` + `In-Reply-To` / `References` headers on the draft. Likely needs an extra OAuth read scope. See `.planning/todos/pending/2026-04-30-send-queued-email-as-reply-to-gmail-thread.md`.
 
 ### Blockers/Concerns
 
