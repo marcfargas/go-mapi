@@ -98,6 +98,7 @@ Recent decisions carried into v3.0:
 ### Pending Todos
 
 - **REL-09 BLOCKER (audit 2026-04-29):** Silent updater 404s in production — `installer-release.yml` only attaches `go-mapi-setup.exe` + `SHA256SUMS.txt` but `updates_silent.go:194-215` downloads three additional binaries from `releases/latest/download/`. Fix: extend `softprops/action-gh-release@v2` `files:` block. See `.planning/todos/pending/2026-04-28-silent-updater-404s-publish-3-binaries-to-github-releases.md`.
+- **Feature: merge queued emails into one draft** — multi-select in the queue UI to combine N emails into a single Gmail draft (use case: user generates multiple reports and wants one email). See `.planning/todos/pending/2026-04-30-merge-multiple-queued-emails-into-one.md`.
 
 ### Blockers/Concerns
 
