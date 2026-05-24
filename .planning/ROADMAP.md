@@ -204,3 +204,15 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 
 ---
 *Roadmap updated: 2026-04-25 — Phase 11.1 success criteria rewritten to simplified scope (binary auto-update checkbox + Scheduled Task + SHA-256 manifest); machine-config YAML deferred per D-02; tri-state install collapsed to binary per D-07. See .planning/phases/11.1-installer-hardening-enterprise-deploy-silent-auto-update/11.1-CONTEXT.md for the locked decision rationale.*
+
+## Backlog
+
+### Phase 999.1: Evaluate Azure Trusted Signing as code-signing path (BACKLOG)
+
+**Goal:** [Captured for future planning] Assess Azure Trusted Signing as the code-signing solution for go-mapi releases, since SignPath.io OSS eligibility is uncertain (project may not be well-known enough). Azure Trusted Signing would also be reusable across future projects. Compare cost (Azure is ~paid/low-cost vs SignPath free-for-OSS), eligibility/onboarding friction, identity-validation requirements, and SmartScreen reputation impact. Decide whether it replaces or supplements the current Phase 11 SignPath plan.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
