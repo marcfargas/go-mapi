@@ -216,3 +216,13 @@ Full details: `milestones/v2.1.0-ROADMAP.md`
 
 Plans:
 - [ ] TBD (promote with /gsd:review-backlog when ready)
+
+### Phase 999.2: Setup Azure Artifact Signing (BACKLOG)
+
+**Goal:** [Captured for future planning] Stand up Azure Trusted Signing (a.k.a. Azure Code/Artifact Signing) as the actual code-signing pipeline for go-mapi release artifacts — account/onboarding, signing identity, and CI integration into the Phase 11 release flow. Implementation counterpart to Phase 999.1, which only *evaluates* whether Azure Trusted Signing should replace or supplement the SignPath.io path. Promote 999.1 first (the decision) before setting this up, or fold the two together at review time.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
