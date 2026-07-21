@@ -41,7 +41,8 @@ TODO.md
 # Test outputs
 test-results/
 playwright-report/
-.claude/
+.claude/*
+!.claude/skills/
 
 # Pi agent config (local, not tracked)
 .pi/
