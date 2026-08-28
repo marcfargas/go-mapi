@@ -18,10 +18,16 @@
 # checking the symbol that is actually called catches stale-definition scenarios
 # that checking `Reader` would miss.
 if (-not ('GoMapi.AumidReader.PublicReader' -as [type])) {
-    Add-Type -Namespace GoMapi.AumidReader -Name Reader -MemberDefinition @'
+    # -MemberDefinition is wrapped by Add-Type in the class named by -Name;
+    # this source declares multiple top-level interfaces/types, so wrapping it
+    # makes the leading using directives invalid C#. Compile the complete type
+    # definition instead.
+    Add-Type -TypeDefinition @'
         using System;
         using System.Runtime.InteropServices;
         using System.Text;
+
+        namespace GoMapi.AumidReader {
 
         [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
         internal interface IPropertyStore {
@@ -101,6 +107,7 @@ if (-not ('GoMapi.AumidReader.PublicReader' -as [type])) {
                 }
             }
         }
+        }
 '@
 }
 
@@ -115,4 +122,6 @@ function Get-ShortcutAumid {
     return [GoMapi.AumidReader.PublicReader]::GetAumid($absPath)
 }
 
-Export-ModuleMember -Function Get-ShortcutAumid -ErrorAction SilentlyContinue
+if ($ExecutionContext.SessionState.Module) {
+    Export-ModuleMember -Function Get-ShortcutAumid
+}

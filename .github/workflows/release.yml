@@ -1,0 +1,62 @@
+name: Release
+
+# A manual consumer only. Build creates unsigned artifacts; Artifact Signing
+# creates signed ones. This workflow publishes neither builds nor signatures.
+on:
+  workflow_dispatch:
+    inputs:
+      signed_run_id:
+        description: 'Successful Artifact Signing run containing go-mapi-windows-signed'
+        required: true
+        type: string
+      tag:
+        description: 'Existing release tag to publish (for example v4.0.0)'
+        required: true
+        type: string
+      publish:
+        description: 'Create/update the GitHub Release after validation'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  release:
+    if: ${{ inputs.publish == true }}
+    runs-on: windows-2025
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout the requested existing tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Confirm tag already exists
+        shell: pwsh
+        run: |
+          git show-ref --verify --quiet "refs/tags/${{ inputs.tag }}"
+          if ($LASTEXITCODE -ne 0) { throw "Refusing to create a release for missing tag '${{ inputs.tag }}'" }
+      - name: Download signed artifact from the signing run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: go-mapi-windows-signed
+          path: signed
+          run-id: ${{ inputs.signed_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify Authenticode signatures
+        shell: pwsh
+        run: |
+          $files = @('signed/go-mapi-setup.exe', 'signed/signing-input/unsigned/go-mapi.exe', 'signed/signing-input/unsigned/go-mapi-x64.dll', 'signed/signing-input/unsigned/go-mapi-x86.dll')
+          foreach ($file in $files) {
+            if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "Invalid signature: $file" }
+          }
+      - name: Publish already-signed assets
+        shell: pwsh
+        run: |
+          gh release create '${{ inputs.tag }}' --verify-tag --title '${{ inputs.tag }}' --notes-file .github/release-template.md signed/go-mapi-setup.exe signed/signing-input/unsigned/go-mapi.exe signed/signing-input/unsigned/go-mapi-x64.dll signed/signing-input/unsigned/go-mapi-x86.dll
