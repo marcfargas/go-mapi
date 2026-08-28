@@ -1,152 +1,165 @@
-name: Build and Test
+name: Build
 
+# The sole CI producer. App and interceptor work run independently; the
+# package job joins their tested payloads to produce the signing input.
 on:
   push:
-    branches:
-      - main
-      - develop
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'internal/**'
+      - 'package*.json'
+      - '.github/workflows/build.yml'
   pull_request:
-  workflow_call:
+    paths:
+      - 'src/**'
+      - 'internal/**'
+      - 'package*.json'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version embedded in the unsigned test build'
+        required: true
+        default: '0.0.0-signing-test'
+        type: string
+      channel:
+        description: 'Intended distribution channel; this workflow never releases'
+        required: true
+        default: 'test'
+        type: choice
+        options: [test, beta, nightly]
+
+permissions:
+  contents: read
 
 jobs:
-  build-interceptor:
-    name: Build Interceptor (C++)
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        config: [Debug, Release]
-
+  app:
+    name: Build and test app
+    runs-on: windows-2025
+    env:
+      CGO_ENABLED: '1'
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install mingw-mstorsjo-llvm-ucrt (triple-prefixed clang + bundled cmake/ninja)
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: Install npm workspace dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run -w @marcfargas/go-mapi-app-frontend build
+      - name: Test Go
+        shell: bash
+        run: |
+          go vet ./internal/mapi/... ./src/app/...
+          go test -race -coverprofile=coverage-internal-mapi.out -v ./internal/mapi/...
+          go test -race -coverprofile=coverage-src-app.out -v ./src/app/...
+      - name: Test frontend
+        run: |
+          npm run -w @marcfargas/go-mapi-app-frontend check
+          npm run -w @marcfargas/go-mapi-app-frontend test:run
+      - name: Build Wails app
+        working-directory: src/app
         shell: pwsh
         run: |
-          # build.ps1 (since QUICK-260423-ntu) requires the triple-prefixed clang driver
-          # from scoop's mingw-mstorsjo-llvm-ucrt package — choco's mingw uses a different
-          # driver layout and is unusable for our x64 + x86 dual build. The package also
-          # bundles cmake + ninja, so no separate cmake/ninja install is needed here.
+          $version = '${{ inputs.version || '0.0.0-dev' }}'
+          wails build -platform windows/amd64 -ldflags "-X main.Version=$version -X main.aumidOverride=com.marcfargas.gomapi"
+      - name: Upload app payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: go-mapi-app-payload
+          path: src/app/build/bin/go-mapi.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  interceptor:
+    name: Build and test interceptor
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install native build tools
+        shell: pwsh
+        run: |
           Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          # windows-latest pwsh sessions run elevated (as runneradmin); scoop's installer
-          # aborts under elevation unless SCOOP_INSTALL_AS_ADMIN=1 is set (or -RunAsAdmin
-          # is passed). Setting the env var is a no-op when non-elevated and clears the
-          # gate when elevated, so it's safe in both modes.
-          $env:SCOOP_INSTALL_AS_ADMIN = "1"
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
           Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
           & "$env:TEMP\install-scoop.ps1"
           scoop install mingw-mstorsjo-llvm-ucrt
-          if ($LASTEXITCODE -ne 0) { throw "scoop install mingw-mstorsjo-llvm-ucrt failed (exit $LASTEXITCODE)" }
-          # Sanity check — fail fast if either triple-prefixed driver is missing.
-          # build.ps1 reads from this exact path; it is hardcoded, not PATH-derived.
-          $bin = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin"
-          foreach ($exe in @('x86_64-w64-mingw32-clang.exe','i686-w64-mingw32-clang.exe')) {
-            if (-not (Test-Path "$bin\$exe")) { throw "Missing $exe in $bin" }
-          }
-          Write-Host "scoop mingw-mstorsjo-llvm-ucrt installed:"
-          Get-ChildItem "$bin\*-w64-mingw32-clang*.exe" | ForEach-Object { Write-Host "  $($_.Name)" }
-          # Persist scoop's shims dir on PATH for subsequent steps (GitHub Actions
-          # only auto-propagates system PATH between steps; scoop appends to user
-          # PATH, which a fresh pwsh session will not see without this echo).
           "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      - name: Build Interceptor and Test Harness
-        working-directory: src/interceptor
-        run: .\build.ps1 -Config ${{ matrix.config }} -Tests -Clean
-
-      - name: Run Test Harness
-        working-directory: src/interceptor
-        run: .\build-x64\bin\go-mapi-test-harness.exe .\build-x64\bin\go-mapi.dll
-        continue-on-error: true
-
-      - name: Run C++ Unit Tests (doctest via ctest)
-        working-directory: src/interceptor/build-x64
-        run: ctest --output-on-failure --build-config ${{ matrix.config }}
-
-      - name: Upload DLL Artifact
-        uses: actions/upload-artifact@v4
+      - name: Build and test interceptor
+        shell: pwsh
+        run: |
+          npm run build:interceptor
+          npm run build:interceptor:debug
+          src/interceptor/build-x64/bin/go-mapi-test-harness.exe src/interceptor/build-x64/bin/go-mapi.dll
+          ctest --test-dir src/interceptor/build-x64 --output-on-failure --build-config Debug
+      - name: Stage interceptor payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force interceptor-payload/x64, interceptor-payload/x86 | Out-Null
+          Copy-Item src/interceptor/build-x64/bin/go-mapi.dll interceptor-payload/x64/
+          Copy-Item src/interceptor/build-x86/bin/go-mapi.dll interceptor-payload/x86/
+      - name: Upload interceptor payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: go-mapi-dll-${{ matrix.config }}
-          path: src/interceptor/build-x64/bin/go-mapi.dll
-          if-no-files-found: warn
+          name: go-mapi-interceptor-payload
+          path: interceptor-payload/
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Upload Test Harness Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-tests-${{ matrix.config }}
-          path: src/interceptor/build-x64/bin/go-mapi-test-harness.exe
-          if-no-files-found: warn
-
-  build-wails-app:
-    name: Build Wails App (Go + Svelte)
-    runs-on: windows-latest
-    env:
-      CGO_ENABLED: '1'
-
+  package:
+    name: Package and test installer
+    needs: [app, interceptor]
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          go-version: '1.25'
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          name: go-mapi-app-payload
+          path: payload/app
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          node-version: 20
-
-      # CRITICAL: npm ci + frontend build MUST run before any 'go test' or
-      # 'go vet' on ./src/app/... because src/app/main.go has
-      # //go:embed all:frontend/dist. On a clean checkout, src/app/frontend/dist/
-      # does not exist yet — it's produced here.
-      - name: Install npm workspace dependencies
-        run: npm ci
-
-      - name: Build frontend (produces src/app/frontend/dist for go:embed)
-        run: npm run -w @marcfargas/go-mapi-app-frontend build
-
-      - name: go vet
-        run: go vet ./internal/mapi/... ./src/app/...
-
-      - name: go test -race with coverage (internal/mapi)
-        # shell: bash — pwsh mis-splits `-coverprofile=x.out` at the `.`, passing `.out` as a package arg
-        shell: bash
-        run: go test -race -coverprofile=coverage-internal-mapi.out -v ./internal/mapi/...
-
-      - name: go test -race with coverage (src/app)
-        shell: bash
-        run: go test -race -coverprofile=coverage-src-app.out -v ./src/app/...
-
-      - name: Upload Go coverage (internal/mapi)
-        uses: actions/upload-artifact@v4
+          name: go-mapi-interceptor-payload
+          path: payload/interceptor
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress --yes
+          New-Item -ItemType Directory -Force src/app/build/bin, src/interceptor/build-x64/bin, src/interceptor/build-x86/bin | Out-Null
+          Copy-Item payload/app/go-mapi.exe src/app/build/bin/
+          Copy-Item payload/interceptor/x64/go-mapi.dll src/interceptor/build-x64/bin/
+          Copy-Item payload/interceptor/x86/go-mapi.dll src/interceptor/build-x86/bin/
+          Push-Location src/installer
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DGOMAPI_VERSION=${{ inputs.version || '0.0.0-dev' }} go-mapi.nsi
+          Pop-Location
+          Move-Item src/installer/go-mapi-setup.exe go-mapi-setup.exe -Force
+      - name: Test installer round-trip
+        shell: pwsh
+        run: |
+          $config = New-PesterConfiguration
+          $config.Run.Path = 'src/installer/tests/installer.Tests.ps1'
+          $config.Run.Exit = $true
+          Invoke-Pester -Configuration $config
+      - name: Stage unsigned signing input
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force go-mapi-windows-unsigned/unsigned | Out-Null
+          Copy-Item go-mapi-setup.exe go-mapi-windows-unsigned/
+          Copy-Item src/app/build/bin/go-mapi.exe go-mapi-windows-unsigned/unsigned/
+          Copy-Item src/interceptor/build-x64/bin/go-mapi.dll go-mapi-windows-unsigned/unsigned/go-mapi-x64.dll
+          Copy-Item src/interceptor/build-x86/bin/go-mapi.dll go-mapi-windows-unsigned/unsigned/go-mapi-x86.dll
+          Set-Content go-mapi-windows-unsigned/version.txt '${{ inputs.version || '0.0.0-dev' }}' -NoNewline
+      - name: Upload unsigned signing input
+        if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: coverage-internal-mapi
-          path: coverage-internal-mapi.out
-          if-no-files-found: warn
-
-      - name: Upload Go coverage (src/app)
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-src-app
-          path: coverage-src-app.out
-          if-no-files-found: warn
-
-      - name: svelte-check (blocking)
-        run: npm run -w @marcfargas/go-mapi-app-frontend check
-
-      - name: Vitest frontend tests (blocking)
-        run: npm run -w @marcfargas/go-mapi-app-frontend test:run
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: wails build (sanity)
-        working-directory: src/app
-        run: wails build -platform windows/amd64
-
-      - name: Upload Wails app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-wails-app
-          path: src/app/build/bin/
-          if-no-files-found: warn
+          name: go-mapi-windows-unsigned
+          path: go-mapi-windows-unsigned/
+          if-no-files-found: error
+          retention-days: 7

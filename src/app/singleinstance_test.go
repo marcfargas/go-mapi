@@ -159,14 +159,25 @@ func TestWaitForRaiseSignalCallsCallback(t *testing.T) {
 
 	done := make(chan struct{})
 	raisedCh := make(chan struct{}, 1)
+	finished := make(chan struct{})
 
-	go waitForRaiseSignal(done, func() {
+	go func() {
+		defer close(finished)
+		waitForRaiseSignal(done, func() {
+			select {
+			case raisedCh <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	defer func() {
+		close(done)
 		select {
-		case raisedCh <- struct{}{}:
-		default:
+		case <-finished:
+		case <-time.After(2 * time.Second):
+			t.Error("waitForRaiseSignal did not exit during cleanup")
 		}
-	})
-	defer close(done)
+	}()
 
 	// Signal the event directly to simulate a second instance calling raiseExistingInstance.
 	if err := raiseExistingInstance(); err != nil {

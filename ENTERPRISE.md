@@ -21,35 +21,46 @@ managed desktops, group policy.
 
 ## Code signing status
 
-**v3.0.0 is unsigned.** The release pipeline supports SignPath.io OSS
-signing, but v3.0.0 was published from a runner without the SignPath
-secrets configured and used the unsigned `staged/` build path.
+**v3.0.0 is unsigned.** It was published before the Artifact Signing workflow
+existed. The legacy unsigned-build consequences remain applicable to that
+historical release: SmartScreen can warn, and WDAC/AppLocker Publisher rules
+cannot identify a publisher. Use the published hash or a local allow rule if
+you must deploy v3.0.0.
 
-Practical consequences for managed deployments:
+Future signed releases are assembled in three distinct stages:
 
-- **SmartScreen** will warn users on first interactive run. The dismissal
-  flow is **More info → Run anyway**. Silent installs (`/S`) bypass the
-  SmartScreen dialog because there is no interactive shell to display it.
-- **Microsoft Defender Application Control / WDAC** policies that require
-  signed binaries will block go-mapi. You'll need to allow the binary by
-  hash, by file path, or by publisher (not applicable while unsigned).
-- **AppLocker** Publisher rules are not usable while unsigned; use Hash
-  rules against the SHA-256 in `SHA256SUMS.txt`, or Path rules anchored
-  at `%ProgramFiles%\go-mapi\`.
+1. The `Build` workflow builds and tests an unsigned Windows artifact. PRs and
+   pushes are secretless; manual builds can also produce beta or nightly input.
+2. After a successful Build run completes, a maintainer explicitly starts the
+   separate `Artifact Signing` workflow with that build run ID. The protected
+   `artifact-signing` environment then signs the app, both MAPI DLLs, and the
+   final installer.
+3. The release workflow consumes that signed artifact only after an explicit
+   publish approval; it does not build or sign software.
 
-To suppress SmartScreen warnings for managed deployments:
+Until a signed release has actually been published, do not infer that a
+particular download is signed merely because this workflow exists. For a
+signed release, verify both Authenticode and the matching `SHA256SUMS.txt`
+entry before deployment:
 
-- **Group Policy:** `Computer Configuration → Administrative Templates →
-  Windows Components → File Explorer → Configure Windows Defender
-  SmartScreen` — set to *Disable* or *Warn but allow* per your policy.
-- **Intune (Win32 app):** pre-stage the installer via the Intune Win32 app
-  pipeline; the trust override at deployment time avoids the per-user
-  SmartScreen prompt.
-- **GPO file allow-list** (per-binary): use Software Restriction Policies
-  or AppLocker Hash rules against the published `SHA256SUMS.txt` hash.
+```powershell
+$signature = Get-AuthenticodeSignature .\go-mapi-setup.exe
+$signature | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+if ($signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) {
+    throw 'Installer Authenticode signature or timestamp is not valid'
+}
+```
 
-A future signed release will replace this section with verification
-guidance (Authenticode chain, `Get-AuthenticodeSignature` snippet).
+### Maintainer setup
+
+The `artifact-signing` GitHub environment holds the Azure OIDC configuration:
+client ID, tenant ID, subscription ID, endpoint, signing-account name, and
+certificate-profile name. These are environment variables, not credentials;
+the workflow authenticates with GitHub OIDC and needs no client secret.
+
+The repository `justfile` is the operational entry point: run `just` to list
+the validation, Azure OIDC, GitHub-environment, build, signing, release, and run-watch
+commands. Use a clean, signing-capable Azure CLI profile for the Azure recipes.
 
 ## Install modes
 

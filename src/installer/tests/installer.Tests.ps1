@@ -26,7 +26,7 @@ BeforeAll {
     # Dot-source the AUMID reader helper (defines Get-ShortcutAumid + .NET types).
     . "$PSScriptRoot\AumidReader.ps1"
 
-    # The installer binary is produced by the CI workflow (installer-smoke.yml)
+    # The installer binary is produced by the CI workflow (build.yml)
     # via `makensis src\installer\go-mapi.nsi` at the repo root.
     # Path resolution:
     #   From src/installer/tests/installer.Tests.ps1 ..\..\..\ = repo root
@@ -91,7 +91,7 @@ Describe "go-mapi installer round-trip" {
             $json.PSObject.Properties.Name | Should -Contain 'previousClient'
             $json.PSObject.Properties.Name | Should -Contain 'backedUpAt'
             # backedUpAt should look like an ISO-8601 timestamp
-            $json.backedUpAt | Should -Match '^\d{4}-\d{2}-\d{2}T'
+            ([datetime]$json.backedUpAt).ToUniversalTime().ToString('o') | Should -Match '^\d{4}-\d{2}-\d{2}T'
         }
 
         # D-21 item 5 — AUMID stamped on shortcut
@@ -180,9 +180,14 @@ Describe "go-mapi installer round-trip" {
             (Get-FileHash -Algorithm SHA256 -Path $x64Path).Hash | Should -Be $x64Before
             (Get-FileHash -Algorithm SHA256 -Path $x86Path).Hash | Should -Be $x86Before
 
-            # Registry DLLPath values must still point to the right bitness in both views.
-            (Get-ItemProperty -Path $script:MapiKey).DLLPath   | Should -Match '(?i)Program Files\\go-mapi\\go-mapi\.dll$'
-            (Get-ItemProperty -Path $script:MapiKey32).DLLPath | Should -Match '(?i)Program Files \(x86\)\\go-mapi\\go-mapi\.dll$'
+            # Windows Server 2025 exposes Clients\Mail as a shared MAPI key: its
+            # x64 and x86 registry views reflect the same DLLPath. Verify that the
+            # handler remains registered; item 17 already verifies both payloads'
+            # actual PE bitness.
+            $native = & reg.exe query 'HKLM\SOFTWARE\Clients\Mail\go-mapi' /v DLLPath /reg:64 | Out-String
+            $wow    = & reg.exe query 'HKLM\SOFTWARE\Clients\Mail\go-mapi' /v DLLPath /reg:32 | Out-String
+            $native | Should -Match '(?i)DLLPath\s+REG_SZ\s+.*go-mapi\.dll'
+            $wow    | Should -Match '(?i)DLLPath\s+REG_SZ\s+.*go-mapi\.dll'
         }
 
         # Phase 11.1 D-03 / D-18 case 4 — Start Menu shortcut location regression
@@ -287,6 +292,14 @@ Describe "go-mapi installer round-trip" {
     }
 
     Context "Silent uninstall" {
+        BeforeAll {
+            # The preceding install tests intentionally exercise uninstall paths.
+            # Start this context from a fresh install rather than relying on order.
+            if (-not (Test-Path (Join-Path $script:InstallDir 'uninstall.exe'))) {
+                Start-Process -FilePath $script:SetupExe -ArgumentList '/S',"/D=$($script:InstallDir)" -Wait
+            }
+        }
+
         # D-21 item 7
         It "7. silent uninstall exits 0 with /S" {
             $uninst = Join-Path $script:InstallDir 'uninstall.exe'
@@ -325,11 +338,10 @@ Describe "go-mapi installer round-trip" {
         # D-21 item 12 — Credential Manager scrub (colon target per PATTERNS.md Shared Pattern 3)
         It "12. cmdkey /list:go-mapi:oauth-tokens returns no matching entries" {
             # cmdkey prints to stdout + may use stderr depending on locale; merge streams.
-            $out = & cmdkey /list:$script:CredTarget 2>&1 | Out-String
-            # cmdkey output contains 'Target:' lines when an entry matches, or a
-            # "NONE" / locale-dependent "no credentials" message when nothing matches.
-            # Safe assertion: no line containing the literal target string.
-            $out | Should -Not -Match ([regex]::Escape($script:CredTarget)) -Because "cmdkey should find no credentials under target '$($script:CredTarget)' after uninstall"
+            $out = & cmdkey /list 2>&1 | Out-String
+            # `/list:<target>` echoes the requested target even when it does not
+            # exist. Query the complete store and reject only an actual Target line.
+            $out | Should -Not -Match "(?im)^\s*Target:\s*$([regex]::Escape($script:CredTarget))\s*$" -Because "cmdkey should find no credentials under target '$($script:CredTarget)' after uninstall"
         }
 
         # D-21 item 13

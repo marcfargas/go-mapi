@@ -1,0 +1,105 @@
+name: Artifact Signing
+
+# Separate from release: signs a completed CI artifact and uploads a signed one.
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 'Successful Build run containing go-mapi-windows-unsigned'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  sign:
+    runs-on: windows-2025
+    environment: artifact-signing
+    steps:
+      - name: Validate the selected Build run
+        id: build
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v7.0.1
+        with:
+          script: |
+            const run = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner, repo: context.repo.repo,
+              run_id: Number(core.getInput('build_run_id')),
+            });
+            if (run.data.path !== '.github/workflows/build.yml' || run.data.conclusion !== 'success') {
+              core.setFailed('build_run_id must identify a successful Build run');
+            }
+            core.setOutput('head_sha', run.data.head_sha);
+          result-encoding: string
+        env:
+          INPUT_BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ steps.build.outputs.head_sha }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: go-mapi-windows-unsigned
+          path: signing-input
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign app and interceptor DLLs
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: |
+            ${{ github.workspace }}\signing-input\unsigned\go-mapi.exe
+            ${{ github.workspace }}\signing-input\unsigned\go-mapi-x64.dll
+            ${{ github.workspace }}\signing-input\unsigned\go-mapi-x86.dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Build installer from signed payloads
+        shell: pwsh
+        run: |
+          $version = (Get-Content signing-input/version.txt -Raw).Trim()
+          if ($version -notmatch '^[0-9A-Za-z._-]+$') { throw "Invalid build version: $version" }
+          New-Item -ItemType Directory -Force src/app/build/bin, src/interceptor/build-x64/bin, src/interceptor/build-x86/bin | Out-Null
+          Copy-Item signing-input/unsigned/go-mapi.exe src/app/build/bin/go-mapi.exe -Force
+          Copy-Item signing-input/unsigned/go-mapi-x64.dll src/interceptor/build-x64/bin/go-mapi.dll -Force
+          Copy-Item signing-input/unsigned/go-mapi-x86.dll src/interceptor/build-x86/bin/go-mapi.dll -Force
+          choco install nsis --no-progress --yes
+          Push-Location src/installer
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DGOMAPI_VERSION=$version go-mapi.nsi
+          Pop-Location
+          Move-Item src/installer/go-mapi-setup.exe go-mapi-setup.exe -Force
+      - name: Sign installer
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\go-mapi-setup.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify signed files
+        shell: pwsh
+        run: |
+          $files = @('signing-input/unsigned/go-mapi.exe', 'signing-input/unsigned/go-mapi-x64.dll', 'signing-input/unsigned/go-mapi-x86.dll', 'go-mapi-setup.exe')
+          foreach ($file in $files) {
+            if ((Get-AuthenticodeSignature $file).Status -ne 'Valid') { throw "Invalid signature: $file" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: go-mapi-windows-signed
+          path: |
+            go-mapi-setup.exe
+            signing-input/unsigned/go-mapi.exe
+            signing-input/unsigned/go-mapi-x64.dll
+            signing-input/unsigned/go-mapi-x86.dll
+          if-no-files-found: error
+          retention-days: 30
