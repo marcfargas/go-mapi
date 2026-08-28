@@ -69,3 +69,6 @@ tests/e2e/.cache/
 
 # Local Crabbox failure bundles and run captures
 .crabbox/
+
+# Per-worktree temporary build and validation artifacts
+.tmp/
