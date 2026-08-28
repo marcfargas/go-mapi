@@ -10,7 +10,7 @@ int test_multiple_recipients() {
     std::cout << "\nTest: Multiple Recipients (TO, CC, BCC)" << std::endl;
 
     // Load the DLL
-    HMODULE hDll = LoadLibraryA("go-mapi.dll");
+    HMODULE hDll = TestUtilities::LoadGoMapiDll();
     if (!hDll) {
         std::cerr << "Failed to load go-mapi.dll" << std::endl;
         return 1;
@@ -64,24 +64,23 @@ int test_multiple_recipients() {
     message.nFileCount = 0;
     message.lpFiles = nullptr;
 
+    const std::string queueDir = TestUtilities::GetGoMapiTempDir();
+    const auto snapshot = TestUtilities::SnapshotQueue(queueDir);
+
     // Send the message
     ULONG result = MAPISendMail(0, 0, &message, 0, 0);
 
     std::cout << "MAPISendMail returned: " << result << std::endl;
 
-    // Verify JSON file was created
-    std::string tempDir = TestUtilities::GetGoMapiTempDir();
-    bool success = TestUtilities::VerifyJsonFileCreated(tempDir);
-
-    if (success) {
-        // Find and validate the JSON file
-        for (const auto& entry : std::filesystem::directory_iterator(tempDir)) {
-            if (entry.path().extension() == ".json") {
-                success = TestUtilities::ValidateJsonFile(entry.path().string());
-                break;
-            }
-        }
+    if (result != 0) {
+        std::cerr << "MAPISendMail failed" << std::endl;
+        TestUtilities::CleanupTestArtifacts(queueDir, "", snapshot);
+        FreeLibrary(hDll);
+        return 1;
     }
+    const std::string jsonFile = TestUtilities::FindNewJsonFile(snapshot, queueDir);
+    const bool success = !jsonFile.empty() && TestUtilities::ValidateJsonFile(jsonFile);
+    TestUtilities::CleanupTestArtifacts(queueDir, jsonFile, snapshot);
 
     FreeLibrary(hDll);
     return success ? 0 : 1;

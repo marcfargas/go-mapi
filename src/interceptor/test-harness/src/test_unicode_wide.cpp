@@ -1,56 +1,52 @@
 #include <windows.h>
 #include <iostream>
 #include <string>
-#include <filesystem>
 #include "../test_utils.h"
 #include "../../mapi_types.h"
 
 using namespace mapi_test;
 
-// Function pointer for MAPISendMailW (takes wide message)
-typedef ULONG (WINAPI *MAPISendMailWFunc)(
-    LHANDLE lhSession,
-    ULONG_PTR ulUIParam,
-    LPMapiMessageW lpMessage,
-    ULONG flFlags,
-    ULONG ulReserved
-);
+typedef ULONG (WINAPI *MAPISendMailWFunc)(LHANDLE, ULONG_PTR, LPMapiMessageW, ULONG, ULONG);
+
+namespace {
+std::wstring Utf8ToWide(const std::string& text) {
+    const int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (size <= 1) return L"";
+    std::wstring result(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, result.data(), size);
+    result.resize(size - 1);
+    return result;
+}
+}  // namespace
 
 int test_unicode_wide() {
     std::cout << "\nTest: MAPISendMailW (Wide/Unicode)" << std::endl;
-
-    // Clean up before test
-    std::string tempDir = TestUtilities::GetGoMapiTempDir();
-    TestUtilities::CleanupTestFiles(tempDir);
-
-    // Load the DLL
-    HMODULE hDll = LoadLibraryA("go-mapi.dll");
-    if (!hDll) {
-        std::cerr << "Failed to load go-mapi.dll" << std::endl;
-        return 1;
-    }
-
-    MAPISendMailWFunc MAPISendMailW = reinterpret_cast<MAPISendMailWFunc>(
-        GetProcAddress(hDll, "MAPISendMailW")
-    );
-
+    HMODULE hDll = TestUtilities::LoadGoMapiDll();
+    if (!hDll) return 1;
+    const auto MAPISendMailW = reinterpret_cast<MAPISendMailWFunc>(GetProcAddress(hDll, "MAPISendMailW"));
     if (!MAPISendMailW) {
         std::cerr << "Failed to get MAPISendMailW function" << std::endl;
         FreeLibrary(hDll);
         return 1;
     }
 
-    // Create message with real wide strings including non-ASCII
-    // Spanish: "Informe económico — año 2026"
-    wchar_t subject[] = L"Informe econ\u00f3mico \u2014 a\u00f1o 2026";
-    // Japanese + emoji mix in body
-    wchar_t body[] = L"Estimado se\u00f1or M\u00fcller,\n\nAdjunto el informe.\n\nSaludos cordiales.";
+    const std::string fixturePath = TestUtilities::CreateAttachmentFixture(
+        L"informe_año_2026.pdf", "owned wide attachment fixture\n");
+    std::wstring attachPath = Utf8ToWide(fixturePath);
+    if (fixturePath.empty() || attachPath.empty()) {
+        std::cerr << "Failed to create Unicode attachment fixture" << std::endl;
+        TestUtilities::RemoveAttachmentFixture(fixturePath);
+        FreeLibrary(hDll);
+        return 1;
+    }
 
-    wchar_t toName[] = L"Ren\u00e9 M\u00fcller";
+    wchar_t subject[] = L"Informe económico — año 2026";
+    wchar_t body[] = L"Estimado señor Müller,\n\nAdjunto el informe.\n\nSaludos cordiales.";
+    wchar_t toName[] = L"René Müller";
     wchar_t toAddress[] = L"SMTP:rene.mueller@example.com";
-    wchar_t ccName[] = L"\u00c5ke Str\u00f6m";
+    wchar_t ccName[] = L"Åke Ström";
     wchar_t ccAddress[] = L"SMTP:ake.strom@example.com";
-
+    wchar_t attachName[] = L"informe_año_2026.pdf";
     MapiRecipDescW recipients[2] = {};
     recipients[0].ulRecipClass = MAPI_TO;
     recipients[0].lpszName = toName;
@@ -58,15 +54,9 @@ int test_unicode_wide() {
     recipients[1].ulRecipClass = MAPI_CC;
     recipients[1].lpszName = ccName;
     recipients[1].lpszAddress = ccAddress;
-
-    // Test attachment with unicode path
-    wchar_t attachPath[] = L"C:\\Users\\ren\u00e9\\Documents\\informe_2026.pdf";
-    wchar_t attachName[] = L"informe_2026.pdf";
-
     MapiFileDescW attachment = {};
-    attachment.lpszPathName = attachPath;
+    attachment.lpszPathName = attachPath.data();
     attachment.lpszFileName = attachName;
-
     MapiMessageW message = {};
     message.lpszSubject = subject;
     message.lpszNoteText = body;
@@ -75,68 +65,24 @@ int test_unicode_wide() {
     message.nFileCount = 1;
     message.lpFiles = &attachment;
 
-    // Send via wide API
-    ULONG result = MAPISendMailW(0, 0, &message, 0, 0);
+    const std::string queueDir = TestUtilities::GetGoMapiTempDir();
+    const auto snapshot = TestUtilities::SnapshotQueue(queueDir);
+    const ULONG result = MAPISendMailW(0, 0, &message, 0, 0);
     std::cout << "MAPISendMailW returned: " << result << std::endl;
-
-    if (result != 0) {
-        std::cerr << "MAPISendMailW returned error code " << result << std::endl;
-        FreeLibrary(hDll);
-        return 1;
+    const std::string jsonFile = TestUtilities::FindNewJsonFile(snapshot, queueDir);
+    bool success = result == 0 && !jsonFile.empty() && TestUtilities::ValidateJsonFile(jsonFile);
+    const std::string json = TestUtilities::ReadJsonContent(jsonFile);
+    if (json.empty()) {
+        std::cerr << "JSON output was empty" << std::endl;
+        success = false;
+    } else if (json.find("Informe") == std::string::npos ||
+               json.find("Ren") == std::string::npos ||
+               json.find("ller") == std::string::npos) {
+        std::cerr << "Wide text was missing from JSON output" << std::endl;
+        success = false;
     }
-
-    // Verify JSON file was created
-    bool success = TestUtilities::VerifyJsonFileCreated(tempDir);
-
-    if (success) {
-        // Find and validate the JSON file content
-        for (const auto& entry : std::filesystem::directory_iterator(tempDir)) {
-            if (entry.path().extension() == ".json") {
-                std::string path = entry.path().string();
-                success = TestUtilities::ValidateJsonFile(path);
-
-                // Read file to verify UTF-8 content
-                HANDLE hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
-                    nullptr, OPEN_EXISTING, 0, nullptr);
-                if (hFile != INVALID_HANDLE_VALUE) {
-                    char buf[4096];
-                    DWORD bytesRead;
-                    if (ReadFile(hFile, buf, sizeof(buf) - 1, &bytesRead, nullptr)) {
-                        buf[bytesRead] = '\0';
-                        std::string json(buf, bytesRead);
-
-                        // Verify key UTF-8 sequences are present
-                        // "ó" = \xc3\xb3, "ñ" = \xc3\xb1, "ü" = \xc3\xbc
-                        if (json.find("econ\\u00f3mico") != std::string::npos ||
-                            json.find("econ\xc3\xb3mico") != std::string::npos) {
-                            std::cout << "  UTF-8 content verified in JSON" << std::endl;
-                        } else {
-                            // Check if the subject is at least present
-                            if (json.find("Informe") != std::string::npos) {
-                                std::cout << "  Subject found in JSON output" << std::endl;
-                            } else {
-                                std::cerr << "  WARNING: Could not find subject in JSON" << std::endl;
-                                success = false;
-                            }
-                        }
-
-                        // Verify recipient name made it through
-                        if (json.find("Ren") != std::string::npos &&
-                            json.find("ller") != std::string::npos) {
-                            std::cout << "  Wide recipient names converted to UTF-8" << std::endl;
-                        } else {
-                            std::cerr << "  WARNING: Recipient names not found" << std::endl;
-                            success = false;
-                        }
-                    }
-                    CloseHandle(hFile);
-                }
-                break;
-            }
-        }
-    }
-
-    TestUtilities::CleanupTestFiles(tempDir);
+    TestUtilities::CleanupTestArtifacts(queueDir, jsonFile, snapshot);
+    TestUtilities::RemoveAttachmentFixture(fixturePath);
     FreeLibrary(hDll);
     return success ? 0 : 1;
 }

@@ -1,47 +1,80 @@
 #include "test_utils.h"
+#include "../fs_utils.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
-#include <regex>
+#include <algorithm>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
 namespace mapi_test {
 
-MAPISendMailFunc TestUtilities::LoadMAPISendMail(const std::string& dllPath) {
-    HMODULE hDll = LoadLibraryA(dllPath.c_str());
-    if (!hDll) {
-        std::cerr << "Failed to load DLL: " << dllPath << std::endl;
-        return nullptr;
-    }
+namespace {
 
-    MAPISendMailFunc func = reinterpret_cast<MAPISendMailFunc>(
-        GetProcAddress(hDll, "MAPISendMail")
-    );
+std::string g_dllPath;
 
-    if (!func) {
-        std::cerr << "Failed to get MAPISendMail function pointer" << std::endl;
-        FreeLibrary(hDll);
-        return nullptr;
-    }
-
-    return func;
+std::string WideToUtf8(const std::wstring& wide) {
+    if (wide.empty()) return "";
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (size <= 1) return "";
+    std::string utf8(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), size, nullptr, nullptr);
+    utf8.resize(size - 1);
+    return utf8;
 }
 
-bool TestUtilities::VerifyJsonFileCreated(const std::string& tempDir) {
-    try {
-        for (const auto& entry : fs::directory_iterator(tempDir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".json") {
-                std::cout << "Found JSON file: " << entry.path().filename().string() << std::endl;
-                return true;
-            }
+std::set<std::string> ListFiles(const fs::path& directory, const std::string& extension) {
+    std::set<std::string> files;
+    std::error_code error;
+    if (!fs::exists(directory, error)) return files;
+    for (const auto& entry : fs::directory_iterator(directory, error)) {
+        if (!error && entry.is_regular_file(error) && entry.path().extension() == extension) {
+            files.insert(entry.path().string());
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Error checking directory: " << e.what() << std::endl;
     }
+    return files;
+}
 
-    return false;
+}  // namespace
+
+void TestUtilities::SetDllPath(const std::string& dllPath) {
+    g_dllPath = dllPath;
+}
+
+HMODULE TestUtilities::LoadGoMapiDll() {
+    if (g_dllPath.empty()) {
+        std::cerr << "No go-mapi DLL path was configured" << std::endl;
+        return nullptr;
+    }
+    HMODULE hDll = LoadLibraryA(g_dllPath.c_str());
+    if (!hDll) {
+        std::cerr << "Failed to load DLL: " << g_dllPath << std::endl;
+    }
+    return hDll;
+}
+
+TestUtilities::QueueSnapshot TestUtilities::SnapshotQueue(const std::string& queueDir) {
+    QueueSnapshot snapshot;
+    const fs::path queue(queueDir);
+    snapshot.jsonFiles = ListFiles(queue, ".json");
+    snapshot.errorFiles = ListFiles(queue / "errors", ".error");
+    return snapshot;
+}
+
+std::string TestUtilities::FindNewJsonFile(const QueueSnapshot& snapshot,
+                                           const std::string& queueDir) {
+    const std::set<std::string> current = ListFiles(fs::path(queueDir), ".json");
+    std::vector<std::string> newFiles;
+    std::set_difference(current.begin(), current.end(), snapshot.jsonFiles.begin(), snapshot.jsonFiles.end(),
+                        std::back_inserter(newFiles));
+    if (newFiles.size() != 1) {
+        std::cerr << "Expected exactly one new JSON file, found " << newFiles.size() << std::endl;
+        return "";
+    }
+    std::cout << "Found new JSON file: " << fs::path(newFiles.front()).filename().string() << std::endl;
+    return newFiles.front();
 }
 
 bool TestUtilities::ValidateJsonFile(const std::string& filePath) {
@@ -75,8 +108,8 @@ bool TestUtilities::ValidateJsonFile(const std::string& filePath) {
             }
         }
 
-        // Check for valid JSON structure
-        if (content.front() != '{' || content.back() != '}') {
+        // Check for valid JSON structure. Guard empty content before front/back.
+        if (content.empty() || content.front() != '{' || content.back() != '}') {
             std::cerr << "Invalid JSON structure" << std::endl;
             return false;
         }
@@ -89,34 +122,27 @@ bool TestUtilities::ValidateJsonFile(const std::string& filePath) {
     }
 }
 
-void TestUtilities::CleanupTestFiles(const std::string& tempDir) {
-    try {
-        for (const auto& entry : fs::directory_iterator(tempDir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".json") {
-                fs::remove(entry);
-                std::cout << "Deleted: " << entry.path().filename().string() << std::endl;
-            }
+void TestUtilities::CleanupTestArtifacts(const std::string& queueDir,
+                                         const std::string& jsonFile,
+                                         const QueueSnapshot& snapshot) {
+    if (!jsonFile.empty() && snapshot.jsonFiles.count(jsonFile) == 0) {
+        std::error_code error;
+        const fs::path json(jsonFile);
+        fs::remove(json, error);
+        fs::remove_all(json.parent_path() / json.stem(), error);
+    }
+
+    const fs::path errors = fs::path(queueDir) / "errors";
+    for (const auto& errorFile : ListFiles(errors, ".error")) {
+        if (snapshot.errorFiles.count(errorFile) == 0) {
+            std::error_code error;
+            fs::remove(errorFile, error);
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Error cleaning up files: " << e.what() << std::endl;
     }
 }
 
 std::string TestUtilities::GetGoMapiTempDir() {
-    wchar_t tempPath[MAX_PATH];
-    if (GetTempPathW(MAX_PATH, tempPath) == 0) {
-        return "";
-    }
-
-    std::string result;
-    // Convert wide string to narrow string
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, tempPath, -1, NULL, 0, NULL, NULL);
-    result.resize(size_needed - 1);
-    WideCharToMultiByte(CP_UTF8, 0, tempPath, -1, &result[0], size_needed, NULL, NULL);
-
-    // Append go-mapi directory
-    result = fs::path(result).append("go-mapi").string();
-    return result;
+    return WideToUtf8(go_mapi::FsUtils::GetQueueDirectory());
 }
 
 void TestUtilities::PrintTestResult(const std::string& testName, bool passed) {
@@ -128,41 +154,48 @@ void TestUtilities::PrintTestResult(const std::string& testName, bool passed) {
 }
 
 int TestUtilities::GetJsonFileCount(const std::string& tempDir) {
-    int count = 0;
-    try {
-        for (const auto& entry : fs::directory_iterator(tempDir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".json") {
-                count++;
-            }
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "Error counting files: " << e.what() << std::endl;
-    }
-    return count;
+    return static_cast<int>(ListFiles(fs::path(tempDir), ".json").size());
 }
 
-std::string TestUtilities::ReadNewestJsonContent(const std::string& tempDir) {
-    std::string newestPath;
-    std::filesystem::file_time_type newestTime{};
-
-    try {
-        for (const auto& entry : fs::directory_iterator(tempDir)) {
-            if (entry.is_regular_file() && entry.path().extension() == ".json") {
-                auto wt = entry.last_write_time();
-                if (newestPath.empty() || wt > newestTime) {
-                    newestTime = wt;
-                    newestPath = entry.path().string();
-                }
-            }
-        }
-    } catch (...) {}
-
-    if (newestPath.empty()) return "";
-
-    std::ifstream file(newestPath);
+std::string TestUtilities::ReadJsonContent(const std::string& filePath) {
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file.is_open()) return "";
     std::stringstream buf;
     buf << file.rdbuf();
     return buf.str();
+}
+
+std::string TestUtilities::CreateAttachmentFixture(const std::wstring& fileName,
+                                                   const std::string& contents) {
+    wchar_t tempPath[MAX_PATH];
+    if (GetTempPathW(MAX_PATH, tempPath) == 0) return "";
+    const std::wstring root = std::wstring(tempPath) + L"go-mapi-test-harness";
+    if (!CreateDirectoryW(root.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return "";
+    // A process-specific directory prevents a stale fixture from one harness
+    // process colliding with another while retaining the expected basename.
+    const std::wstring directory = root + L"\\" + std::to_wstring(GetCurrentProcessId());
+    if (!CreateDirectoryW(directory.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) return "";
+    const std::wstring path = directory + L"\\" + fileName;
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return "";
+    DWORD written = 0;
+    const BOOL ok = WriteFile(file, contents.data(), static_cast<DWORD>(contents.size()), &written, nullptr);
+    CloseHandle(file);
+    if (!ok || written != contents.size()) {
+        DeleteFileW(path.c_str());
+        return "";
+    }
+    return WideToUtf8(path);
+}
+
+void TestUtilities::RemoveAttachmentFixture(const std::string& filePath) {
+    if (filePath.empty()) return;
+    const int size = MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, nullptr, 0);
+    if (size <= 1) return;
+    std::wstring path(size, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, filePath.c_str(), -1, path.data(), size);
+    path.resize(size - 1);
+    DeleteFileW(path.c_str());
 }
 
 }  // namespace mapi_test

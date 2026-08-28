@@ -12,7 +12,7 @@ using namespace mapi_test;
 int test_ansi_encoding() {
     std::cout << "\nTest: ANSI Codepage Encoding" << std::endl;
 
-    HMODULE hDll = LoadLibraryA("go-mapi.dll");
+    HMODULE hDll = TestUtilities::LoadGoMapiDll();
     if (!hDll) {
         std::cerr << "Failed to load go-mapi.dll" << std::endl;
         return 1;
@@ -27,9 +27,8 @@ int test_ansi_encoding() {
         return 1;
     }
 
-    // Clean up first
-    std::string tempDir = TestUtilities::GetGoMapiTempDir();
-    TestUtilities::CleanupTestFiles(tempDir);
+    const std::string queueDir = TestUtilities::GetGoMapiTempDir();
+    const auto snapshot = TestUtilities::SnapshotQueue(queueDir);
 
     // Build a subject with ANSI codepage characters (Windows-1252).
     // "Enviando por correo electrónico:" — the ó is 0xF3 in Windows-1252.
@@ -65,9 +64,11 @@ int test_ansi_encoding() {
     }
 
     // Read the JSON and verify the subject is valid UTF-8 with ó (not Ã³ or other mojibake)
-    std::string json = TestUtilities::ReadNewestJsonContent(tempDir);
+    const std::string jsonFile = TestUtilities::FindNewJsonFile(snapshot, queueDir);
+    std::string json = TestUtilities::ReadJsonContent(jsonFile);
     if (json.empty()) {
         std::cerr << "No JSON file found" << std::endl;
+        TestUtilities::CleanupTestArtifacts(queueDir, jsonFile, snapshot);
         FreeLibrary(hDll);
         return 1;
     }
@@ -87,7 +88,7 @@ int test_ansi_encoding() {
         }
     }
 
-    TestUtilities::CleanupTestFiles(tempDir);
+    TestUtilities::CleanupTestArtifacts(queueDir, jsonFile, snapshot);
     FreeLibrary(hDll);
     return found ? 0 : 1;
 }

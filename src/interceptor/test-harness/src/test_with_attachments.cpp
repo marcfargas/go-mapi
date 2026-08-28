@@ -10,7 +10,7 @@ int test_with_attachments() {
     std::cout << "\nTest: With Attachments" << std::endl;
 
     // Load the DLL
-    HMODULE hDll = LoadLibraryA("go-mapi.dll");
+    HMODULE hDll = TestUtilities::LoadGoMapiDll();
     if (!hDll) {
         std::cerr << "Failed to load go-mapi.dll" << std::endl;
         return 1;
@@ -32,13 +32,21 @@ int test_with_attachments() {
     char toAddress[] = "test@example.com";
     char toName[] = "Test User";
 
-    // Create dummy attachment
-    char filePath[] = "C:\\test.txt";
+    // Create an owned fixture; never rely on a machine-specific C:\\test.txt.
+    const std::string fixturePath = TestUtilities::CreateAttachmentFixture(
+        L"go-mapi-harness-ascii.txt", "harness attachment\n");
+    if (fixturePath.empty()) {
+        std::cerr << "Failed to create attachment fixture" << std::endl;
+        FreeLibrary(hDll);
+        return 1;
+    }
+    // MAPI's ABI declares this mutable even though the DLL treats it as input.
+    std::string filePath = fixturePath;
     char fileName[] = "test.txt";
 
     MapiFileDesc attachment = {};
     attachment.nPosition = 0;
-    attachment.lpszPathName = filePath;
+    attachment.lpszPathName = filePath.data();
     attachment.lpszFileName = fileName;
 
     MapiRecipDesc recipient = {};
@@ -54,25 +62,20 @@ int test_with_attachments() {
     message.nFileCount = 1;
     message.lpFiles = &attachment;
 
+    const std::string queueDir = TestUtilities::GetGoMapiTempDir();
+    const auto snapshot = TestUtilities::SnapshotQueue(queueDir);
+
     // Send the message
     ULONG result = MAPISendMail(0, 0, &message, 0, 0);
 
     std::cout << "MAPISendMail returned: " << result << std::endl;
 
-    // Verify JSON file was created
-    std::string tempDir = TestUtilities::GetGoMapiTempDir();
-    bool success = TestUtilities::VerifyJsonFileCreated(tempDir);
-
-    if (success) {
-        // Find and validate the JSON file
-        for (const auto& entry : std::filesystem::directory_iterator(tempDir)) {
-            if (entry.path().extension() == ".json") {
-                // Check that it contains attachment info
-                success = TestUtilities::ValidateJsonFile(entry.path().string());
-                break;
-            }
-        }
-    }
+    bool success = result == 0;
+    if (!success) std::cerr << "MAPISendMail failed" << std::endl;
+    const std::string jsonFile = TestUtilities::FindNewJsonFile(snapshot, queueDir);
+    success = success && !jsonFile.empty() && TestUtilities::ValidateJsonFile(jsonFile);
+    TestUtilities::CleanupTestArtifacts(queueDir, jsonFile, snapshot);
+    TestUtilities::RemoveAttachmentFixture(fixturePath);
 
     FreeLibrary(hDll);
     return success ? 0 : 1;
