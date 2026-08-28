@@ -92,6 +92,12 @@ endif()
 # Add the test harness and the doctest-based unit tests (CPPTEST-01).
 if(BUILD_TESTS)
     add_subdirectory(test-harness)
+    # Register this integration test in the top-level testing directory.  The
+    # harness itself is a nested CMake project, whose CTestTestfile is not
+    # emitted consistently by the Windows MinGW configuration.
+    add_test(NAME go-mapi-test-harness
+        COMMAND $<TARGET_FILE:go-mapi-test-harness> $<TARGET_FILE:go-mapi>
+    )
     add_subdirectory(tests)
 endif()
 

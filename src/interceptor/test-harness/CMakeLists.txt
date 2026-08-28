@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Create the test harness executable
 add_executable(go-mapi-test-harness
     test_utils.cpp
+    ../fs_utils.cpp
     src/main.cpp
     src/test_simple_send.cpp
     src/test_with_attachments.cpp
@@ -17,6 +18,8 @@ add_executable(go-mapi-test-harness
     src/test_null_filename.cpp
 )
 
+add_dependencies(go-mapi-test-harness go-mapi)
+
 # Include directories (interceptor is now parent directory)
 target_include_directories(go-mapi-test-harness PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/.."
@@ -25,10 +28,10 @@ target_include_directories(go-mapi-test-harness PRIVATE
 # Platform-specific settings
 if(MSVC)
     target_compile_options(go-mapi-test-harness PRIVATE /W4 /WX-)
-    target_link_libraries(go-mapi-test-harness PRIVATE kernel32.lib user32.lib)
+    target_link_libraries(go-mapi-test-harness PRIVATE kernel32.lib user32.lib shell32.lib)
 elseif(MINGW)
     target_compile_options(go-mapi-test-harness PRIVATE -Wall -Wextra -Wno-unused-parameter)
-    target_link_libraries(go-mapi-test-harness PRIVATE kernel32 user32 -static-libgcc -static-libstdc++)
+    target_link_libraries(go-mapi-test-harness PRIVATE kernel32 user32 shell32 -static-libgcc -static-libstdc++)
     target_link_options(go-mapi-test-harness PRIVATE -static)
 endif()
 

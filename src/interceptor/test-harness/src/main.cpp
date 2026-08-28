@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include "../test_utils.h"
@@ -21,10 +22,19 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
 
     // Determine DLL path
-    std::string dllPath = "go-mapi.dll";
+    char executablePath[MAX_PATH] = {};
+    const DWORD executableLength = GetModuleFileNameA(nullptr, executablePath, MAX_PATH);
+    if (executableLength == 0 || executableLength == MAX_PATH) {
+        std::cerr << "Failed to determine test harness executable path" << std::endl;
+        return 1;
+    }
+    // Default to the DLL adjacent to the harness executable. CTest overrides
+    // this with the exact go-mapi target path below.
+    std::string dllPath = (std::filesystem::path(executablePath).parent_path() / "go-mapi.dll").string();
     if (argc > 1) {
         dllPath = argv[1];
     }
+    TestUtilities::SetDllPath(dllPath);
 
     std::cout << "Using DLL: " << dllPath << std::endl;
     std::cout << std::endl;

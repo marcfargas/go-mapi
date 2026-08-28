@@ -1,0 +1,2 @@
+# MIME message goldens intentionally contain CRLF wire-format line endings.
+internal/mapi/testdata/mime/*.golden -text
