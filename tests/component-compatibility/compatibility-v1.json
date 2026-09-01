@@ -1,0 +1,17 @@
+{
+  "schema": "go-mapi-component-compatibility-fixtures-v1",
+  "cases": [
+    {"name":"exact-minimum","installed":"4.0.0","minInclusive":"4.0.0","status":"compatible"},
+    {"name":"below-minimum","installed":"3.9.9","minInclusive":"4.0.0","status":"below-minimum"},
+    {"name":"newer","installed":"4.2.0","minInclusive":"4.0.0","status":"compatible"},
+    {"name":"at-exclusive-maximum","installed":"5.0.0","minInclusive":"4.0.0","maxExclusive":"5.0.0","status":"above-maximum"},
+    {"name":"prerelease-below-stable","installed":"4.0.0-rc.10","minInclusive":"4.0.0","status":"below-minimum"},
+    {"name":"numeric-prerelease","installed":"4.0.0-rc.10","minInclusive":"4.0.0-rc.2","status":"compatible"},
+    {"name":"build-ignored","installed":"4.0.0+app.7","minInclusive":"4.0.0+contract.1","status":"compatible"},
+    {"name":"missing","installed":"","minInclusive":"4.0.0","status":"missing"},
+    {"name":"leading-v","installed":"v4.0.0","minInclusive":"4.0.0","status":"invalid"},
+    {"name":"partial","installed":"4.0","minInclusive":"4.0.0","status":"invalid"},
+    {"name":"leading-zero","installed":"04.0.0","minInclusive":"4.0.0","status":"invalid"},
+    {"name":"contradictory","installed":"4.0.0","minInclusive":"5.0.0","maxExclusive":"4.0.0","status":"invalid"}
+  ]
+}

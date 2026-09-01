@@ -28,5 +28,15 @@ std::string AnsiToUtf8(const char* ansi);
 // Pure string manipulation — handles both forward and backward slashes.
 std::string FilenameFromPath(const std::string& path);
 
+// Convert the ANSI Simple MAPI MAPISendDocuments string arguments into queue
+// attachments.  Returns false for malformed non-empty lists (such as empty
+// path tokens or duplicate effective destination names).  A null/empty path
+// list is valid and produces no attachments; the DLL entry point owns the
+// documented no-op behavior for that case.
+bool ConvertSendDocumentsAttachments(const char* delimiter,
+                                     const char* filePaths,
+                                     const char* fileNames,
+                                     std::vector<Attachment>& attachments);
+
 } // namespace message_converter
 } // namespace go_mapi

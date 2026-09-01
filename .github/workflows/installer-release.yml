@@ -88,11 +88,10 @@ jobs:
       - name: Install npm workspaces
         run: npm ci
 
-      # D-26: derive the release version from the trigger and patch wails.json
-      # in-runner so PE metadata, ldflags, and NSIS all see the same value.
-      # The repo's wails.json productVersion is intentionally a placeholder
-      # (0.0.0-dev) — the git tag is the sole authority for release version.
-      - name: Derive version + patch wails.json
+      # The tag is the release authority. Write both independent component
+      # version inputs in the ephemeral runner checkout so their respective
+      # release entrypoints reject no version and embed the same value.
+      - name: Derive version and set component release inputs
         id: version
         shell: pwsh
         run: |
@@ -102,6 +101,10 @@ jobs:
             $version = "${{ inputs.version }}"
           }
           if (-not $version) { throw "Empty version — refusing to build." }
+
+          foreach ($path in @('src/app/VERSION', 'src/interceptor/interceptor-version.txt')) {
+            Set-Content -LiteralPath $path -Value $version -NoNewline -Encoding ascii
+          }
 
           # Patch wails.json so Wails picks the right value for PE metadata
           # (FileVersion / ProductVersion resources). Ephemeral — not committed.
@@ -128,17 +131,14 @@ jobs:
         run: npm run -w @marcfargas/go-mapi-app-frontend build
 
       - name: Build interceptor DLL
-        run: npm run build:interceptor
+        run: npm run build:interceptor:release
 
       # PATTERNS.md §Shared Pattern 4: all four injectable vars are in `package main`
       # at src/app/. Use -X main.<var>=<value>. CONTEXT D-15's `github.com/marcfargas/go-mapi/src/app`
       # path is wrong and corrected here.
-      - name: Build Wails app (release ldflags — all four injections)
-        working-directory: src/app
+      - name: Build Wails app through the release entrypoint
         shell: pwsh
-        run: |
-          $ldf = "-X main.Version=${{ steps.version.outputs.version }} -X main.aumidOverride=com.marcfargas.gomapi -X main.oauthClientID=$env:GOMAPI_OAUTH_CLIENT_ID -X main.oauthClientSecret=$env:GOMAPI_OAUTH_CLIENT_SECRET"
-          wails build -platform windows/amd64 -ldflags "$ldf"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials -Aumid com.marcfargas.gomapi
 
       - name: Stage unsigned binaries
         shell: pwsh

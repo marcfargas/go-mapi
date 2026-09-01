@@ -1,0 +1,222 @@
+name: Release user app
+
+on:
+  push:
+    tags: ['app-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable app version (for example 4.0.0)'
+        required: true
+      sign:
+        description: 'Use the configured release-signing path'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish the GitHub Release and submit Store/winget updates'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: user-app-release-${{ github.ref_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build-sign-verify:
+    runs-on: windows-latest
+    environment: app-release
+    env:
+      GOMAPI_OAUTH_CLIENT_ID: ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
+      GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
+      GOMAPI_STORE_PACKAGE_FAMILY_NAME: ${{ vars.STORE_PACKAGE_FAMILY_NAME }}
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      GOMAPI_ADMIN_RELEASE_ROOT_B64: ${{ secrets.ADMIN_RELEASE_ROOT_B64 }}
+      GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Resolve independent app version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' -replace '^app-v','' } else { '${{ inputs.version }}' }
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -eq '0.0.0') { throw "Invalid stable app version: $version" }
+          [IO.File]::WriteAllText('src/app/VERSION', $version, [Text.Encoding]::ASCII)
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+
+      - name: Fail closed for public or selected signing
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        shell: pwsh
+        run: |
+          if ($env:HAS_SIGNPATH -ne 'true') { throw 'Public/signing app release requires SignPath credentials; unsigned publication is forbidden.' }
+          foreach ($name in @('STORE_IDENTITY_NAME','STORE_PUBLISHER','STORE_PUBLISHER_DISPLAY_NAME','GOMAPI_STORE_PACKAGE_FAMILY_NAME')) {
+            if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) { throw "Missing protected Store identity: $name" }
+          }
+        env:
+          STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
+          STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
+
+      - run: npm ci
+      - run: npm run test:app
+      - run: npm run check:app
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: npm run build:app:release
+
+      - name: Upload app EXE for signing
+        if: github.event_name == 'push' || inputs.sign
+        id: upload-app
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-app-exe-unsigned
+          path: src/app/build/bin/go-mapi.exe
+
+      - name: Sign app EXE
+        if: github.event_name == 'push' || inputs.sign
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-app.outputs.artifact-id }}
+          output-artifact-directory: release/app-exe-signed
+          wait-for-completion: true
+
+      - name: Adopt signed app EXE
+        if: github.event_name == 'push' || inputs.sign
+        shell: pwsh
+        run: Copy-Item release/app-exe-signed/go-mapi.exe src/app/build/bin/go-mapi.exe -Force
+
+      - name: Install pinned standalone packager
+        shell: pwsh
+        run: choco install nsis --version=3.11 -y --no-progress
+
+      - name: Build app-only MSIX and standalone installer from the signed EXE
+        shell: pwsh
+        env:
+          STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
+          STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
+          STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          $identity = if ($public) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
+          $publisher = if ($public) { $env:STORE_PUBLISHER } else { 'CN=go-mapi validation' }
+          $display = if ($public) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi validation' }
+          .\scripts\build-app-msix.ps1 -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
+          .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Upload packages for signing
+        if: github.event_name == 'push' || inputs.sign
+        id: upload-packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-user-packages-unsigned
+          path: |
+            release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix
+            release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe
+
+      - name: Sign MSIX and standalone installer
+        if: github.event_name == 'push' || inputs.sign
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-packages.outputs.artifact-id }}
+          output-artifact-directory: release/app-signed
+          wait-for-completion: true
+
+      - name: Adopt signed packages and verify exact bytes
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') {
+            Copy-Item release/app-signed/* release/app/ -Force
+          }
+          $args = @('-Version','${{ steps.version.outputs.version }}','-MsixPath','release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix','-InstallerPath','release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe')
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignature' }
+          .\scripts\verify-app-distribution.ps1 @args
+
+      - name: Render winget manifests for the verified standalone hash
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $installer = 'release/app/go-mapi-user-' + $version + '-x64.exe'
+          $url = 'https://github.com/${{ github.repository }}/releases/download/app-v' + $version + '/go-mapi-user-' + $version + '-x64.exe'
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
+          New-Item -ItemType Directory -Force release/winget | Out-Null
+          Get-ChildItem distribution/winget/*.yaml.in | ForEach-Object {
+            $target = Join-Path release/winget $_.Name.Replace('.in','')
+            $text = (Get-Content $_.FullName -Raw).Replace('@@VERSION@@',$version).Replace('@@INSTALLER_URL@@',$url).Replace('@@INSTALLER_SHA256@@',$hash)
+            [IO.File]::WriteAllText($target, $text, [Text.UTF8Encoding]::new($false))
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-user-${{ steps.version.outputs.version }}
+          path: |
+            release/app/
+            release/winget/
+
+      - name: Publish immutable GitHub release assets
+        if: github.event_name == 'push' || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: app-v${{ steps.version.outputs.version }}
+          fail_on_unmatched_files: true
+          files: |
+            release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix
+            release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe
+            release/app/app-distribution.json
+            release/winget/*.yaml
+
+  submit-winget:
+    needs: build-sign-verify
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: windows-latest
+    environment: app-release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-user-${{ needs.build-sign-verify.outputs.version }}
+          path: release
+      - name: Submit the exact GitHub Release artifact to winget
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) { throw 'Missing classic public_repo WingetCreate token' }
+          Invoke-WebRequest 'https://github.com/microsoft/winget-create/releases/download/v1.10.3.0/wingetcreate.exe' -OutFile wingetcreate.exe
+          .\wingetcreate.exe update MarcFargas.go-mapi --urls "https://github.com/${{ github.repository }}/releases/download/app-v${{ needs.build-sign-verify.outputs.version }}/go-mapi-user-${{ needs.build-sign-verify.outputs.version }}-x64.exe" --version '${{ needs.build-sign-verify.outputs.version }}' --submit --no-open
+
+  submit-store:
+    needs: build-sign-verify
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: windows-latest
+    environment: app-release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-user-${{ needs.build-sign-verify.outputs.version }}
+          path: release
+      - name: Submit exact signed MSIX to the existing Store product
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+        with:
+          command: publish
+          productId: ${{ vars.STORE_PRODUCT_ID }}
+          tenantId: ${{ secrets.STORE_TENANT_ID }}
+          sellerId: ${{ secrets.STORE_SELLER_ID }}
+          clientId: ${{ secrets.STORE_CLIENT_ID }}
+          clientSecret: ${{ secrets.STORE_CLIENT_SECRET }}
+          packagePath: release/app/go-mapi-${{ needs.build-sign-verify.outputs.version }}-x64.msix

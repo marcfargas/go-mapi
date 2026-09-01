@@ -16,6 +16,8 @@ add_executable(go-mapi-test-harness
     src/test_multiple_recipients.cpp
     src/test_ansi_encoding.cpp
     src/test_null_filename.cpp
+    src/test_attachment_copy_failure.cpp
+    src/test_send_documents.cpp
 )
 
 add_dependencies(go-mapi-test-harness go-mapi)

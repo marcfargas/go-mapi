@@ -5,12 +5,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock wailsjs bindings BEFORE importing App — vi.mock is hoisted.
 vi.mock('../wailsjs/go/main/App', () => ({
   GetAuthStatus: vi.fn().mockResolvedValue({ authenticated: false }),
+  GetComponentHealth: vi.fn().mockResolvedValue({ healthy: true, issues: [] }),
+  GetAdminInstallState: vi.fn().mockResolvedValue({ phase: 'healthy', retryable: false }),
   GetQueue: vi.fn().mockResolvedValue([]),
   SignIn: vi.fn(),
   SignOut: vi.fn(),
   CreateDraftForID: vi.fn().mockResolvedValue(undefined),
   DismissEmail: vi.fn().mockResolvedValue(undefined),
   GetSettings: vi.fn().mockResolvedValue({ mode: 'manual', update_checks_enabled: true }),
+  GetSettingsState: vi.fn().mockResolvedValue({ settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true } }),
+  SaveSettings: vi.fn().mockResolvedValue(undefined),
+  OpenDefaultAppsSettings: vi.fn().mockResolvedValue(undefined),
+  DismissDefaultAppsPrompt: vi.fn().mockResolvedValue(undefined),
+  GetStartupState: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
+  SetAutostartEnabled: vi.fn(),
+  OpenStartupSettings: vi.fn(),
   SetMode: vi.fn().mockResolvedValue(undefined),
   GetPausedState: vi.fn().mockResolvedValue(false),
   GetUpdateState: vi.fn().mockResolvedValue({
@@ -23,6 +32,7 @@ vi.mock('../wailsjs/go/main/App', () => ({
     enabled: true,
   }),
   CheckForUpdatesNow: vi.fn().mockResolvedValue(undefined),
+  StartAdminRepair: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Track calls to BrowserOpenURL so tests can assert that update links route
@@ -47,7 +57,13 @@ vi.mock('../wailsjs/runtime/runtime', () => ({
 
 // Mock settings module
 vi.mock('./lib/settings', () => ({
-  fetchSettings: vi.fn().mockResolvedValue({ mode: 'manual' }),
+  fetchSettingsState: vi.fn().mockResolvedValue({ settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true } }),
+  saveSettings: vi.fn().mockResolvedValue(undefined),
+  openDefaultAppsSettings: vi.fn().mockResolvedValue(undefined),
+  dismissDefaultAppsPrompt: vi.fn().mockResolvedValue(undefined),
+  fetchStartupState: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
+  setAutostartEnabled: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
+  openStartupSettings: vi.fn().mockResolvedValue(undefined),
   setMode: vi.fn().mockResolvedValue(undefined),
   getPausedState: vi.fn().mockResolvedValue(false),
   subscribeAutoDraftResult: vi.fn((cb: (r: unknown) => void) => {
@@ -96,9 +112,10 @@ vi.mock('./lib/auth', () => ({
 
 import { render, fireEvent } from '@testing-library/svelte';
 import App from './App.svelte';
-import { fetchSettings, setMode } from './lib/settings';
+import { fetchSettingsState, setMode, openDefaultAppsSettings, dismissDefaultAppsPrompt, fetchStartupState, setAutostartEnabled } from './lib/settings';
 import { fetchQueue, subscribeQueue } from './lib/queue';
 import { fetchAuthStatus } from './lib/auth';
+import { GetAdminInstallState, GetComponentHealth, StartAdminRepair } from '../wailsjs/go/main/App';
 
 beforeEach(() => {
   // Reset all event handler maps between tests to prevent cross-test bleed.
@@ -114,14 +131,79 @@ describe('App.svelte — smoke', () => {
     const { findByText } = render(App);
     expect(await findByText(/Sign in with Google/i)).toBeInTheDocument();
   });
+
+  it('renders persistent actionable component health', async () => {
+    vi.mocked(GetComponentHealth).mockResolvedValueOnce({
+      healthy: false,
+      issues: [{
+        code: 'below-minimum', component: 'app', installedVersion: '4.0.0',
+        required: { component: 'app', minInclusive: '4.2.0' },
+        action: 'update-app', message: 'Update go-mapi to restore MAPI compatibility.',
+      }],
+    });
+    const { findByRole, findByText } = render(App);
+    expect(await findByRole('alert', { name: /component compatibility/i })).toBeInTheDocument();
+    expect(await findByText(/Action: update-app/i)).toBeInTheDocument();
+  });
+
+  it('requires an explicit action before starting interceptor repair', async () => {
+    vi.mocked(GetAdminInstallState).mockResolvedValueOnce({ phase: 'offer', retryable: false });
+    const { findByRole } = render(App);
+    expect(StartAdminRepair).not.toHaveBeenCalled();
+    await fireEvent.click(await findByRole('button', { name: /install or repair interceptor/i }));
+    expect(StartAdminRepair).toHaveBeenCalledOnce();
+  });
+
+  it('renders a fail-closed release-contract error as retryable, not healthy', async () => {
+    vi.mocked(GetAdminInstallState).mockResolvedValueOnce({
+      phase: 'failed', retryable: true, errorCode: 'release-contract-unavailable',
+      message: 'trusted admin release metadata is not configured',
+    });
+    const { findByRole, findByText } = render(App);
+    expect(await findByRole('alert', { name: /admin component installation/i })).toBeInTheDocument();
+    expect(await findByText(/trusted admin release metadata/i)).toBeInTheDocument();
+    expect(await findByRole('button', { name: /try again/i })).toBeInTheDocument();
+  });
+
+  it('surfaces invalid settings without claiming manual mode', async () => {
+    vi.mocked(fetchSettingsState).mockResolvedValueOnce({
+      settings: { mode: '', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true },
+      issue: { kind: 'invalid-mode', message: 'Unsupported mode "broken"', path: 'C:\\Users\\test\\settings.json' },
+    } as never);
+    const { findByRole, queryByText } = render(App);
+    expect(await findByRole('alert', { name: /invalid settings/i })).toHaveTextContent(/Unsupported mode/);
+    expect(queryByText(/mode: manual/i)).not.toBeInTheDocument();
+  });
+
+  it('offers Windows Default Apps guidance and records the choice', async () => {
+    vi.mocked(fetchSettingsState).mockResolvedValueOnce({
+      settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: false, update_checks_enabled: true },
+    } as never);
+    const { findByRole } = render(App);
+    await fireEvent.click(await findByRole('button', { name: /open default apps/i }));
+    expect(openDefaultAppsSettings).toHaveBeenCalledOnce();
+    expect(dismissDefaultAppsPrompt).toHaveBeenCalledOnce();
+  });
+
+  it('shows an actionable startup warning and repairs it on request', async () => {
+    vi.mocked(fetchStartupState).mockResolvedValueOnce({
+      backend: 'standalone', requested: true, registered: true,
+      effective: 'disabled', warning: 'Windows has disabled go-mapi startup.',
+    } as never);
+    const { findByRole } = render(App);
+    const alert = await findByRole('alert');
+    expect(alert).toHaveTextContent(/Windows has disabled go-mapi startup/i);
+    await fireEvent.click(await findByRole('button', { name: /fix startup/i }));
+    expect(setAutostartEnabled).toHaveBeenCalledWith(true);
+  });
 });
 
 describe('App.svelte — Phase 9 wiring', () => {
-  it('calls fetchSettings on mount', async () => {
+  it('calls fetchSettingsState on mount', async () => {
     render(App);
     // Allow promises to settle
     await new Promise((r) => setTimeout(r, 0));
-    expect(fetchSettings).toHaveBeenCalled();
+    expect(fetchSettingsState).toHaveBeenCalled();
   });
 
   it('registers subscribeAutoDraftResult on mount', async () => {

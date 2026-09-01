@@ -1,0 +1,9 @@
+PackageIdentifier: MarcFargas.go-mapi
+PackageVersion: @@VERSION@@
+PackageLocale: en-US
+Publisher: Marc Fargas
+PackageName: go-mapi
+License: LGPL-3.0-or-later
+ShortDescription: Create Gmail drafts from Windows applications that call Simple MAPI.
+ManifestType: defaultLocale
+ManifestVersion: 1.9.0

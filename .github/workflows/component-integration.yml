@@ -1,0 +1,49 @@
+name: Component Integration Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      interceptor_version:
+        description: Explicit interceptor artifact version recorded by the gate
+        required: true
+        type: string
+      app_version:
+        description: Explicit Wails app artifact version recorded by the gate
+        required: true
+        type: string
+
+# This workflow validates the checked-in gate contract and publishes that
+# result. The authoritative real x86/x64 caller run is performed by
+# scripts/run-component-integration.ps1 in one managed interactive Azure
+# desktop VM; hosted CI must not present itself as that runtime proof.
+jobs:
+  contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Validate explicit independent component versions
+        shell: pwsh
+        run: |
+          foreach ($version in @('${{ inputs.interceptor_version }}', '${{ inputs.app_version }}')) {
+            if ([string]::IsNullOrWhiteSpace($version) -or $version -eq '0.0.0-dev') { throw 'workflow inputs must be release versions' }
+          }
+      - name: Verify integration gate contract
+        shell: pwsh
+        run: go test ./internal/mapi -run '^TestComponentIntegrationGateContract$' -count=1
+      - name: Record hosted-contract evidence
+        shell: pwsh
+        run: |
+          [ordered]@{
+            schema = 'go-mapi-component-integration-contract-v1'
+            interceptorVersion = '${{ inputs.interceptor_version }}'
+            appVersion = '${{ inputs.app_version }}'
+            authoritativeRuntimeProof = $false
+            authoritativeCommand = 'scripts/run-component-integration.ps1 in managed keep=false Azure desktop VM'
+          } | ConvertTo-Json | Set-Content component-integration-contract.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: component-integration-contract-${{ inputs.interceptor_version }}-${{ inputs.app_version }}
+          path: component-integration-contract.json

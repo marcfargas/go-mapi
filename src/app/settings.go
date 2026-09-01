@@ -29,9 +29,28 @@ import (
 //     persistence is routed through an App-owned guarded writer (Task 2)
 //     that preserves the single-writer atomic-save invariant.
 type AppSettings struct {
-	Mode                string `json:"mode"`                         // "manual" | "auto-draft"
-	UpdateChecksEnabled bool   `json:"update_checks_enabled"`        // D-08 default enabled
-	LastUpdateCheck     string `json:"last_update_check,omitempty"`  // RFC3339, "" = never checked
+	Mode                string `json:"mode"`                        // "manual" | "auto-draft"
+	AutostartEnabled    bool   `json:"autostart_enabled"`           // user preference; default enabled
+	DefaultAppsPrompted bool   `json:"default_apps_prompted"`       // avoids repeatedly prompting after dismissal
+	UpdateChecksEnabled bool   `json:"update_checks_enabled"`       // D-08 default enabled
+	LastUpdateCheck     string `json:"last_update_check,omitempty"` // RFC3339, "" = never checked
+}
+
+// SettingsIssue is returned when an existing settings file cannot be used.
+// The original file is never replaced automatically: the UI must ask the user
+// to repair it by explicitly saving a supported configuration.
+type SettingsIssue struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
+// SettingsLoadResult keeps invalid configuration distinct from valid defaults.
+// In particular, Settings.Mode is empty when Issue is non-nil, so callers can
+// never accidentally report an invalid value as effective manual mode.
+type SettingsLoadResult struct {
+	Settings AppSettings    `json:"settings"`
+	Issue    *SettingsIssue `json:"issue,omitempty"`
 }
 
 const defaultMode = "manual"
@@ -42,6 +61,7 @@ const defaultMode = "manual"
 func defaultAppSettings() AppSettings {
 	return AppSettings{
 		Mode:                defaultMode,
+		AutostartEnabled:    true,
 		UpdateChecksEnabled: true,
 	}
 }
@@ -52,41 +72,59 @@ func settingsPath() string {
 	return filepath.Join(appDataDir(), "settings.json")
 }
 
-// loadSettings reads %APPDATA%\go-mapi\settings.json. Returns defaults on
-// any read/parse error (first-run missing file, corrupt file, unknown Mode
-// value). Corrupt files are NOT moved aside in Phase 9 — D-15 scope means
-// the only persisted field is Mode, and resetting to "manual" on a corrupt
-// read is the safe default (fail-closed — no auto-draft without a valid
-// mode setting).
-func loadSettings() AppSettings {
-	data, err := os.ReadFile(settingsPath())
+// loadSettings reads %APPDATA%\go-mapi\settings.json. A missing file is a
+// normal first-run state. Every other read/parse/validation failure is
+// explicit and leaves Mode empty, which fail-closes automode without falsely
+// claiming that manual mode was selected.
+func loadSettings() SettingsLoadResult {
+	path := settingsPath()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		// ENOENT or any other read error → defaults. First-run is the
-		// common case; no log to avoid noise.
-		return defaultAppSettings()
+		if os.IsNotExist(err) {
+			return SettingsLoadResult{Settings: defaultAppSettings()}
+		}
+		return invalidSettingsResult("read", path, fmt.Sprintf("Cannot read settings: %v", err))
 	}
 	// Intermediate shape with a *bool for the update toggle so we can tell
 	// "field absent from JSON" (partial/old file) from "field explicitly
 	// set to false" (user opted out). Absent → default true per D-08.
 	var raw struct {
 		Mode                string `json:"mode"`
+		AutostartEnabled    *bool  `json:"autostart_enabled"`
+		DefaultAppsPrompted bool   `json:"default_apps_prompted"`
 		UpdateChecksEnabled *bool  `json:"update_checks_enabled"`
 		LastUpdateCheck     string `json:"last_update_check"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		logError("settings: parse error, using defaults: %v", err)
-		return defaultAppSettings()
+		return invalidSettingsResult("malformed", path, fmt.Sprintf("Settings JSON is malformed: %v", err))
+	}
+	if raw.Mode != "manual" && raw.Mode != "auto-draft" {
+		return invalidSettingsResult("invalid-mode", path, fmt.Sprintf("Unsupported mode %q; choose manual or auto-draft", raw.Mode))
 	}
 	out := defaultAppSettings()
-	if raw.Mode == "manual" || raw.Mode == "auto-draft" {
-		out.Mode = raw.Mode
+	out.Mode = raw.Mode
+	if raw.AutostartEnabled != nil {
+		out.AutostartEnabled = *raw.AutostartEnabled
 	}
-	// raw.Mode ∉ {"manual","auto-draft"}: keep defaultAppSettings().Mode.
+	out.DefaultAppsPrompted = raw.DefaultAppsPrompted
 	if raw.UpdateChecksEnabled != nil {
 		out.UpdateChecksEnabled = *raw.UpdateChecksEnabled
 	}
 	out.LastUpdateCheck = raw.LastUpdateCheck
-	return out
+	return SettingsLoadResult{Settings: out}
+}
+
+func invalidSettingsResult(kind, path, message string) SettingsLoadResult {
+	defaults := defaultAppSettings()
+	defaults.Mode = ""
+	return SettingsLoadResult{
+		Settings: defaults,
+		Issue: &SettingsIssue{
+			Kind:    kind,
+			Message: message,
+			Path:    path,
+		},
+	}
 }
 
 // saveSettings writes s atomically. Pattern (RESEARCH §3):

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { EventsOn } from '../wailsjs/runtime/runtime';
-  import { CreateDraftForID, DismissEmail } from '../wailsjs/go/main/App';
+  import { CreateDraftForID, DismissEmail, GetAdminInstallState, GetComponentHealth, StartAdminRepair } from '../wailsjs/go/main/App';
   import { subscribeQueue, fetchQueue, type EmailWithId } from './lib/queue';
   import {
     fetchAuthStatus,
@@ -13,7 +13,13 @@
     type AuthStatus,
   } from './lib/auth';
   import {
-    fetchSettings,
+    fetchSettingsState,
+    saveSettings,
+    openDefaultAppsSettings,
+    dismissDefaultAppsPrompt,
+    fetchStartupState,
+    setAutostartEnabled,
+    openStartupSettings,
     setMode as persistMode,
     getPausedState,
     subscribeAutoDraftResult,
@@ -24,6 +30,7 @@
     type ErrorCategory,
     type AutoDraftResult,
     type UpdateState,
+    type StartupState,
   } from './lib/settings';
   import SignInScreen from './lib/components/SignInScreen.svelte';
   import PreAuthModal from './lib/components/PreAuthModal.svelte';
@@ -59,27 +66,65 @@
   let showUpdatePanel = $state(false);
   let bannerDismissedForVersion = $state<string | null>(null);
 
+  type HealthIssue = {
+    code: string;
+    component: string;
+    installedVersion?: string;
+    required?: { minInclusive?: string; maxExclusive?: string };
+    architectures?: string[];
+    action: string;
+    message: string;
+  };
+  type ComponentHealth = { healthy: boolean; issues: HealthIssue[] };
+  type AdminInstallState = {
+    phase: 'healthy' | 'offer' | 'preparing' | 'rechecking' | 'reboot-required' | 'failed';
+    fingerprint?: string;
+    errorCode?: string;
+    message?: string;
+    retryable: boolean;
+  };
+  let componentHealth = $state<ComponentHealth | null>(null);
+  let adminInstallState = $state<AdminInstallState | null>(null);
+  let settingsIssue = $state<{ kind: string; message: string; path: string } | null>(null);
+  let showDefaultAppsGuidance = $state(false);
+  let startupState = $state<StartupState | null>(null);
+
   // Collect all unsub functions for cleanup
   const unsubs: Array<() => void> = [];
 
   onMount(async () => {
     // Fetch initial state in parallel.
-    const [initialAuth, initialQueue, initialSettings, initialPaused, initialUpdate] =
+    const [initialAuth, initialQueue, initialSettings, initialPaused, initialUpdate, initialHealth, initialAdminInstall, initialStartup] =
       await Promise.all([
         fetchAuthStatus(),
         fetchQueue().catch((e) => { errorMsg = (e as Error).message; return []; }),
-        fetchSettings().catch(() => ({ mode: 'manual' as Mode })),
+        fetchSettingsState().catch(() => ({
+          settings: { mode: '', autostart_enabled: true, default_apps_prompted: false, update_checks_enabled: true },
+          issue: { kind: 'binding', message: 'Settings could not be loaded.', path: '%APPDATA%\\go-mapi\\settings.json' },
+        })),
         getPausedState().catch(() => false),
         // D-04 silent-failure: never block startup on update hydration.
         fetchUpdateState().catch(() => null),
+        GetComponentHealth().catch(() => null),
+        GetAdminInstallState().catch(() => null),
+        fetchStartupState().catch(() => ({ backend: 'unknown', requested: true, registered: false, effective: 'error', warning: 'Windows startup state could not be read.' })),
       ]);
 
     auth = initialAuth as AuthStatus;
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
-    mode = ((initialSettings as { mode: string }).mode === 'auto-draft' ? 'auto-draft' : 'manual');
+    const loadedSettings = (initialSettings as {
+      settings: { mode: string; default_apps_prompted: boolean };
+      issue?: { kind: string; message: string; path: string };
+    });
+    settingsIssue = loadedSettings.issue ?? null;
+    mode = (loadedSettings.settings.mode === 'auto-draft' ? 'auto-draft' : 'manual');
+    showDefaultAppsGuidance = !loadedSettings.settings.default_apps_prompted;
     paused = initialPaused as boolean;
     updateState = initialUpdate as UpdateState | null;
+    componentHealth = initialHealth as ComponentHealth | null;
+    adminInstallState = initialAdminInstall as AdminInstallState | null;
+    startupState = initialStartup as StartupState;
 
     // Subscribe to queue updates — prune stale state entries on each update.
     unsubs.push(subscribeQueue(
@@ -173,6 +218,8 @@
     // Update state changes from Go (startup check, 24h scheduler, manual check).
     // Plan 11-01 guarantees one event per material state change.
     unsubs.push(subscribeUpdateState((s: UpdateState) => { updateState = s; }));
+    unsubs.push(EventsOn('component-health-changed', (s: ComponentHealth) => { componentHealth = s; }));
+    unsubs.push(EventsOn('admin-install-state-changed', (s: AdminInstallState) => { adminInstallState = s; }));
   });
 
   onDestroy(() => {
@@ -182,6 +229,15 @@
   /** D-04: visible + focused proxy using web platform APIs supported by WebView2. */
   function isWindowVisibleAndFocused(): boolean {
     return document.visibilityState === 'visible' && document.hasFocus();
+  }
+
+  async function handleAdminRepair() {
+    try {
+      await StartAdminRepair();
+    } catch {
+      // Rehydrate if a validation failure arrived before the event listener.
+      adminInstallState = await GetAdminInstallState().catch(() => adminInstallState);
+    }
   }
 
   /** Compute per-row UI state from the three tracking sets/maps. */
@@ -216,6 +272,36 @@
   async function handleModeChange(next: Mode) {
     await persistMode(next);
     mode = next;
+  }
+
+  async function repairSettingsAsManual() {
+    await saveSettings({
+      mode: 'manual',
+      autostart_enabled: true,
+      default_apps_prompted: false,
+      update_checks_enabled: true,
+    });
+    mode = 'manual';
+    settingsIssue = null;
+  }
+
+  async function handleDefaultApps() {
+    await openDefaultAppsSettings();
+    await dismissDefaultAppsPrompt();
+    showDefaultAppsGuidance = false;
+  }
+
+  async function dismissDefaultApps() {
+    await dismissDefaultAppsPrompt();
+    showDefaultAppsGuidance = false;
+  }
+
+  async function handleAutostartChange(enabled: boolean) {
+    startupState = await setAutostartEnabled(enabled);
+  }
+
+  async function repairStartup() {
+    startupState = await setAutostartEnabled(true);
   }
 
   // Auth flow handlers — unchanged from Phase 8.
@@ -264,6 +350,81 @@
   }
 </script>
 
+{#if componentHealth && componentHealth.issues.length > 0}
+  <section class="component-health" role="alert" aria-label="Component compatibility">
+    <h2>go-mapi needs attention</h2>
+    {#each componentHealth.issues as issue}
+      <article class="component-health__issue">
+        <strong>{issue.message}</strong>
+        <span>
+          {#if issue.installedVersion}Installed: {issue.installedVersion}. {/if}
+          {#if issue.required?.minInclusive}Required: {issue.required.minInclusive}{#if issue.required.maxExclusive}–{issue.required.maxExclusive}{/if}. {/if}
+          Action: {issue.action}.
+        </span>
+      </article>
+    {/each}
+  </section>
+{/if}
+
+{#if adminInstallState && adminInstallState.phase !== 'healthy'}
+  <section class="component-health" role="alert" aria-label="Admin component installation">
+    <h2>Install or repair the go-mapi interceptor</h2>
+    {#if adminInstallState.phase === 'offer'}
+      <p>The machine-wide interceptor needs administrator approval. go-mapi will verify a trusted installer before Windows asks for approval.</p>
+      <button type="button" onclick={handleAdminRepair}>Install or repair interceptor</button>
+    {:else if adminInstallState.phase === 'preparing' || adminInstallState.phase === 'rechecking'}
+      <p>Preparing the verified interceptor installation. Keep go-mapi open while Windows completes the check.</p>
+      <button type="button" disabled>Installing interceptor…</button>
+    {:else if adminInstallState.phase === 'reboot-required'}
+      <p>{adminInstallState.message ?? 'Restart Windows, then open go-mapi again to verify the interceptor.'}</p>
+    {:else}
+      <p>{adminInstallState.message ?? 'The interceptor could not be installed.'}</p>
+      {#if adminInstallState.retryable}
+        <button type="button" onclick={handleAdminRepair}>Try again</button>
+      {/if}
+    {/if}
+  </section>
+{/if}
+
+{#if settingsIssue}
+  <section class="component-health" role="alert" aria-label="Invalid settings">
+    <h2>Settings need repair</h2>
+    <p>{settingsIssue.message}</p>
+    <p><code>{settingsIssue.path}</code></p>
+    <button type="button" onclick={repairSettingsAsManual}>Repair and use manual mode</button>
+  </section>
+{/if}
+
+{#if showDefaultAppsGuidance}
+  <section class="component-health" aria-label="Default mail app guidance">
+    <h2>Make go-mapi your default mail app</h2>
+    <p>Windows controls this choice. Open Default Apps, select go-mapi for supported mail links, then return here.</p>
+    <button type="button" onclick={handleDefaultApps}>Open Default Apps</button>
+    <button type="button" onclick={dismissDefaultApps}>Not now</button>
+  </section>
+{/if}
+
+{#if startupState && !settingsIssue}
+  <section class="component-health" aria-label="Startup preference">
+    <label>
+      <input
+        type="checkbox"
+        checked={startupState.requested}
+        onchange={(event) => handleAutostartChange(event.currentTarget.checked)}
+      />
+      Start go-mapi when I sign in
+    </label>
+    <p>Windows status: {startupState.effective} ({startupState.backend})</p>
+    {#if startupState.warning}
+      <div role="alert">
+        <p>{startupState.warning}</p>
+        {#if startupState.requested && startupState.effective !== 'disabledbyuser' && startupState.effective !== 'disabledbypolicy'}<button type="button" onclick={repairStartup}>Fix startup</button>{/if}
+        <button type="button" onclick={openStartupSettings}>Open Startup Apps</button>
+      </div>
+    {/if}
+  </section>
+{/if}
+
 {#if updateState && updateState.updateAvailable}
   <UpdateBanner
     latestVersion={updateState.latestVersion}
@@ -275,7 +436,7 @@
   <ReAuthBanner onRestore={handleReAuthClick} />
 {/if}
 
-{#if auth.authenticated}
+{#if auth.authenticated && !settingsIssue}
   <SignedInHeader
     email={auth.email ?? ''}
     name={auth.name ?? ''}

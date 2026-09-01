@@ -69,3 +69,52 @@ endif()
 
 add_test(NAME fs_utils_tests
          COMMAND fs_utils_tests)
+
+# Queue-v1 producer conformance. This uses the same checked-in fixtures that
+# the Go consumer validates, while exercising the native serializer directly.
+add_executable(queue_v1_tests
+    queue_v1_tests.cpp
+    ../json_writer.cpp
+    ../fs_utils.cpp
+)
+
+target_include_directories(queue_v1_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+target_compile_definitions(queue_v1_tests PRIVATE
+    GO_MAPI_VERSION="4.0.0"
+    GO_MAPI_QUEUE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/protocol-fixtures/queue-v1"
+)
+set_target_properties(queue_v1_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+
+if(MSVC)
+    target_compile_options(queue_v1_tests PRIVATE /W4 /WX-)
+    target_link_libraries(queue_v1_tests PRIVATE kernel32.lib user32.lib shell32.lib)
+elseif(MINGW)
+    target_compile_options(queue_v1_tests PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_link_libraries(queue_v1_tests PRIVATE kernel32 user32 shell32 -static-libgcc -static-libstdc++)
+    target_link_options(queue_v1_tests PRIVATE -static)
+endif()
+
+add_test(NAME queue_v1_tests
+         COMMAND queue_v1_tests)
+
+add_executable(component_compat_tests
+    component_compat_tests.cpp
+    $<TARGET_OBJECTS:component_compat_obj>
+)
+target_include_directories(component_compat_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_definitions(component_compat_tests PRIVATE
+    GO_MAPI_COMPAT_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/component-compatibility/compatibility-v1.json"
+)
+set_target_properties(component_compat_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+if(MSVC)
+    target_compile_options(component_compat_tests PRIVATE /W4 /WX-)
+elseif(MINGW)
+    target_compile_options(component_compat_tests PRIVATE -Wall -Wextra -Wno-unused-parameter)
+    target_link_options(component_compat_tests PRIVATE -static)
+endif()
+add_test(NAME component_compat_tests COMMAND component_compat_tests)

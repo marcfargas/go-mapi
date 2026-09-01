@@ -93,6 +93,65 @@ TEST_CASE("FilenameFromPath trailing separator returns input unchanged") {
     CHECK(FilenameFromPath("a/b/") == "a/b/");
 }
 
+TEST_CASE("ConvertSendDocumentsAttachments parses custom delimiter and display names") {
+    std::vector<Attachment> attachments;
+    REQUIRE(ConvertSendDocumentsAttachments("|", "C:\\temp\\one.txt|C:\\temp\\two.pdf",
+                                            "first.txt|renamed.pdf", attachments));
+    REQUIRE(attachments.size() == 2);
+    CHECK(attachments[0].path == "C:\\temp\\one.txt");
+    CHECK(attachments[0].filename == "first.txt");
+    CHECK(attachments[1].path == "C:\\temp\\two.pdf");
+    CHECK(attachments[1].filename == "renamed.pdf");
+}
+
+TEST_CASE("ConvertSendDocumentsAttachments falls back for omitted and empty names") {
+    std::vector<Attachment> attachments;
+    REQUIRE(ConvertSendDocumentsAttachments(";", "C:\\temp\\one.txt;C:\\temp\\two.pdf",
+                                            ";", attachments));
+    REQUIRE(attachments.size() == 2);
+    CHECK(attachments[0].filename == "one.txt");
+    CHECK(attachments[1].filename == "two.pdf");
+}
+
+TEST_CASE("ConvertSendDocumentsAttachments ignores extra names and falls back for missing names") {
+    std::vector<Attachment> attachments;
+    REQUIRE(ConvertSendDocumentsAttachments(";", "C:\\temp\\one.txt;C:\\temp\\two.pdf",
+                                            "shown.txt", attachments));
+    REQUIRE(attachments.size() == 2);
+    CHECK(attachments[0].filename == "shown.txt");
+    CHECK(attachments[1].filename == "two.pdf");
+
+    REQUIRE(ConvertSendDocumentsAttachments(";", "C:\\temp\\one.txt",
+                                            "shown.txt;unused.txt", attachments));
+    REQUIRE(attachments.size() == 1);
+    CHECK(attachments[0].filename == "shown.txt");
+}
+
+TEST_CASE("ConvertSendDocumentsAttachments accepts empty paths as the caller no-op input") {
+    std::vector<Attachment> attachments;
+    CHECK(ConvertSendDocumentsAttachments(";", nullptr, nullptr, attachments));
+    CHECK(attachments.empty());
+    CHECK(ConvertSendDocumentsAttachments(";", "", nullptr, attachments));
+    CHECK(attachments.empty());
+}
+
+TEST_CASE("ConvertSendDocumentsAttachments accepts a single path without a delimiter") {
+    std::vector<Attachment> attachments;
+    REQUIRE(ConvertSendDocumentsAttachments(nullptr, "C:\\temp\\only.txt", nullptr, attachments));
+    REQUIRE(attachments.size() == 1);
+    CHECK(attachments[0].filename == "only.txt");
+}
+
+TEST_CASE("ConvertSendDocumentsAttachments rejects malformed paths and duplicate names") {
+    std::vector<Attachment> attachments;
+    CHECK_FALSE(ConvertSendDocumentsAttachments(";", "C:\\temp\\one.txt;;C:\\temp\\two.txt",
+                                                nullptr, attachments));
+    CHECK(attachments.empty());
+    CHECK_FALSE(ConvertSendDocumentsAttachments(";", "C:\\temp\\one.txt;C:\\temp\\two.txt",
+                                                "same.txt;same.txt", attachments));
+    CHECK(attachments.empty());
+}
+
 // ---------- ConvertAnsiMessage ----------
 
 TEST_CASE("ConvertAnsiMessage handles null fields") {

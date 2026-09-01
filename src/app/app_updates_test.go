@@ -69,12 +69,13 @@ func (c *countingFetcher) callCount() int {
 //   - points settings at the given tempDir
 //   - has a fake updater service running against the supplied fetcher
 //   - does NOT start the tray / watcher / automode
+//
 // Caller is responsible for driving startup-update / manual-check /
 // scheduler paths directly via exported App hooks.
 func newAppForUpdateTests(t *testing.T, fetcher releaseFetcher, version string) *App {
 	t.Helper()
 	app := NewApp()
-	app.settings = loadSettings()
+	app.settings = loadSettings().Settings
 	app.updates = newUpdateService(version, fetcher, nopLogger)
 	app.updateState.Store(&UpdateState{
 		CurrentVersion: version,
@@ -190,7 +191,7 @@ func TestCheckForUpdatesNowBypassesCadence(t *testing.T) {
 
 	// LastUpdateCheck must have been persisted through the guarded
 	// writer — re-reading settings should show a fresh timestamp.
-	got := loadSettings()
+	got := loadSettings().Settings
 	if got.LastUpdateCheck == "" {
 		t.Error("LastUpdateCheck should be persisted after manual check")
 	}
@@ -327,7 +328,7 @@ func TestGuardedLastUpdateCheckWriterSerializes(t *testing.T) {
 	}
 
 	// Final persisted LastUpdateCheck must be a valid RFC3339 string.
-	got := loadSettings()
+	got := loadSettings().Settings
 	if got.LastUpdateCheck == "" {
 		t.Fatal("expected LastUpdateCheck to be persisted")
 	}

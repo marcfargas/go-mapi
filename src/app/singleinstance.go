@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -18,9 +19,16 @@ const mutexName = `Local\go-mapi-singleton-v3`
 // Replaces FindWindowW title-based raise (REVIEWS HIGH — title spoofing / locale / timing risk).
 const raiseEventName = `Local\go-mapi-raise-v3`
 
+// shutdownEventName is signalled only after a per-user handoff journal with a
+// random token has been written. The running instance validates that journal
+// before quitting, so an unrelated process cannot turn the event into a blind
+// denial-of-service switch.
+const shutdownEventName = `Local\go-mapi-handoff-shutdown-v4`
+
 var (
-	mutexHandle windows.Handle
-	eventHandle windows.Handle
+	mutexHandle         windows.Handle
+	eventHandle         windows.Handle
+	shutdownEventHandle windows.Handle
 )
 
 // acquireSingleInstance tries to grab the per-session mutex.
@@ -89,8 +97,64 @@ func acquireSingleInstance() (raised bool, err error) {
 	} else {
 		eventHandle = evt
 	}
+	shutdownName, _ := windows.UTF16PtrFromString(shutdownEventName)
+	shutdownEvent, shutdownErr := windows.CreateEvent(nil, 0, 0, shutdownName)
+	if shutdownEvent == 0 {
+		logError("createevent for handoff shutdown transport: %v", shutdownErr)
+	} else {
+		shutdownEventHandle = shutdownEvent
+	}
 
 	return false, nil
+}
+
+func requestExistingInstanceShutdown() error {
+	name, err := windows.UTF16PtrFromString(shutdownEventName)
+	if err != nil {
+		return err
+	}
+	const eventModifyState = 0x0002
+	h, err := windows.OpenEvent(eventModifyState, false, name)
+	if err != nil || h == 0 {
+		return fmt.Errorf("open shutdown event: %w", err)
+	}
+	defer windows.CloseHandle(h)
+	return windows.SetEvent(h)
+}
+
+func waitForShutdownSignal(done <-chan struct{}, onShutdown func()) {
+	if shutdownEventHandle == 0 {
+		return
+	}
+	for {
+		rc, _ := windows.WaitForSingleObject(shutdownEventHandle, 500)
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if rc == 0 {
+			onShutdown()
+		}
+	}
+}
+
+func waitForExistingInstanceExit(timeout time.Duration) error {
+	name, err := windows.UTF16PtrFromString(mutexName)
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	const synchronize = 0x00100000
+	for time.Now().Before(deadline) {
+		h, openErr := windows.OpenMutex(synchronize, false, name)
+		if openErr != nil || h == 0 {
+			return nil
+		}
+		_ = windows.CloseHandle(h)
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("existing go-mapi instance did not exit within %s", timeout)
 }
 
 // raiseExistingInstance opens the session-scoped named event and signals it.
@@ -147,5 +211,9 @@ func releaseSingleInstance() {
 	if eventHandle != 0 {
 		_ = windows.CloseHandle(eventHandle)
 		eventHandle = 0
+	}
+	if shutdownEventHandle != 0 {
+		_ = windows.CloseHandle(shutdownEventHandle)
+		shutdownEventHandle = 0
 	}
 }

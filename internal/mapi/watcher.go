@@ -28,6 +28,10 @@ type WatcherCallback interface {
 	OnError(err error)
 }
 
+// MailValidator is an optional consumer-owned gate run after queue-v1 schema
+// validation but before a descriptor enters the UI/automode snapshot.
+type MailValidator func(*MailMessage) error
+
 // EmailWatcher watches for new email JSON files, validates them, and notifies
 // a WatcherCallback on queue changes.
 type EmailWatcher struct {
@@ -36,6 +40,7 @@ type EmailWatcher struct {
 	errorsDir    string
 	watcher      *fsnotify.Watcher
 	cb           WatcherCallback
+	validator    MailValidator
 	emails       map[string]*MailMessage // id -> email
 	fileToID     map[string]string       // filename -> id
 	mu           sync.RWMutex
@@ -46,6 +51,10 @@ type EmailWatcher struct {
 // NewEmailWatcher creates a new email watcher. If cb is nil, queue changes are
 // silently discarded (a warning is the caller's responsibility).
 func NewEmailWatcher(watchDir string, cb WatcherCallback) (*EmailWatcher, error) {
+	return NewEmailWatcherWithValidator(watchDir, cb, nil)
+}
+
+func NewEmailWatcherWithValidator(watchDir string, cb WatcherCallback, validator MailValidator) (*EmailWatcher, error) {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create watcher: %w", err)
@@ -68,6 +77,7 @@ func NewEmailWatcher(watchDir string, cb WatcherCallback) (*EmailWatcher, error)
 		errorsDir:    errorsDir,
 		watcher:      w,
 		cb:           cb,
+		validator:    validator,
 		emails:       make(map[string]*MailMessage),
 		fileToID:     make(map[string]string),
 		done:         make(chan struct{}),
@@ -361,6 +371,20 @@ func (ew *EmailWatcher) processFile(filename string) {
 		ew.dispatchError(validErr)
 		return
 	}
+	if ew.validator != nil {
+		if err := ew.validator(&mail); err != nil {
+			validErr := fmt.Errorf("incompatible producer in %s: %w", filename, err)
+			ew.moveToErrors(filename, fmt.Sprintf("compatibility error: %v", err))
+			ew.dispatchError(validErr)
+			return
+		}
+	}
+	if err := ew.validateAttachmentPaths(filename, &mail); err != nil {
+		validErr := fmt.Errorf("invalid attachment path in %s: %w", filename, err)
+		ew.moveToErrors(filename, fmt.Sprintf("validation error: %v", err))
+		ew.dispatchError(validErr)
+		return
+	}
 
 	// Generate unique ID from content
 	id := generateID(data, filename)
@@ -379,6 +403,37 @@ func (ew *EmailWatcher) processFile(filename string) {
 	ew.mu.Unlock()
 
 	ew.dispatchQueueChanged(snap)
+}
+
+// validateAttachmentPaths ensures that a queue descriptor can only reference
+// files staged beside it. This is the consumer-side counterpart of the native
+// producer's <stem>/ attachment staging convention and prevents a descriptor
+// from causing the app to read arbitrary local files.
+func (ew *EmailWatcher) validateAttachmentPaths(filename string, mail *MailMessage) error {
+	if len(mail.Attachments) == 0 {
+		return nil
+	}
+
+	stem := strings.TrimSuffix(filename, filepath.Ext(filename))
+	attachmentsDir := filepath.Clean(filepath.Join(ew.watchDir, stem))
+	resolvedAttachmentsDir, err := filepath.EvalSymlinks(attachmentsDir)
+	if err != nil {
+		return fmt.Errorf("resolve attachment directory %q: %w", attachmentsDir, err)
+	}
+
+	for _, attachment := range mail.Attachments {
+		path := filepath.Clean(attachment.Path)
+		resolvedPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve attachment %q: %w", attachment.Filename, err)
+		}
+		rel, err := filepath.Rel(resolvedAttachmentsDir, resolvedPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("attachment %q is outside %q", attachment.Filename, resolvedAttachmentsDir)
+		}
+	}
+
+	return nil
 }
 
 func (ew *EmailWatcher) handleRemove(filename string) {

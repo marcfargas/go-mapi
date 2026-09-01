@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://go-mapi.invalid/schemas/installed-component-v1.schema.json",
+  "title": "go-mapi installed interceptor component",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [ "schema", "component", "version", "queueProtocol", "requires", "artifacts" ],
+  "properties": {
+    "schema": { "const": "go-mapi-installed-interceptor-v1" },
+    "component": { "const": "interceptor" },
+    "version": { "type": "string", "minLength": 1 },
+    "queueProtocol": { "const": "queue-v1" },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [ "component", "minInclusive" ],
+      "properties": {
+        "component": { "const": "app" },
+        "minInclusive": { "type": "string", "minLength": 1 },
+        "maxExclusive": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [ "architecture", "path", "peProductVersion", "sha256" ],
+        "properties": {
+          "architecture": { "enum": [ "x86", "x64" ] },
+          "path": { "type": "string", "pattern": "^(x86|AMD64)\\\\go-mapi\\.dll$" },
+          "peProductVersion": { "type": "string", "minLength": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

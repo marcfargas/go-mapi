@@ -6,8 +6,94 @@
 #include <random>
 #include <iomanip>
 #include <sstream>
+#include <atomic>
+#include <algorithm>
+#include <cstdio>
 
 namespace go_mapi {
+
+namespace {
+std::atomic<FsUtils::AtomicWriteFault> atomicWriteFault{FsUtils::AtomicWriteFault::None};
+
+constexpr char kAppPresenceToken[] = "go-mapi-app-presence-v1\n";
+constexpr ULONGLONG kPresenceStaleAfter100ns = 5ULL * 60ULL * 10000000ULL;
+constexpr size_t kMaxComponentStateBytes = 4096;
+
+ULONGLONG FileTimeTicks(FILETIME value) {
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = value.dwLowDateTime;
+    ticks.HighPart = value.dwHighDateTime;
+    return ticks.QuadPart;
+}
+
+const char* PresenceReason(FsUtils::AppPresenceStatus status) {
+    switch (status) {
+    case FsUtils::AppPresenceStatus::Missing: return "missing";
+    case FsUtils::AppPresenceStatus::Unreadable: return "unreadable";
+    case FsUtils::AppPresenceStatus::Malformed: return "malformed";
+    case FsUtils::AppPresenceStatus::Stale: return "stale";
+    case FsUtils::AppPresenceStatus::Future: return "future";
+    case FsUtils::AppPresenceStatus::Available: return "available";
+    }
+    return "unknown";
+}
+
+bool ReadSmallFile(HANDLE file, std::string& contents) {
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 ||
+        static_cast<ULONGLONG>(size.QuadPart) > kMaxComponentStateBytes) return false;
+    contents.resize(static_cast<size_t>(size.QuadPart));
+    DWORD bytesRead = 0;
+    return (contents.empty() || ReadFile(file, contents.data(), static_cast<DWORD>(contents.size()), &bytesRead, nullptr)) &&
+           bytesRead == static_cast<DWORD>(contents.size());
+}
+
+bool ExtractJsonString(const std::string& json, const std::string& key, std::string& output) {
+    const std::string marker = "\"" + key + "\"";
+    size_t pos = json.find(marker);
+    if (pos == std::string::npos || json.find(marker, pos + marker.size()) != std::string::npos) return false;
+    pos = json.find(':', pos + marker.size());
+    if (pos == std::string::npos) return false;
+    pos = json.find_first_not_of(" \t\r\n", pos + 1);
+    if (pos == std::string::npos || json[pos] != '"') return false;
+    const size_t end = json.find('"', pos + 1);
+    if (end == std::string::npos || json.find('\\', pos + 1) < end) return false;
+    output = json.substr(pos + 1, end - pos - 1);
+    return true;
+}
+
+std::string UtcNowIso8601() {
+    SYSTEMTIME value{};
+    GetSystemTime(&value);
+    char buffer[32]{};
+    std::snprintf(buffer, sizeof(buffer), "%04u-%02u-%02uT%02u:%02u:%02uZ",
+                  value.wYear, value.wMonth, value.wDay,
+                  value.wHour, value.wMinute, value.wSecond);
+    return buffer;
+}
+
+bool WriteFileAtomicallyReplacing(const std::wstring& filePath, const std::string& content) {
+    if (filePath.empty() || content.size() > MAXDWORD) return false;
+    const std::wstring tempPath = filePath + L"." + FsUtils::GenerateUniqueStem() + L".tmp";
+    HANDLE file = CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    const BOOL wrote = ::WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    const BOOL flushed = wrote && written == content.size() && FlushFileBuffers(file);
+    const BOOL closed = CloseHandle(file);
+    if (!flushed || !closed || !MoveFileExW(tempPath.c_str(), filePath.c_str(),
+                                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    return true;
+}
+}
+
+void FsUtils::SetAtomicWriteFaultForTesting(AtomicWriteFault fault) {
+    atomicWriteFault.store(fault);
+}
 
 std::wstring FsUtils::GetBaseQueueDir() {
     // CSIDL_LOCAL_APPDATA resolves to %LOCALAPPDATA% (e.g., C:\Users\<user>\AppData\Local).
@@ -36,6 +122,93 @@ std::wstring FsUtils::GetQueueDirectory() {
     return basePath;
 }
 
+std::wstring FsUtils::GetAppPresencePath() {
+    wchar_t path[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path);
+    if (FAILED(hr)) return L"";
+    std::wstring result(path);
+    if (!result.empty() && result.back() != L'\\') result += L'\\';
+    return result + L"go-mapi\\app-presence-v1";
+}
+
+FsUtils::AppPresenceStatus FsUtils::CheckAppPresence() {
+    const std::wstring path = GetAppPresencePath();
+    if (path.empty()) return AppPresenceStatus::Unreadable;
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    return CheckAppPresenceFile(path, now);
+}
+
+FsUtils::AppPresenceStatus FsUtils::CheckAppPresenceFile(const std::wstring& path, FILETIME now) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND
+            ? AppPresenceStatus::Missing : AppPresenceStatus::Unreadable;
+    }
+    FILETIME writeTime{};
+    const BOOL gotTime = GetFileTime(file, nullptr, nullptr, &writeTime);
+    char contents[sizeof(kAppPresenceToken)] = {};
+    DWORD bytesRead = 0;
+    const BOOL read = ReadFile(file, contents, sizeof(contents), &bytesRead, nullptr);
+    CloseHandle(file);
+    if (!gotTime || !read) return AppPresenceStatus::Unreadable;
+    if (bytesRead != sizeof(kAppPresenceToken) - 1 ||
+        std::string(contents, bytesRead) != kAppPresenceToken) {
+        return AppPresenceStatus::Malformed;
+    }
+    const ULONGLONG nowTicks = FileTimeTicks(now);
+    const ULONGLONG writeTicks = FileTimeTicks(writeTime);
+    if (writeTicks > nowTicks) return AppPresenceStatus::Future;
+    if (nowTicks - writeTicks > kPresenceStaleAfter100ns) return AppPresenceStatus::Stale;
+    return AppPresenceStatus::Available;
+}
+
+std::wstring FsUtils::GetAppComponentStatePath() {
+    wchar_t path[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, path);
+    if (FAILED(hr)) return L"";
+    std::wstring result(path);
+    if (!result.empty() && result.back() != L'\\') result += L'\\';
+    return result + L"go-mapi\\app-component-state-v1.json";
+}
+
+FsUtils::AppComponentState FsUtils::CheckAppComponentState() {
+    const std::wstring path = GetAppComponentStatePath();
+    if (path.empty()) return {AppComponentStateStatus::Unreadable, ""};
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    return CheckAppComponentStateFile(path, now);
+}
+
+FsUtils::AppComponentState FsUtils::CheckAppComponentStateFile(const std::wstring& path, FILETIME now) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        return {error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND
+                    ? AppComponentStateStatus::Missing : AppComponentStateStatus::Unreadable, ""};
+    }
+    FILETIME writeTime{};
+    std::string json;
+    const bool ok = GetFileTime(file, nullptr, nullptr, &writeTime) && ReadSmallFile(file, json);
+    CloseHandle(file);
+    if (!ok) return {AppComponentStateStatus::Unreadable, ""};
+    std::string schema, version, protocol, refreshed;
+    if (!ExtractJsonString(json, "schema", schema) || schema != "go-mapi-app-component-state-v1" ||
+        !ExtractJsonString(json, "version", version) ||
+        !ExtractJsonString(json, "queueProtocol", protocol) || protocol != "queue-v1" ||
+        !ExtractJsonString(json, "refreshedAt", refreshed)) {
+        return {AppComponentStateStatus::Malformed, ""};
+    }
+    const ULONGLONG nowTicks = FileTimeTicks(now), writeTicks = FileTimeTicks(writeTime);
+    if (writeTicks > nowTicks) return {AppComponentStateStatus::Future, version};
+    if (nowTicks - writeTicks > kPresenceStaleAfter100ns) return {AppComponentStateStatus::Stale, version};
+    return {AppComponentStateStatus::Available, version};
+}
+
 bool FsUtils::EnsureOutputDirectory() {
     std::wstring queueDir = GetBaseQueueDir();
     if (queueDir.empty()) {
@@ -52,7 +225,57 @@ bool FsUtils::EnsureOutputDirectory() {
 
     std::wstring errorsDir = queueDir + L"\\errors";
     rc = SHCreateDirectoryExW(nullptr, errorsDir.c_str(), nullptr);
+    if (rc != ERROR_SUCCESS && rc != ERROR_ALREADY_EXISTS && rc != ERROR_FILE_EXISTS) return false;
+    std::wstring warningsDir = queueDir + L"\\warnings";
+    rc = SHCreateDirectoryExW(nullptr, warningsDir.c_str(), nullptr);
     return rc == ERROR_SUCCESS || rc == ERROR_ALREADY_EXISTS || rc == ERROR_FILE_EXISTS;
+}
+
+bool FsUtils::WriteMissingAppWarning(AppPresenceStatus status) {
+    if (status == AppPresenceStatus::Available || !EnsureOutputDirectory()) return false;
+    const std::wstring path = GetBaseQueueDir() + L"\\warnings\\missing-wails-app.warning";
+    const std::string content = std::string("go-mapi: Wails app unavailable (") +
+        PresenceReason(status) + "). Start or install go-mapi.\n";
+    // This is deliberately create-only: the stable name is the cross-process rate limiter.
+    return WriteFileAtomically(path, content);
+}
+
+bool FsUtils::RemoveMissingAppWarning() {
+    const std::wstring base = GetBaseQueueDir();
+    if (base.empty()) return false;
+    const std::wstring path = base + L"\\warnings\\missing-wails-app.warning";
+    return DeleteFileW(path.c_str()) != FALSE || GetLastError() == ERROR_FILE_NOT_FOUND;
+}
+
+std::wstring FsUtils::GetComponentMismatchWarningPath() {
+    const std::wstring base = GetBaseQueueDir();
+    return base.empty() ? L"" : base + L"\\warnings\\component-version-mismatch-v1.json";
+}
+
+bool FsUtils::WriteComponentMismatchWarning(const std::string& interceptorVersion,
+                                            const std::string& architecture,
+                                            const std::string& minInclusive,
+                                            const std::string& maxExclusive,
+                                            const std::string& observedStatus,
+                                            const std::string& observedVersion) {
+    if (!EnsureOutputDirectory()) return false;
+    std::ostringstream json;
+    json << "{\"schema\":\"go-mapi-component-version-mismatch-v1\","
+         << "\"interceptor\":{\"version\":\"" << interceptorVersion
+         << "\",\"architecture\":\"" << architecture
+         << "\",\"requires\":{\"component\":\"app\",\"minInclusive\":\""
+         << minInclusive << "\"";
+    if (!maxExclusive.empty()) json << ",\"maxExclusive\":\"" << maxExclusive << "\"";
+    json << "}},\"app\":{\"observedStatus\":\"" << observedStatus << "\"";
+    if (!observedVersion.empty()) json << ",\"observedVersion\":\"" << observedVersion << "\"";
+    json << "},\"action\":\"update-app\",\"createdAt\":\"" << UtcNowIso8601() << "\"}";
+    return WriteFileAtomicallyReplacing(GetComponentMismatchWarningPath(), json.str());
+}
+
+bool FsUtils::RemoveComponentMismatchWarning() {
+    const std::wstring path = GetComponentMismatchWarningPath();
+    if (path.empty()) return false;
+    return DeleteFileW(path.c_str()) != FALSE || GetLastError() == ERROR_FILE_NOT_FOUND;
 }
 
 std::string FsUtils::GetRandomSuffix() {
@@ -196,6 +419,89 @@ bool FsUtils::WriteFile(const std::wstring& filePath, const std::string& content
 
     CloseHandle(hFile);
     return result && bytesWritten == content.length();
+}
+
+bool FsUtils::WriteFileAtomically(const std::wstring& filePath,
+                                  const std::string& content) {
+    if (filePath.empty() || content.size() > MAXDWORD) return false;
+
+    // The staging file must be a sibling of the final path: MoveFileExW is
+    // atomic only when both names are on the same volume.
+    std::wstring tempPath = filePath + L"." + GenerateUniqueStem() + L".tmp";
+    HANDLE hFile = CreateFileW(
+        tempPath.c_str(),
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        CREATE_NEW,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (hFile == INVALID_HANDLE_VALUE) return false;
+
+    DWORD bytesWritten = 0;
+    const BOOL wrote = atomicWriteFault.load() == AtomicWriteFault::Write
+        ? FALSE
+        : ::WriteFile(hFile, content.data(), static_cast<DWORD>(content.size()),
+                      &bytesWritten, nullptr);
+    const BOOL flushed = wrote && bytesWritten == static_cast<DWORD>(content.size()) &&
+                         (atomicWriteFault.load() == AtomicWriteFault::Flush
+                              ? FALSE
+                              : FlushFileBuffers(hFile));
+    const BOOL closed = CloseHandle(hFile);
+    if (!flushed || !closed) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+
+    // Do not replace an existing message. A unique stem should make that
+    // impossible; preserving an existing final file is safer on collision.
+    if (atomicWriteFault.load() == AtomicWriteFault::Rename ||
+        !MoveFileExW(tempPath.c_str(), filePath.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool FsUtils::RemoveAttachmentsDirForStem(const std::wstring& stem) {
+    const std::wstring dir = GetAttachmentsDirForStem(stem);
+    if (dir.empty()) return false;
+
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileW((dir + L"\\*").c_str(), &entry);
+    if (find == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_PATH_NOT_FOUND) {
+            // The directory never existed (e.g. a message had no
+            // attachments), which is already the desired postcondition.
+            return true;
+        }
+        if (error == ERROR_FILE_NOT_FOUND) {
+            // FindFirstFile reports FILE_NOT_FOUND for an empty directory;
+            // remove that directory instead of silently leaving it behind.
+            return RemoveDirectoryW(dir.c_str()) != FALSE;
+        }
+        return false;
+    }
+
+    bool removed = true;
+    do {
+        if (wcscmp(entry.cFileName, L".") == 0 || wcscmp(entry.cFileName, L"..") == 0) {
+            continue;
+        }
+        const std::wstring child = dir + L"\\" + entry.cFileName;
+        if (entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            // Attachment copies are flat. Do not recursively remove an
+            // unexpected directory; leave it in place and report failure.
+            removed = false;
+        } else if (!DeleteFileW(child.c_str())) {
+            removed = false;
+        }
+    } while (FindNextFileW(find, &entry));
+    FindClose(find);
+
+    return removed && RemoveDirectoryW(dir.c_str());
 }
 
 } // namespace go_mapi

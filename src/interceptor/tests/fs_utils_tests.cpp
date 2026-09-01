@@ -57,6 +57,14 @@ static bool fileExists(const std::wstring& path) {
     return (attr != INVALID_FILE_ATTRIBUTES) && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+static bool noTemporaryFiles(const std::wstring& directory) {
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileW((directory + L"\\*.tmp").c_str(), &entry);
+    if (find == INVALID_HANDLE_VALUE) return true;
+    FindClose(find);
+    return false;
+}
+
 static std::string toUtf8(const std::wstring& w) {
     if (w.empty()) return "";
     int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -160,6 +168,159 @@ TEST_CASE("CopyFileToDir returns false when source is missing") {
     RemoveDirectoryW(destDir.c_str());
 }
 
+TEST_CASE("CopyFileToDir never overwrites a staged attachment on collision") {
+    std::wstring scratch = makeScratchDir(L"copy-collision");
+    std::wstring srcPath = scratch + L"\\source.txt";
+    std::wstring destDir = scratch + L"\\dest";
+    FsUtils::EnsureDirExists(destDir);
+    writeBytes(srcPath, "source", 6);
+    const std::wstring existing = destDir + L"\\source.txt";
+    writeBytes(existing, "already-staged", 14);
+
+    std::wstring newPath;
+    uint32_t size = 0;
+    CHECK_FALSE(FsUtils::CopyFileToDir(toUtf8(srcPath), destDir, "source.txt", newPath, size));
+
+    HANDLE h = CreateFileW(existing.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    char read[32] = {};
+    DWORD count = 0;
+    REQUIRE(ReadFile(h, read, sizeof(read), &count, nullptr));
+    CloseHandle(h);
+    CHECK(std::string(read, count) == "already-staged");
+
+    DeleteFileW(existing.c_str());
+    DeleteFileW(srcPath.c_str());
+    RemoveDirectoryW(destDir.c_str());
+}
+
+// -------- WriteFileAtomically --------
+
+TEST_CASE("WriteFileAtomically publishes complete content without leaving its staging file") {
+    std::wstring scratch = makeScratchDir(L"atomic");
+    std::wstring finalPath = scratch + L"\\message.json";
+    DeleteFileW(finalPath.c_str());
+
+    const std::string payload = R"({"version":1,"subject":"atomic"})";
+    REQUIRE(FsUtils::WriteFileAtomically(finalPath, payload));
+    REQUIRE(fileExists(finalPath));
+
+    HANDLE h = CreateFileW(finalPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    char read[64] = {};
+    DWORD count = 0;
+    REQUIRE(ReadFile(h, read, sizeof(read), &count, nullptr));
+    CloseHandle(h);
+    CHECK(std::string(read, count) == payload);
+
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileW((scratch + L"\\*.tmp").c_str(), &entry);
+    CHECK(find == INVALID_HANDLE_VALUE);
+    if (find != INVALID_HANDLE_VALUE) FindClose(find);
+    DeleteFileW(finalPath.c_str());
+}
+
+TEST_CASE("WriteFileAtomically never replaces an existing queue message") {
+    std::wstring scratch = makeScratchDir(L"atomic-collision");
+    std::wstring finalPath = scratch + L"\\message.json";
+    const char existing[] = "existing";
+    DeleteFileW(finalPath.c_str());
+    writeBytes(finalPath, existing, sizeof(existing) - 1);
+
+    CHECK_FALSE(FsUtils::WriteFileAtomically(finalPath, "replacement"));
+
+    HANDLE h = CreateFileW(finalPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    char read[32] = {};
+    DWORD count = 0;
+    REQUIRE(ReadFile(h, read, sizeof(read), &count, nullptr));
+    CloseHandle(h);
+    CHECK(std::string(read, count) == existing);
+
+    WIN32_FIND_DATAW entry{};
+    HANDLE find = FindFirstFileW((scratch + L"\\*.tmp").c_str(), &entry);
+    CHECK(find == INVALID_HANDLE_VALUE);
+    if (find != INVALID_HANDLE_VALUE) FindClose(find);
+    DeleteFileW(finalPath.c_str());
+}
+
+TEST_CASE("app component state distinguishes valid, malformed, and stale records") {
+    std::wstring scratch = makeScratchDir(L"component-state");
+    std::wstring path = scratch + L"\\app-component-state-v1.json";
+    DeleteFileW(path.c_str());
+    const std::string valid = R"({"schema":"go-mapi-app-component-state-v1","version":"4.2.0","queueProtocol":"queue-v1","refreshedAt":"2026-08-30T12:00:00Z"})";
+    writeBytes(path, valid.data(), valid.size());
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    auto state = FsUtils::CheckAppComponentStateFile(path, now);
+    CHECK(state.status == FsUtils::AppComponentStateStatus::Available);
+    CHECK(state.version == "4.2.0");
+
+    DeleteFileW(path.c_str());
+    const std::string malformed = R"({"schema":"wrong","version":"4.2.0"})";
+    writeBytes(path, malformed.data(), malformed.size());
+    state = FsUtils::CheckAppComponentStateFile(path, now);
+    CHECK(state.status == FsUtils::AppComponentStateStatus::Malformed);
+
+    ULARGE_INTEGER old{};
+    old.LowPart = now.dwLowDateTime;
+    old.HighPart = now.dwHighDateTime;
+    old.QuadPart -= 6ULL * 60ULL * 10000000ULL;
+    FILETIME oldTime{old.LowPart, old.HighPart};
+    HANDLE handle = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(handle != INVALID_HANDLE_VALUE);
+    REQUIRE(SetFileTime(handle, nullptr, nullptr, &oldTime));
+    CloseHandle(handle);
+    state = FsUtils::CheckAppComponentStateFile(path, now);
+    CHECK(state.status == FsUtils::AppComponentStateStatus::Malformed);
+    DeleteFileW(path.c_str());
+
+    writeBytes(path, valid.data(), valid.size());
+    handle = CreateFileW(path.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(handle != INVALID_HANDLE_VALUE);
+    REQUIRE(SetFileTime(handle, nullptr, nullptr, &oldTime));
+    CloseHandle(handle);
+    state = FsUtils::CheckAppComponentStateFile(path, now);
+    CHECK(state.status == FsUtils::AppComponentStateStatus::Stale);
+    DeleteFileW(path.c_str());
+}
+
+TEST_CASE("WriteFileAtomically leaves no JSON or staging file when the destination cannot be opened") {
+    std::wstring scratch = makeScratchDir(L"atomic-open-failure");
+    std::wstring blocker = scratch + L"\\not-a-directory";
+    writeBytes(blocker, "blocker", 7);
+    std::wstring finalPath = blocker + L"\\message.json";
+
+    CHECK_FALSE(FsUtils::WriteFileAtomically(finalPath, "partial document"));
+    CHECK_FALSE(fileExists(finalPath));
+    CHECK(noTemporaryFiles(scratch));
+
+    DeleteFileW(blocker.c_str());
+}
+
+TEST_CASE("WriteFileAtomically cleans up injected write flush and rename failures") {
+    const FsUtils::AtomicWriteFault faults[] = {
+        FsUtils::AtomicWriteFault::Write,
+        FsUtils::AtomicWriteFault::Flush,
+        FsUtils::AtomicWriteFault::Rename,
+    };
+    for (const auto fault : faults) {
+        std::wstring scratch = makeScratchDir(L"atomic-injected");
+        std::wstring finalPath = scratch + L"\\message.json";
+        DeleteFileW(finalPath.c_str());
+        FsUtils::SetAtomicWriteFaultForTesting(fault);
+        CHECK_FALSE(FsUtils::WriteFileAtomically(finalPath, "partial document"));
+        FsUtils::SetAtomicWriteFaultForTesting(FsUtils::AtomicWriteFault::None);
+        CHECK_FALSE(fileExists(finalPath));
+        CHECK(noTemporaryFiles(scratch));
+    }
+}
+
 // -------- WriteErrorForStem --------
 
 TEST_CASE("WriteErrorForStem writes errors\\<stem>.error with the reason") {
@@ -186,4 +347,63 @@ TEST_CASE("WriteErrorForStem writes errors\\<stem>.error with the reason") {
     CHECK(got == reason);
 
     DeleteFileW(errPath.c_str());
+}
+
+// -------- app-presence / missing-app warning --------
+
+TEST_CASE("App presence accepts only a fresh exact marker") {
+    std::wstring scratch = makeScratchDir(L"app-presence");
+    std::wstring marker = scratch + L"\\app-presence-v1";
+    DeleteFileW(marker.c_str());
+
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    CHECK(FsUtils::CheckAppPresenceFile(marker, now) == FsUtils::AppPresenceStatus::Missing);
+
+    const char token[] = "go-mapi-app-presence-v1\n";
+    writeBytes(marker, token, sizeof(token) - 1);
+    GetSystemTimeAsFileTime(&now);
+    CHECK(FsUtils::CheckAppPresenceFile(marker, now) == FsUtils::AppPresenceStatus::Available);
+
+    CHECK(FsUtils::CheckAppPresenceFile(scratch, now) == FsUtils::AppPresenceStatus::Unreadable);
+
+    writeBytes(marker, "wrong", 5);
+    CHECK(FsUtils::CheckAppPresenceFile(marker, now) == FsUtils::AppPresenceStatus::Malformed);
+
+    writeBytes(marker, token, sizeof(token) - 1);
+    HANDLE h = CreateFileW(marker.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = now.dwLowDateTime;
+    ticks.HighPart = now.dwHighDateTime;
+    ticks.QuadPart += 10000000ULL;
+    FILETIME future{};
+    future.dwLowDateTime = ticks.LowPart;
+    future.dwHighDateTime = ticks.HighPart;
+    REQUIRE(SetFileTime(h, nullptr, nullptr, &future));
+    CloseHandle(h);
+    CHECK(FsUtils::CheckAppPresenceFile(marker, now) == FsUtils::AppPresenceStatus::Future);
+
+    h = CreateFileW(marker.c_str(), FILE_WRITE_ATTRIBUTES, 0, nullptr,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    ticks.LowPart = now.dwLowDateTime;
+    ticks.HighPart = now.dwHighDateTime;
+    ticks.QuadPart -= 6ULL * 60ULL * 10000000ULL;
+    FILETIME stale{};
+    stale.dwLowDateTime = ticks.LowPart;
+    stale.dwHighDateTime = ticks.HighPart;
+    REQUIRE(SetFileTime(h, nullptr, nullptr, &stale));
+    CloseHandle(h);
+    CHECK(FsUtils::CheckAppPresenceFile(marker, now) == FsUtils::AppPresenceStatus::Stale);
+    DeleteFileW(marker.c_str());
+}
+
+TEST_CASE("Missing app warning is stable and removable") {
+    FsUtils::RemoveMissingAppWarning();
+    CHECK(FsUtils::WriteMissingAppWarning(FsUtils::AppPresenceStatus::Missing));
+    // Stable create-only warning is the rate limiter for short-lived caller processes.
+    CHECK_FALSE(FsUtils::WriteMissingAppWarning(FsUtils::AppPresenceStatus::Missing));
+    CHECK(FsUtils::RemoveMissingAppWarning());
 }

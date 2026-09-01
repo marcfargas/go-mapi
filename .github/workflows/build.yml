@@ -15,6 +15,7 @@ jobs:
     strategy:
       matrix:
         config: [Debug, Release]
+        arch: [x64, x86]
 
     steps:
       - uses: actions/checkout@v4
@@ -51,102 +52,26 @@ jobs:
 
       - name: Build Interceptor and Test Harness
         working-directory: src/interceptor
-        run: .\build.ps1 -Config ${{ matrix.config }} -Tests -Clean
+        run: .\build.ps1 -Arch ${{ matrix.arch }} -Config ${{ matrix.config }} -Tests -Clean
 
       - name: Run Test Harness
         working-directory: src/interceptor
-        run: .\build-x64\bin\go-mapi-test-harness.exe .\build-x64\bin\go-mapi.dll
-        continue-on-error: true
+        run: .\build-${{ matrix.arch }}\bin\go-mapi-test-harness.exe .\build-${{ matrix.arch }}\bin\go-mapi.dll
 
       - name: Run C++ Unit Tests (doctest via ctest)
-        working-directory: src/interceptor/build-x64
+        working-directory: src/interceptor/build-${{ matrix.arch }}
         run: ctest --output-on-failure --build-config ${{ matrix.config }}
 
       - name: Upload DLL Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: go-mapi-dll-${{ matrix.config }}
-          path: src/interceptor/build-x64/bin/go-mapi.dll
-          if-no-files-found: warn
+          name: go-mapi-dll-${{ matrix.arch }}-${{ matrix.config }}
+          path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi.dll
+          if-no-files-found: error
 
       - name: Upload Test Harness Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: go-mapi-tests-${{ matrix.config }}
-          path: src/interceptor/build-x64/bin/go-mapi-test-harness.exe
-          if-no-files-found: warn
-
-  build-wails-app:
-    name: Build Wails App (Go + Svelte)
-    runs-on: windows-latest
-    env:
-      CGO_ENABLED: '1'
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # CRITICAL: npm ci + frontend build MUST run before any 'go test' or
-      # 'go vet' on ./src/app/... because src/app/main.go has
-      # //go:embed all:frontend/dist. On a clean checkout, src/app/frontend/dist/
-      # does not exist yet — it's produced here.
-      - name: Install npm workspace dependencies
-        run: npm ci
-
-      - name: Build frontend (produces src/app/frontend/dist for go:embed)
-        run: npm run -w @marcfargas/go-mapi-app-frontend build
-
-      - name: go vet
-        run: go vet ./internal/mapi/... ./src/app/...
-
-      - name: go test -race with coverage (internal/mapi)
-        # shell: bash — pwsh mis-splits `-coverprofile=x.out` at the `.`, passing `.out` as a package arg
-        shell: bash
-        run: go test -race -coverprofile=coverage-internal-mapi.out -v ./internal/mapi/...
-
-      - name: go test -race with coverage (src/app)
-        shell: bash
-        run: go test -race -coverprofile=coverage-src-app.out -v ./src/app/...
-
-      - name: Upload Go coverage (internal/mapi)
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-internal-mapi
-          path: coverage-internal-mapi.out
-          if-no-files-found: warn
-
-      - name: Upload Go coverage (src/app)
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-src-app
-          path: coverage-src-app.out
-          if-no-files-found: warn
-
-      - name: svelte-check (blocking)
-        run: npm run -w @marcfargas/go-mapi-app-frontend check
-
-      - name: Vitest frontend tests (blocking)
-        run: npm run -w @marcfargas/go-mapi-app-frontend test:run
-
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: wails build (sanity)
-        working-directory: src/app
-        run: wails build -platform windows/amd64
-
-      - name: Upload Wails app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-wails-app
-          path: src/app/build/bin/
-          if-no-files-found: warn
+          name: go-mapi-tests-${{ matrix.arch }}-${{ matrix.config }}
+          path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi-test-harness.exe
+          if-no-files-found: error

@@ -1,0 +1,83 @@
+{
+  "schema": "go-mapi-legacy-inventory-v1",
+  "resources": [
+    {
+      "id": "manual-client-registration",
+      "kind": "registry-key",
+      "views": [ "Registry64", "Registry32" ],
+      "path": "SOFTWARE\\Clients\\Mail\\go-mapi",
+      "ownership": "exact go-mapi client key"
+    },
+    {
+      "id": "manual-handler-classes",
+      "kind": "registry-key",
+      "views": [ "Registry64", "Registry32" ],
+      "path": "SOFTWARE\\Classes\\go-mapi",
+      "ownership": "exact go-mapi ProgID"
+    },
+    {
+      "id": "legacy-app-path",
+      "kind": "registry-key",
+      "views": [ "Registry64", "Registry32" ],
+      "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\go-mapi.exe",
+      "ownership": "exact executable name"
+    },
+    {
+      "id": "legacy-registered-application",
+      "kind": "registry-value",
+      "views": [ "Registry64", "Registry32" ],
+      "path": "SOFTWARE\\RegisteredApplications",
+      "name": "go-mapi",
+      "ownership": "exact value name"
+    },
+    {
+      "id": "legacy-nsis-arp",
+      "kind": "registry-key",
+      "views": [ "Registry64", "Registry32" ],
+      "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\go-mapi",
+      "ownership": "exact legacy NSIS product key"
+    },
+    {
+      "id": "legacy-machine-install-x64",
+      "kind": "directory",
+      "path": "%ProgramFiles%\\go-mapi",
+      "ownership": "exact legacy product directory"
+    },
+    {
+      "id": "legacy-machine-install-x86",
+      "kind": "directory",
+      "path": "%ProgramFiles(x86)%\\go-mapi",
+      "ownership": "exact legacy product directory"
+    },
+    {
+      "id": "legacy-update-staging",
+      "kind": "directory",
+      "path": "%ProgramData%\\go-mapi\\updates",
+      "ownership": "exact legacy update staging directory"
+    },
+    {
+      "id": "legacy-uninstall-state",
+      "kind": "directory",
+      "path": "%ProgramData%\\go-mapi\\uninst",
+      "ownership": "exact legacy NSIS state directory"
+    },
+    {
+      "id": "legacy-shortcut",
+      "kind": "file",
+      "path": "%CommonStartMenu%\\Programs\\go-mapi.lnk",
+      "ownership": "exact product shortcut"
+    },
+    {
+      "id": "legacy-update-task",
+      "kind": "scheduled-task",
+      "name": "go-mapi Auto Update",
+      "ownership": "exact task name"
+    },
+    {
+      "id": "legacy-oauth-firewall",
+      "kind": "firewall-rule",
+      "name": "go-mapi OAuth loopback",
+      "ownership": "exact rule name"
+    }
+  ]
+}

@@ -2,6 +2,8 @@ export namespace main {
 	
 	export class AppSettings {
 	    mode: string;
+	    autostart_enabled: boolean;
+	    default_apps_prompted: boolean;
 	    update_checks_enabled: boolean;
 	    last_update_check?: string;
 	
@@ -12,8 +14,55 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.mode = source["mode"];
+	        this.autostart_enabled = source["autostart_enabled"];
+	        this.default_apps_prompted = source["default_apps_prompted"];
 	        this.update_checks_enabled = source["update_checks_enabled"];
 	        this.last_update_check = source["last_update_check"];
+	    }
+	}
+	export class SettingsIssue {
+	    kind: string;
+	    message: string;
+	    path: string;
+
+	    static createFrom(source: any = {}) { return new SettingsIssue(source); }
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.message = source["message"];
+	        this.path = source["path"];
+	    }
+	}
+	export class SettingsLoadResult {
+	    settings: AppSettings;
+	    issue?: SettingsIssue;
+
+	    static createFrom(source: any = {}) { return new SettingsLoadResult(source); }
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.settings = this.convertValues(source["settings"], AppSettings);
+	        this.issue = this.convertValues(source["issue"], SettingsIssue);
+	    }
+	    convertValues(a: any, classs: any): any {
+	        if (!a) return a;
+	        return new classs(a);
+	    }
+	}
+	export class StartupState {
+	    backend: string;
+	    requested: boolean;
+	    registered: boolean;
+	    effective: string;
+	    warning?: string;
+
+	    static createFrom(source: any = {}) { return new StartupState(source); }
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.backend = source["backend"];
+	        this.requested = source["requested"];
+	        this.registered = source["registered"];
+	        this.effective = source["effective"];
+	        this.warning = source["warning"];
 	    }
 	}
 	export class AuthStatus {
@@ -209,4 +258,3 @@ export namespace mapi {
 	
 
 }
-

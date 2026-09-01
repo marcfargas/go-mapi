@@ -12,6 +12,10 @@ export function DismissEmail(arg1:string):Promise<void>;
 
 export function GetAuthStatus():Promise<main.AuthStatus>;
 
+export function GetComponentHealth():Promise<any>;
+
+export function GetAdminInstallState():Promise<any>;
+
 export function GetMode():Promise<string>;
 
 export function GetPausedState():Promise<boolean>;
@@ -20,17 +24,29 @@ export function GetQueue():Promise<Array<mapi.EmailWithId>>;
 
 export function GetSettings():Promise<main.AppSettings>;
 
+export function GetSettingsState():Promise<main.SettingsLoadResult>;
+
+export function GetStartupState():Promise<main.StartupState>;
+
 export function GetUpdateState():Promise<main.UpdateState>;
 
 export function MakeAuthenticatedGmailCall(arg1:context.Context,arg2:main.GmailCall):Promise<void>;
 
 export function PauseWatching():Promise<void>;
 
+export function OpenDefaultAppsSettings():Promise<void>;
+
+export function OpenStartupSettings():Promise<void>;
+
+export function DismissDefaultAppsPrompt():Promise<void>;
+
 export function ResumeWatching():Promise<void>;
 
 export function SaveSettings(arg1:main.AppSettings):Promise<void>;
 
 export function SetMode(arg1:string):Promise<void>;
+
+export function SetAutostartEnabled(arg1:boolean):Promise<main.StartupState>;
 
 export function SetPaused(arg1:boolean):Promise<void>;
 
@@ -41,5 +57,7 @@ export function SetTrayIdle(arg1:string):Promise<void>;
 export function SetUpdateChecksEnabled(arg1:boolean):Promise<void>;
 
 export function SignIn():Promise<void>;
+
+export function StartAdminRepair():Promise<void>;
 
 export function SignOut():Promise<void>;

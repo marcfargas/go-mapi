@@ -134,7 +134,7 @@ std::wstring JsonWriter::WriteMailToFile(const MailMessage& msg) {
     std::string jsonContent = MessageToJson(msg);
 
     // Write to file
-    if (FsUtils::WriteFile(fullPath, jsonContent)) {
+    if (FsUtils::WriteFileAtomically(fullPath, jsonContent)) {
         return fullPath;
     }
 
@@ -155,7 +155,7 @@ std::wstring JsonWriter::WriteMailToFileWithStem(const MailMessage& msg,
     std::wstring fullPath = outputDir + stem + L".json";
 
     std::string jsonContent = MessageToJson(msg);
-    if (FsUtils::WriteFile(fullPath, jsonContent)) {
+    if (FsUtils::WriteFileAtomically(fullPath, jsonContent)) {
         return fullPath;
     }
 

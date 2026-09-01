@@ -32,3 +32,27 @@ main { padding: var(--space-md); font-size: 14px; line-height: 1.5; }
 .queue-row .sender { font-weight: 600; }
 .queue-row .subject { color: var(--c-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .queue-row .meta { font-size: 12px; color: var(--c-text-muted); text-align: right; }
+/* Persistent counterpart-version health. This remains visible independently
+   of authentication and queue state so generic MAPI failures are actionable. */
+.component-health {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: #51210f;
+  background: #fff1e6;
+  border-bottom: 1px solid #f2b38f;
+}
+
+.component-health h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.component-health__issue {
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.86rem;
+}
+
+.component-health__issue + .component-health__issue {
+  margin-top: 0.55rem;
+}

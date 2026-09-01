@@ -15,6 +15,15 @@ namespace {
 
 std::string g_dllPath;
 
+// The release verifier retains descriptors only while it inspects the
+// compile-time interceptor version. Ordinary harness and CTest runs continue
+// to clean up their own queue entries.
+bool RetainHarnessArtifacts() {
+    char value[8] = {};
+    return GetEnvironmentVariableA("GO_MAPI_TEST_RETAIN_OUTPUT", value, sizeof(value)) > 0 &&
+           std::string(value) == "1";
+}
+
 std::string WideToUtf8(const std::wstring& wide) {
     if (wide.empty()) return "";
     const int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
@@ -125,6 +134,7 @@ bool TestUtilities::ValidateJsonFile(const std::string& filePath) {
 void TestUtilities::CleanupTestArtifacts(const std::string& queueDir,
                                          const std::string& jsonFile,
                                          const QueueSnapshot& snapshot) {
+    if (RetainHarnessArtifacts()) return;
     if (!jsonFile.empty() && snapshot.jsonFiles.count(jsonFile) == 0) {
         std::error_code error;
         const fs::path json(jsonFile);

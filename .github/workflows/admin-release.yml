@@ -1,0 +1,330 @@
+name: Release admin interceptor MSI
+
+on:
+  push:
+    tags: ['admin-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Interceptor/admin version (for example 4.0.0)'
+        required: true
+      sign:
+        description: 'Sign DLLs and MSI with SignPath'
+        type: boolean
+        default: true
+      publish:
+        description: 'Publish GitHub release and winget submission'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-sign-publish:
+    # This protected environment holds the release-only metadata inputs. It is
+    # intentionally separate from ordinary build secrets so public releases
+    # cannot silently fall back to an unsigned or developer-generated target.
+    environment: admin-release
+    runs-on: windows-latest
+    env:
+      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      HAS_WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN != '' }}
+      ADMIN_RELEASE_ROOT_JSON: ${{ vars.ADMIN_RELEASE_ROOT_JSON }}
+      ADMIN_RELEASE_TARGETS_KEY_ID: ${{ vars.ADMIN_RELEASE_TARGETS_KEY_ID }}
+      ADMIN_RELEASE_METADATA_ORIGIN: ${{ vars.ADMIN_RELEASE_METADATA_ORIGIN }}
+      ADMIN_RELEASE_PUBLISHER: ${{ vars.ADMIN_RELEASE_PUBLISHER }}
+      ADMIN_RELEASE_EKUS_JSON: ${{ vars.ADMIN_RELEASE_EKUS_JSON }}
+      ADMIN_RELEASE_POLICY_ID: ${{ vars.ADMIN_RELEASE_POLICY_ID }}
+      # Base64 of a PEM-encoded Ed25519 private key. The source repository
+      # contains neither this value nor a fallback signing key.
+      ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64: ${{ secrets.ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve independent admin version
+        id: version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'push') {
+            '${{ github.ref_name }}' -replace '^admin-v',''
+          } else {
+            '${{ inputs.version }}'
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
+          Set-Content src/interceptor/interceptor-version.txt -Value $version -NoNewline -Encoding ascii
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+
+      - name: Require signing credentials for every public release
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        shell: pwsh
+        run: |
+          if ($env:HAS_SIGNPATH -ne 'true') { throw 'Public/signing run requires SignPath credentials; unsigned publication is forbidden.' }
+
+      - name: Require protected admin metadata signing inputs
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        shell: pwsh
+        run: |
+          $required = @(
+            'ADMIN_RELEASE_ROOT_JSON',
+            'ADMIN_RELEASE_TARGETS_KEY_ID',
+            'ADMIN_RELEASE_METADATA_ORIGIN',
+            'ADMIN_RELEASE_PUBLISHER',
+            'ADMIN_RELEASE_EKUS_JSON',
+            'ADMIN_RELEASE_POLICY_ID',
+            'ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Public/signing run requires protected admin metadata input: $name"
+            }
+          }
+          $root = $env:ADMIN_RELEASE_ROOT_JSON | ConvertFrom-Json
+          if ($root.schema -ne 'go-mapi-admin-root-v1' -or $root.version -lt 1 -or $root.allowedOrigin -ne $env:ADMIN_RELEASE_METADATA_ORIGIN) {
+            throw 'ADMIN_RELEASE_ROOT_JSON is not a compatible trusted admin root'
+          }
+          $ekus = $env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json
+          $codeSigningEku = '1.3.6.1.5.5.7.3.3'
+          $subscriberEkus = @($ekus | Where-Object { $_ -ne $codeSigningEku })
+          if ($ekus.Count -lt 2 -or $ekus -notcontains $codeSigningEku -or $subscriberEkus.Count -lt 1 -or @($ekus | Select-Object -Unique).Count -ne $ekus.Count) { throw 'ADMIN_RELEASE_EKUS_JSON must contain code-signing and a distinct subscriber-identity EKU' }
+          if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) { throw 'OpenSSL is required to sign admin release metadata' }
+
+      - name: Install dual-bitness interceptor toolchain
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Verify and stage x86/x64 interceptor release
+        shell: pwsh
+        run: .\src\interceptor\verify-release.ps1
+
+      - name: Upload DLLs for signing
+        if: github.event_name == 'push' || inputs.sign
+        id: upload-dlls
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-interceptor-dlls-unsigned
+          path: |
+            release/interceptor/go-mapi-x86.dll
+            release/interceptor/go-mapi-x64.dll
+
+      - name: Sign x86/x64 DLLs
+        if: github.event_name == 'push' || inputs.sign
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-dlls.outputs.artifact-id }}
+          output-artifact-directory: release/interceptor-signed
+          wait-for-completion: true
+
+      - name: Adopt signed DLLs and refresh artifact hashes
+        if: github.event_name == 'push' || inputs.sign
+        shell: pwsh
+        run: |
+          foreach ($arch in @('x86','x64')) {
+            Copy-Item "release/interceptor-signed/go-mapi-$arch.dll" "release/interceptor/go-mapi-$arch.dll" -Force
+          }
+          $manifestPath = 'release/interceptor/interceptor-artifacts.json'
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          foreach ($artifact in $manifest.artifacts) {
+            $path = Join-Path 'release/interceptor' $artifact.filename
+            if ((Get-AuthenticodeSignature $path).Status -ne 'Valid') { throw "Signed DLL verification failed: $path" }
+            $artifact.sha256 = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+
+      - name: Build interceptor-only WiX MSI
+        shell: pwsh
+        run: |
+          $args = @('-Version','${{ steps.version.outputs.version }}')
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignedInputs' }
+          & .\src\installer\msi\build.ps1 @args
+
+      - name: Upload MSI for signing
+        if: github.event_name == 'push' || inputs.sign
+        id: upload-msi
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-interceptor-msi-unsigned
+          path: release/admin/go-mapi-interceptor.msi
+
+      - name: Sign MSI
+        if: github.event_name == 'push' || inputs.sign
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-msi.outputs.artifact-id }}
+          output-artifact-directory: release/admin-signed
+          wait-for-completion: true
+
+      - name: Adopt and verify signed MSI
+        if: github.event_name == 'push' || inputs.sign
+        shell: pwsh
+        run: |
+          Copy-Item release/admin-signed/go-mapi-interceptor.msi release/admin/go-mapi-interceptor.msi -Force
+          .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi -RequireSignature
+
+      - name: Verify unsigned validation MSI
+        if: github.event_name == 'workflow_dispatch' && !inputs.sign
+        shell: pwsh
+        run: .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi
+
+      - name: Generate signed winget manifest
+        if: github.event_name == 'push' || inputs.publish
+        shell: pwsh
+        run: |
+          $version = '${{ steps.version.outputs.version }}'
+          $url = "https://github.com/${{ github.repository }}/releases/download/admin-v$version/go-mapi-interceptor.msi"
+          .\src\installer\msi\generate-winget.ps1 -Version $version -MsiPath release/admin/go-mapi-interceptor.msi -InstallerUrl $url -OutputDirectory release/winget
+
+      - name: Generate signed admin release metadata
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        shell: pwsh
+        run: |
+          $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
+          # Bind metadata to the actual signed leaf certificate, not merely a
+          # configured declaration. Canonical CN and every protected EKU must
+          # agree before targets are published.
+          $signature = Get-AuthenticodeSignature -LiteralPath $msi
+          if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { throw 'Signed MSI has no valid leaf signer certificate' }
+          $actualPublisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false).Trim().ToLowerInvariant()
+          $expectedPublisher = $env:ADMIN_RELEASE_PUBLISHER.Trim().ToLowerInvariant()
+          if ([string]::IsNullOrWhiteSpace($actualPublisher) -or $actualPublisher -ne $expectedPublisher) { throw 'Signed MSI leaf signer CN does not match protected publisher policy' }
+          $expectedEKUs = @($env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json)
+          $actualEKUs = @($signature.SignerCertificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' } | ForEach-Object { ([Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$_).EnhancedKeyUsages.Value })
+          foreach ($eku in $expectedEKUs) { if ($actualEKUs -notcontains $eku) { throw "Signed MSI leaf signer lacks required EKU: $eku" } }
+          $version = '${{ steps.version.outputs.version }}'
+          $components = Get-Content components.json -Raw | ConvertFrom-Json
+          $requires = $components.components.interceptor.requires
+          if ([string]::IsNullOrWhiteSpace([string]$requires.maxExclusive)) { throw 'interceptor compatibility requires an explicit maxExclusive app version' }
+          foreach ($bound in @($requires.minInclusive, $requires.maxExclusive)) {
+            if ([string]$bound -notmatch '^\d+\.\d+\.\d+$') { throw "interceptor compatibility bound is not a canonical release SemVer: $bound" }
+          }
+          if ([version]$requires.minInclusive -ge [version]$requires.maxExclusive) { throw 'interceptor compatibility minInclusive must be below maxExclusive' }
+          $origin = $env:ADMIN_RELEASE_METADATA_ORIGIN.TrimEnd('/') + '/'
+          $issued = [DateTime]::UtcNow
+          $payload = [ordered]@{
+            schema = 'go-mapi-admin-targets-v1'
+            component = 'interceptor'
+            version = $version
+            queueProtocol = $components.components.interceptor.queueProtocol
+            requires = [ordered]@{
+              component = $requires.component
+              minInclusive = $requires.minInclusive
+              maxExclusive = $requires.maxExclusive
+            }
+            # GitHub run IDs are monotonically assigned for this protected
+            # workflow. They avoid a source-controlled release counter.
+            sequence = [UInt64]${{ github.run_id }}
+            issuedAt = $issued.ToString('yyyy-MM-ddTHH:mm:ssZ')
+            expiresAt = $issued.AddDays(30).ToString('yyyy-MM-ddTHH:mm:ssZ')
+            artifact = [ordered]@{
+              url = $origin + 'admin-v' + $version + '/go-mapi-interceptor.msi'
+              size = [Int64](Get-Item $msi).Length
+              sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            publisher = [ordered]@{
+              publisher = $env:ADMIN_RELEASE_PUBLISHER
+              ekus = @($env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json)
+              policyId = $env:ADMIN_RELEASE_POLICY_ID
+            }
+          }
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          [IO.File]::WriteAllText('release/admin/admin-targets-signed.json', ($payload | ConvertTo-Json -Compress), $utf8)
+          $keyPath = Join-Path $env:RUNNER_TEMP 'admin-release-targets-ed25519.pem'
+          try {
+            [IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64))
+            $root = $env:ADMIN_RELEASE_ROOT_JSON | ConvertFrom-Json
+            $configuredKey = @($root.targets.keys.PSObject.Properties | Where-Object Name -eq $env:ADMIN_RELEASE_TARGETS_KEY_ID | Select-Object -ExpandProperty Value)
+            if ($configuredKey.Count -ne 1) { throw 'ADMIN_RELEASE_TARGETS_KEY_ID is absent from the trusted root targets role' }
+            & openssl pkey -in $keyPath -pubout -outform DER -out release/admin/admin-targets-public.der
+            if ($LASTEXITCODE -ne 0) { throw 'Could not derive metadata signing public key' }
+            $publicDer = [IO.File]::ReadAllBytes('release/admin/admin-targets-public.der')
+            if ($publicDer.Length -lt 32) { throw 'Invalid Ed25519 metadata signing public key' }
+            $publicRaw = $publicDer[($publicDer.Length - 32)..($publicDer.Length - 1)]
+            $publicBase64Url = [Convert]::ToBase64String($publicRaw).TrimEnd('=').Replace('+','-').Replace('/','_')
+            if ($publicBase64Url -ne $configuredKey[0]) { throw 'Metadata signing private key does not match the trusted root target key' }
+            & openssl pkeyutl -sign -rawin -inkey $keyPath -in release/admin/admin-targets-signed.json -out release/admin/admin-targets.sig
+            if ($LASTEXITCODE -ne 0) { throw 'Ed25519 metadata signing failed' }
+          } finally {
+            Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath release/admin/admin-targets-public.der -Force -ErrorAction SilentlyContinue
+          }
+          $signed = [Convert]::ToBase64String([IO.File]::ReadAllBytes('release/admin/admin-targets-signed.json')).TrimEnd('=').Replace('+','-').Replace('/','_')
+          $signature = [Convert]::ToBase64String([IO.File]::ReadAllBytes('release/admin/admin-targets.sig')).TrimEnd('=').Replace('+','-').Replace('/','_')
+          $envelope = [ordered]@{
+            schema = 'go-mapi-admin-envelope-v1'
+            signed = $signed
+            signatures = @([ordered]@{ keyId = $env:ADMIN_RELEASE_TARGETS_KEY_ID; signature = $signature })
+          }
+          [IO.File]::WriteAllText('release/admin/admin-targets.json', ($envelope | ConvertTo-Json -Compress), $utf8)
+          # Retain the prior artifact name as a byte-identical alias during the
+          # independent-channel transition; consumers must treat it as the
+          # same signed envelope, never as an unsigned release descriptor.
+          [IO.File]::WriteAllText('release/admin/admin-release.json', ($envelope | ConvertTo-Json -Compress), $utf8)
+          [IO.File]::WriteAllText('release/admin/admin-release-root.json', $env:ADMIN_RELEASE_ROOT_JSON, $utf8)
+          Remove-Item -LiteralPath release/admin/admin-targets-signed.json,release/admin/admin-targets.sig -Force
+
+      - name: Generate unsigned validation release contract
+        if: github.event_name == 'workflow_dispatch' && !inputs.sign && !inputs.publish
+        shell: pwsh
+        run: |
+          $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
+          $contract = [ordered]@{ schema = 'go-mapi-admin-release-validation-v1'; component = 'interceptor'; version = '${{ steps.version.outputs.version }}'; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() }
+          [IO.File]::WriteAllText('release/admin/admin-release.json', ($contract | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-admin-${{ steps.version.outputs.version }}
+          path: |
+            release/admin/go-mapi-interceptor.msi
+            release/admin/admin-release.json
+            release/admin/admin-targets.json
+            release/admin/admin-release-root.json
+            release/winget/
+
+      - name: Publish GitHub admin release
+        if: github.event_name == 'push' || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: admin-v${{ steps.version.outputs.version }}
+          files: |
+            release/admin/go-mapi-interceptor.msi
+            release/admin/admin-targets.json
+            release/admin/admin-release-root.json
+            release/winget/*.yaml
+
+      - name: Submit winget update
+        if: (github.event_name == 'push' || inputs.publish) && env.HAS_WINGET_TOKEN == 'true'
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update MarcFargas.go-mapi.Interceptor `
+            --urls "https://github.com/${{ github.repository }}/releases/download/admin-v${{ steps.version.outputs.version }}/go-mapi-interceptor.msi" `
+            --version '${{ steps.version.outputs.version }}' `
+            --submit `
+            --no-open
+
+      # Microsoft Store publication belongs to the independently built user
+      # package. admin-release.json is the coordination input; this workflow
+      # never embeds or rebuilds the Wails artifact.

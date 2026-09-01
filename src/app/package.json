@@ -1,6 +1,11 @@
 {
   "name": "@marcfargas/go-mapi-app",
-  "version": "0.0.0",
   "private": true,
-  "description": "Wails desktop app for go-mapi v3.0"
+  "description": "go-mapi v4 per-user Wails queue-consumer artifact",
+  "distribution": {
+    "architectures": ["x64"],
+    "formats": ["msix", "standalone-nsis"],
+    "wingetUses": "standalone-nsis",
+    "startupTaskId": "go-mapi-user-startup-v4"
+  }
 }

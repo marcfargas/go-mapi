@@ -3,6 +3,7 @@ package mapi
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // MailMessage represents an intercepted email
@@ -45,8 +46,14 @@ func ValidateMailMessage(mail *MailMessage) error {
 	if mail.Version == 0 {
 		return fmt.Errorf("missing version")
 	}
+	if mail.Version != 1 {
+		return fmt.Errorf("unsupported version: %d", mail.Version)
+	}
 	if mail.Timestamp == "" {
 		return fmt.Errorf("missing timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, mail.Timestamp); err != nil {
+		return fmt.Errorf("invalid timestamp: %w", err)
 	}
 	if mail.BodyFormat != "plain" && mail.BodyFormat != "html" {
 		return fmt.Errorf("invalid bodyFormat: %s", mail.BodyFormat)
@@ -65,6 +72,17 @@ func ValidateMailMessage(mail *MailMessage) error {
 	for i, r := range mail.Recipients.BCC {
 		if r.Address == "" {
 			return fmt.Errorf("recipient bcc[%d] missing address", i)
+		}
+	}
+	for i, attachment := range mail.Attachments {
+		if attachment.Filename == "" {
+			return fmt.Errorf("attachment[%d] missing filename", i)
+		}
+		if attachment.Path == "" {
+			return fmt.Errorf("attachment[%d] missing path", i)
+		}
+		if attachment.Size < 0 {
+			return fmt.Errorf("attachment[%d] has negative size", i)
 		}
 	}
 	return nil

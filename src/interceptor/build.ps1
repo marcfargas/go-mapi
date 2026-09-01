@@ -19,10 +19,24 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Config = "Debug",
     [switch]$Tests,
-    [switch]$Clean
+    [switch]$Clean,
+    # `-Config Release` controls compiler optimisation; it is also useful for
+    # local developer builds. `-Release` means the resulting DLL is intended
+    # for distribution and therefore may not carry the development version.
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
+
+function Test-CanonicalSemVer([string]$Value) {
+    if ($Value -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($Matches[4])) {
+        foreach ($identifier in $Matches[4].Split('.')) {
+            if ($identifier -match '^[0-9]+$' -and $identifier.Length -gt 1 -and $identifier.StartsWith('0')) { return $false }
+        }
+    }
+    return $true
+}
 
 # Navigate to the interceptor directory (where this script lives)
 $interceptorRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -105,19 +119,37 @@ Write-Host ""
 # Configure CMake with Ninja generator
 Write-Host "Configuring CMake..."
 
-# Read version from the repo-root package.json. The old path
-# src/native-host/package.json no longer exists (v2.x pre-pivot artifact);
-# the authoritative version lives at the repo root now.
-$repoRoot = Split-Path -Parent (Split-Path -Parent $interceptorRoot)
-$packageJson = Join-Path $repoRoot "package.json"
+# The interceptor has an independent release cadence. Its checked-in version
+# input is deliberately separate from the Wails app's VERSION input and from
+# the repository package metadata. Do not name this file VERSION: on
+# case-insensitive Windows filesystems that shadows libc++'s <version> header.
+$versionFile = Join-Path $interceptorRoot "interceptor-version.txt"
 $goMapiVersion = "0.0.0-dev"
-if (Test-Path $packageJson) {
-    $pkg = Get-Content $packageJson -Raw | ConvertFrom-Json
-    if ($pkg.version) {
-        $goMapiVersion = $pkg.version
+if (Test-Path $versionFile) {
+    $candidate = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+        $goMapiVersion = $candidate
     }
 }
+if ($Release -and (-not (Test-CanonicalSemVer $goMapiVersion) -or $goMapiVersion -eq "0.0.0-dev")) {
+    Write-Error "Release builds require a non-development src/interceptor/interceptor-version.txt"
+    exit 1
+}
 Write-Host "Version: $goMapiVersion"
+
+$repoRoot = [IO.Path]::GetFullPath((Join-Path $interceptorRoot '..\..'))
+$componentManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json
+$requires = $componentManifest.components.interceptor.requires
+if ($componentManifest.schemaVersion -ne 2 -or $requires.component -ne 'app' -or [string]::IsNullOrWhiteSpace($requires.minInclusive)) {
+    Write-Error 'components.json interceptor requirement is invalid'
+    exit 1
+}
+$requiredAppMax = if ($null -eq $requires.maxExclusive) { '' } else { [string]$requires.maxExclusive }
+if (-not (Test-CanonicalSemVer ([string]$requires.minInclusive)) -or
+    (-not [string]::IsNullOrWhiteSpace($requiredAppMax) -and -not (Test-CanonicalSemVer $requiredAppMax))) {
+    Write-Error 'components.json interceptor counterpart bounds must be canonical SemVer'
+    exit 1
+}
 
 $cmakeArgs = @(
     "-G", "Ninja",
@@ -127,6 +159,8 @@ $cmakeArgs = @(
     "-DCMAKE_MAKE_PROGRAM=$ninjaPath",
     "-DBUILD_TESTS=$(if ($Tests) { 'ON' } else { 'OFF' })",
     "-DGO_MAPI_VERSION=$goMapiVersion",
+    "-DGO_MAPI_REQUIRED_APP_MIN=$($requires.minInclusive)",
+    "-DGO_MAPI_REQUIRED_APP_MAX=$requiredAppMax",
     "-S", $interceptorRoot,
     "-B", $buildDir
 )

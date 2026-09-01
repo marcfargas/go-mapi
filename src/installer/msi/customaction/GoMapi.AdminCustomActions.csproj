@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>GoMapi.AdminCustomActions</AssemblyName>
+    <RootNamespace>GoMapi.AdminCustomActions</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <Platform>x64</Platform>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- MakeSfxCA is a Windows executable. Linux CI/dev still compile-checks
+         the managed source; Windows release builds produce the .CA.dll. -->
+    <CustomAfterWixCATargets Condition="'$(OS)' != 'Windows_NT'">$(MSBuildProjectDirectory)/SkipPackCustomAction.targets</CustomAfterWixCATargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="WixToolset.Dtf.CustomAction" Version="4.0.5" />
+    <EmbeddedResource Include="..\legacy-inventory.json" Link="legacy-inventory.json" />
+    <Content Include="CustomAction.config" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,71 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="go-mapi interceptor"
+    Manufacturer="go-mapi"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="B3C97B33-3F10-47CA-9FA7-24EE3B75E325"
+    ProductCode="$(var.ProductCode)"
+    Scope="perMachine"
+    InstallerVersion="500"
+    Compressed="yes">
+
+    <SummaryInformation Description="Machine-wide x86/x64 Simple MAPI interceptor" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade
+      Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer go-mapi interceptor is already installed."
+      AllowSameVersionUpgrades="yes" />
+    <Launch Condition="VersionNT64" Message="go-mapi interceptor requires 64-bit Windows." />
+    <!-- Validation-only failure injection. Empty in every release invocation. -->
+    <Property Id="GOMAPI_TEST_FAILURE_POINT" Secure="yes" />
+    <Property Id="GOMAPI_REQUIRED_APP_MIN" Value="$(var.RequiredAppMin)" Secure="yes" />
+
+    <Component Id="InterceptorX64" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" Guid="D56189EF-0DA1-4AA1-A764-D90610EC8441" Bitness="always64">
+      <File Id="InterceptorDllX64" Source="$(var.SourceX64)" Name="go-mapi.dll" KeyPath="yes" />
+      <RemoveFolder Id="RemoveX64Folder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" On="uninstall" />
+    </Component>
+
+    <Component Id="InterceptorX86" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\x86" Guid="541217D4-4C8D-4D4C-83E5-9CD4CDCF7694" Bitness="always64">
+      <File Id="InterceptorDllX86" Source="$(var.SourceX86)" Name="go-mapi.dll" KeyPath="yes" />
+      <RemoveFolder Id="RemoveX86Folder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\x86" On="uninstall" />
+    </Component>
+
+    <!-- HKLM\SOFTWARE\Clients is shared across WOW64 views on Windows 7+.
+         The MAPI stub expands this value in the caller process: ProgramW6432
+         keeps one machine root while PROCESSOR_ARCHITECTURE selects x86 or
+         AMD64, so both legacy and native callers load a matching PE. -->
+    <Component Id="MapiRegistrationShared" Directory="ProgramFiles64Folder" Guid="1247251F-F476-4520-81A5-25985450B9F8" Bitness="always64">
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail" Value="go-mapi" Type="string" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail\go-mapi" Value="go-mapi" Type="string" />
+      <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail\go-mapi" Name="DLLPath" Value="%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll" Type="expandable" />
+    </Component>
+
+    <Feature Id="AdminInterceptor" Title="go-mapi interceptor" Level="1" AllowAbsent="no">
+      <ComponentRef Id="InterceptorX64" />
+      <ComponentRef Id="InterceptorX86" />
+      <ComponentRef Id="MapiRegistrationShared" />
+    </Feature>
+
+    <Binary Id="AdminCustomActions" SourceFile="$(var.CustomActionBinary)" />
+
+    <CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />
+    <CustomAction Id="RollbackAdminMigration" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminMigration" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="ApplyAdminMigration" BinaryRef="AdminCustomActions" DllEntry="ApplyAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="VerifyAdminRegistration" BinaryRef="AdminCustomActions" DllEntry="VerifyAdminRegistration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+
+    <CustomAction Id="PrepareAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminUninstall" Execute="immediate" Return="check" />
+    <CustomAction Id="RollbackAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminUninstall" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="FinalizeAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="FinalizeAdminUninstall" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+
+    <InstallExecuteSequence>
+      <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+
+      <Custom Action="PrepareAdminUninstall" Before="RollbackAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RollbackAdminUninstall" Before="FinalizeAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="FinalizeAdminUninstall" After="RemoveRegistryValues" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

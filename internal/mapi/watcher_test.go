@@ -165,6 +165,129 @@ func TestEmailWatcher_ValidFile_CallsOnQueueChanged(t *testing.T) {
 	}
 }
 
+func TestEmailWatcher_RejectsAttachmentOutsideDescriptorDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	if err := os.MkdirAll(watchDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher: %v", err)
+	}
+	defer ew.Stop()
+
+	msg := MailMessage{
+		Version:    1,
+		Timestamp:  "2026-08-29T00:00:00Z",
+		BodyFormat: "plain",
+		Attachments: []Attachment{{
+			Filename: "outside.txt",
+			Path:     filepath.Join(tmpDir, "outside.txt"),
+		}},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	writeFile(t, filepath.Join(watchDir, "message.json"), data)
+
+	ew.processFile("message.json")
+	if got := cb.waitError(t, time.Second); got == nil {
+		t.Fatal("expected attachment-path validation error")
+	}
+	if _, err := os.Stat(filepath.Join(watchDir, "errors", "message.json")); err != nil {
+		t.Fatalf("descriptor was not moved to errors: %v", err)
+	}
+}
+
+func TestEmailWatcher_AcceptsAttachmentInDescriptorDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	attachmentsDir := filepath.Join(watchDir, "message")
+	if err := os.MkdirAll(attachmentsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	attachmentPath := filepath.Join(attachmentsDir, "included.txt")
+	writeFile(t, attachmentPath, []byte("included"))
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher: %v", err)
+	}
+	defer ew.Stop()
+
+	msg := MailMessage{
+		Version:     1,
+		Timestamp:   "2026-08-29T00:00:00Z",
+		BodyFormat:  "plain",
+		Attachments: []Attachment{{Filename: "included.txt", Path: attachmentPath}},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	writeFile(t, filepath.Join(watchDir, "message.json"), data)
+
+	ew.processFile("message.json")
+	snapshot := cb.waitSnapshot(t, time.Second)
+	if len(snapshot) != 1 || snapshot[0].Message.Attachments[0].Path != attachmentPath {
+		t.Fatalf("unexpected accepted snapshot: %#v", snapshot)
+	}
+}
+
+func TestEmailWatcher_RejectsAttachmentThroughEscapingSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	watchDir := filepath.Join(tmpDir, "watch")
+	attachmentsDir := filepath.Join(watchDir, "message")
+	outsideDir := filepath.Join(tmpDir, "outside")
+	if err := os.MkdirAll(attachmentsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll attachment directory: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0755); err != nil {
+		t.Fatalf("MkdirAll outside directory: %v", err)
+	}
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	writeFile(t, outsideFile, []byte("secret"))
+	link := filepath.Join(attachmentsDir, "escape")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		t.Skipf("symlink creation unavailable on this test host: %v", err)
+	}
+
+	cb := newStubCallback()
+	ew, err := NewEmailWatcher(watchDir, cb)
+	if err != nil {
+		t.Fatalf("NewEmailWatcher: %v", err)
+	}
+	defer ew.Stop()
+
+	msg := MailMessage{
+		Version:    1,
+		Timestamp:  "2026-08-29T00:00:00Z",
+		BodyFormat: "plain",
+		Attachments: []Attachment{{
+			Filename: "secret.txt",
+			Path:     filepath.Join(link, "secret.txt"),
+		}},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	writeFile(t, filepath.Join(watchDir, "message.json"), data)
+
+	ew.processFile("message.json")
+	if got := cb.waitError(t, time.Second); got == nil {
+		t.Fatal("expected symlink escape validation error")
+	}
+	if _, err := os.Stat(filepath.Join(watchDir, "errors", "message.json")); err != nil {
+		t.Fatalf("descriptor was not moved to errors: %v", err)
+	}
+}
+
 // Test 3: When a file is removed, OnQueueChanged fires with a shorter snapshot.
 func TestEmailWatcher_FileRemoved_SnapshotShrinks(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "interceptorVersion": "4.0.0",
+  "timestamp": "2026-08-29T10:31:00.456Z",
+  "subject": "Budget &amp; forecast",
+  "body": "<p>Please review the <strong>forecast</strong>.</p>",
+  "bodyFormat": "html",
+  "recipients": {
+    "to": [
+      {
+        "name": "Grace Hopper",
+        "address": "grace@example.com"
+      }
+    ],
+    "cc": [
+      {
+        "name": "Katherine Johnson",
+        "address": "katherine@example.com"
+      }
+    ],
+    "bcc": []
+  },
+  "attachments": [
+    {
+      "filename": "forecast.pdf",
+      "path": "C:\\Users\\fixture\\AppData\\Local\\go-mapi\\queue\\msg_fixture\\forecast.pdf",
+      "size": 102400
+    }
+  ],
+  "originApp": "EXCEL.EXE"
+}

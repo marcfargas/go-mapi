@@ -4,7 +4,7 @@ import (
 	"context"
 	"embed"
 	"os"
-	"time"
+	"strings"
 
 	"github.com/pkg/browser"
 	"github.com/wailsapp/wails/v2"
@@ -17,28 +17,80 @@ var assets embed.FS
 
 var Version = "0.0.0-dev" // overridden via -ldflags "-X main.Version=..."
 
+// RequiredInterceptorMin/Max are compiled from the app record in
+// components.json. They are independent from the interceptor's own version.
+var RequiredInterceptorMin = "4.0.0"
+var RequiredInterceptorMax = ""
+
 func main() {
-	// PHASE 11.1 (D-10, RESEARCH §Pitfall 7): silent-update guard. MUST be the
-	// first statement in main(). The Task Scheduler runs us as SYSTEM in
-	// session 0 — WebView2 init would crash there, single-instance acquire is
-	// not needed (separate session namespace), and no user is present to
-	// approve OAuth re-auth. The silent path runs its own routine and exits.
-	if len(os.Args) >= 2 && os.Args[1] == "--update-check-silent" {
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Hour)
-		defer cancel()
-		os.Exit(runSilentUpdate(ctx))
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		println(Version)
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--install-admin-component" {
+		if err := runElevatedAdminInstall(context.Background()); err != nil {
+			println("Error:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--purge-user-data" {
+		if err := purgeUserData(); err != nil {
+			println("Error:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--handoff-from-store" {
+		if err := runStoreToStandaloneHandoff(context.Background()); err != nil {
+			println("Error:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && strings.HasPrefix(os.Args[1], "--configure-autostart=") {
+		enabledText := strings.TrimPrefix(os.Args[1], "--configure-autostart=")
+		if enabledText != "true" && enabledText != "false" {
+			println("Error: --configure-autostart must be true or false")
+			os.Exit(1)
+		}
+		if err := configureAutostartFromInstaller(context.Background(), enabledText == "true"); err != nil {
+			println("Error:", err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+	if err := prepareStoreTargetHandoff(context.Background()); err != nil {
+		println("Error:", err.Error())
+		os.Exit(1)
 	}
 
 	raised, siErr := acquireSingleInstance()
 	if siErr != nil {
 		logError("single-instance: %v", siErr)
-		// Fail-open: proceed to run anyway so the user doesn't lose access.
+		// Handoff and queue ownership require an acquired mutex. Starting
+		// without it could create a second consumer, so fail closed.
+		os.Exit(1)
 	}
 	if raised {
 		// Another instance owns the mutex; we signaled its named event. Exit now.
 		// Use os.Exit to be explicit: no Wails init, no defers needing to run, fastest path out.
 		logInfo("second instance detected — signalled first instance, exiting")
 		os.Exit(0)
+	}
+	activationTarget, handoffErr := startupHandoffAction(context.Background())
+	if handoffErr != nil {
+		releaseSingleInstance()
+		logError("channel handoff blocked startup: %v", handoffErr)
+		os.Exit(1)
+	}
+	if activationTarget != "" {
+		releaseSingleInstance()
+		if err := newHandoffPlatform().Activate(context.Background(), activationTarget); err != nil {
+			logError("channel handoff activation failed: %v", err)
+			os.Exit(1)
+		}
+		return
 	}
 	defer releaseSingleInstance()
 

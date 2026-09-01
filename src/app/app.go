@@ -19,8 +19,13 @@ type App struct {
 	trayEnd          func()
 	watcher          *mapi.EmailWatcher // initialized in startup
 	bridge           *watcherBridge     // initialized in startup
-	auth             *AuthManager       // OAuth token lifecycle
-	sessionEndCancel func()             // cancels the session-end message pump
+	presence         *appPresence       // refreshes app presence for the interceptor
+	componentState   *appComponentState // versioned counterpart signal for the interceptor
+	componentHealth  componentHealthStore
+	adminInstall     *adminInstallCoordinator
+	startupService   startupService
+	auth             *AuthManager // OAuth token lifecycle
+	sessionEndCancel func()       // cancels the session-end message pump
 	shutdownCtx      context.Context
 	shutdownCancel   context.CancelFunc
 
@@ -41,8 +46,9 @@ type App struct {
 
 	// Settings: RWMutex-guarded. UI reads frequently (tooltip, mode toggle);
 	// writes only on user mode-toggle click (single-writer invariant, D-13).
-	settingsMu sync.RWMutex
-	settings   AppSettings
+	settingsMu    sync.RWMutex
+	settings      AppSettings
+	settingsIssue *SettingsIssue
 
 	// Automode goroutine handle. Started in startup; stopped in shutdown.
 	automode *automode
@@ -109,12 +115,23 @@ type App struct {
 
 // NewApp creates a new App instance.
 func NewApp() *App {
-	return &App{
-		auth:          NewAuthManager(),
-		backlogSkip:   make(map[string]struct{}),
-		settings:      AppSettings{Mode: defaultMode},
-		trayRefreshCh: make(chan struct{}, 1),
+	a := &App{
+		auth:           NewAuthManager(),
+		backlogSkip:    make(map[string]struct{}),
+		settings:       defaultAppSettings(),
+		startupService: newStartupService(),
+		trayRefreshCh:  make(chan struct{}, 1),
 	}
+	// Metadata authorization deliberately stops at a verified staged candidate.
+	// The parent app-install composition owns the later consent/elevation step,
+	// so this app-level coordinator remains fail-closed until that composition
+	// is supplied.
+	a.adminInstall = newAdminInstallCoordinator(a.refreshComponentHealth, newUnelevatedAdminRepairAttempt(), func(state AdminInstallState) {
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "admin-install-state-changed", state)
+		}
+	})
+	return a
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -129,6 +146,12 @@ func (a *App) startup(ctx context.Context) {
 	go waitForRaiseSignal(a.shutdownCtx.Done(), func() {
 		a.showWindow()
 	})
+	go waitForShutdownSignal(a.shutdownCtx.Done(), func() {
+		if pendingHandoffRequestsShutdown() {
+			logInfo("validated same-user channel handoff requested shutdown")
+			a.requestQuit()
+		}
+	})
 
 	// Session-end handler — WndProc signals shutdown context; drain goroutine handles cleanup.
 	cancel, err := registerSessionEndHandler(func() {
@@ -140,39 +163,49 @@ func (a *App) startup(ctx context.Context) {
 	}
 	a.sessionEndCancel = cancel
 
-	// Watcher fold-in (SHELL-06).
+	// Open the per-user queue. The interceptor is intentionally optional here:
+	// an empty queue is a normal first-run state.
 	watchDir := watcherDir()
-	a.bridge = newWatcherBridge(ctx, func(e error) {
+	consumer, watcherErr := newQueueConsumer(ctx, watchDir, func(e error) {
 		// T-07-22: log infrastructure event only, not email content.
 		logError("watcher error: %v", e)
 		a.SetTrayError("watcher stopped")
 	})
-	w, watcherErr := mapi.NewEmailWatcher(watchDir, a.bridge)
 	if watcherErr != nil {
 		logError("watcher init: %v", watcherErr)
 		a.SetTrayError("watcher init failed")
 		wruntime.EventsEmit(a.ctx, "queue-error", watcherErr.Error())
+		// Do not leave a previous app run looking healthy when this run cannot
+		// consume the interceptor queue.
+		if err := clearAppPresence(appDataDir()); err != nil {
+			logError("app presence cleanup after watcher init failure: %v", err)
+		}
+		if err := clearAppComponentState(appDataDir()); err != nil {
+			logError("app component state cleanup after watcher init failure: %v", err)
+		}
 	} else {
-		a.watcher = w
-		a.bridge.setSnapshotSource(a.watcher.Snapshot)
-		// Start synchronously so processExistingFiles completes before we seed
-		// knownIds below — prevents spurious arrival toasts for pre-existing
-		// emails on app restart (WR-02 / NOTIF-04).
-		if startErr := a.watcher.Start(); startErr != nil {
-			logError("watcher start: %v", startErr)
-			a.SetTrayError("watcher start failed")
-			wruntime.EventsEmit(a.ctx, "queue-error", startErr.Error())
+		a.watcher = consumer.watcher
+		a.bridge = consumer.bridge
+		a.presence = newAppPresence(appDataDir())
+		if err := a.presence.start(a.shutdownCtx); err != nil {
+			// Presence enables an interceptor warning only; it must not prevent
+			// the user application from processing their queue.
+			logError("app presence start: %v", err)
+		}
+		a.componentState = newAppComponentState(appDataDir(), Version)
+		if err := a.componentState.start(a.shutdownCtx); err != nil {
+			// A fresh presence marker without readable version state deliberately
+			// makes the interceptor fail loudly instead of accepting an unknown pair.
+			logError("app component state start: %v", err)
 		}
 	}
+	a.startComponentHealthLoop(a.shutdownCtx)
 
 	// Bounded async drain — runs on shutdownCtx cancel (session end or normal shutdown).
 	// Registered AFTER watcher + bridge exist so nil checks are not needed in most paths.
 	go runBoundedDrain(a.shutdownCtx, func() {
-		if a.watcher != nil {
-			a.watcher.Stop() // idempotent (Plan 01 Test 7)
-		}
-		if a.bridge != nil {
-			a.bridge.Close() // idempotent (sync.Once)
+		if consumer != nil {
+			consumer.Close()
 		}
 	})
 
@@ -189,10 +222,17 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Phase 9: load persisted settings (mode field, D-13).
+	loadedSettings := loadSettings()
 	a.settingsMu.Lock()
-	a.settings = loadSettings()
+	a.settings = loadedSettings.Settings
+	a.settingsIssue = loadedSettings.Issue
 	a.settingsMu.Unlock()
-	logInfo("settings loaded: mode=%s", a.settings.Mode)
+	if loadedSettings.Issue != nil {
+		logError("settings: %s (%s)", loadedSettings.Issue.Message, loadedSettings.Issue.Path)
+		wruntime.EventsEmit(a.ctx, "settings-issue", loadedSettings.Issue)
+	} else {
+		logInfo("settings loaded: mode=%s", loadedSettings.Settings.Mode)
+	}
 
 	// Phase 9: start automode goroutine. Gated on mode + paused at drain time.
 	// Wire pruneBacklogSkip after every queue-update emit (D-10: backlog cleanup).
@@ -237,6 +277,7 @@ func (a *App) startup(ctx context.Context) {
 			a.pruneBacklogSkip(currentIds)
 			// Signal tray to refresh icon + tooltip (queue count may have changed).
 			a.signalTrayRefresh()
+			a.refreshComponentHealth()
 		})
 	}
 
@@ -418,14 +459,12 @@ func (a *App) signalTrayRefresh() {
 	}
 }
 
-// getMode returns the current mode ("manual" or "auto-draft").
-// Falls back to defaultMode if not yet loaded (pre-startup call).
+// getMode returns the current mode ("manual" or "auto-draft"). An empty
+// value means the persisted settings are invalid; callers must not describe
+// that state as manual.
 func (a *App) getMode() string {
 	a.settingsMu.RLock()
 	defer a.settingsMu.RUnlock()
-	if a.settings.Mode == "" {
-		return defaultMode
-	}
 	return a.settings.Mode
 }
 
@@ -440,10 +479,12 @@ func (a *App) setMode(mode string) error {
 	a.settingsMu.Lock()
 	a.settings.Mode = mode
 	s := a.settings
-	a.settingsMu.Unlock()
 	if err := saveSettings(s); err != nil {
+		a.settingsMu.Unlock()
 		return err
 	}
+	a.settingsIssue = nil
+	a.settingsMu.Unlock()
 	// Wake automode so it re-checks mode immediately if we just switched ON.
 	// Non-blocking; harmless if automode is nil (pre-startup) or already idle.
 	if a.bridge != nil {
@@ -611,18 +652,41 @@ func (a *App) DismissEmail(id string) error {
 func (a *App) GetSettings() AppSettings {
 	a.settingsMu.RLock()
 	defer a.settingsMu.RUnlock()
-	s := a.settings
-	if s.Mode == "" {
-		s.Mode = defaultMode
-	}
-	return s
+	return a.settings
+}
+
+// GetSettingsState returns both the effective settings and any issue that
+// prevented the existing file from loading. The frontend uses this binding so
+// invalid configuration cannot disappear behind defaults.
+func (a *App) GetSettingsState() SettingsLoadResult {
+	a.settingsMu.RLock()
+	defer a.settingsMu.RUnlock()
+	return SettingsLoadResult{Settings: a.settings, Issue: a.settingsIssue}
 }
 
 // SaveSettings persists AppSettings to %APPDATA%\go-mapi\settings.json.
 // Delegates to setMode for validation + wake-automode-if-mode-flipped. In
 // Phase 9 Mode is the only field; future phases may surface more here.
 func (a *App) SaveSettings(s AppSettings) error {
-	return a.setMode(s.Mode)
+	if s.Mode != "manual" && s.Mode != "auto-draft" {
+		return fmt.Errorf("SaveSettings: invalid mode %q", s.Mode)
+	}
+	a.settingsMu.Lock()
+	if err := saveSettings(s); err != nil {
+		a.settingsMu.Unlock()
+		return err
+	}
+	a.settings = s
+	a.settingsIssue = nil
+	a.settingsMu.Unlock()
+	if a.bridge != nil && s.Mode == "auto-draft" {
+		select {
+		case a.bridge.automodeWake <- struct{}{}:
+		default:
+		}
+	}
+	a.signalTrayRefresh()
+	return nil
 }
 
 // GetMode is a convenience wrapper. Frontend may prefer GetSettings for

@@ -1,6 +1,8 @@
 #include "message_converter.h"
 #include <windows.h>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace go_mapi {
 namespace message_converter {
@@ -32,6 +34,67 @@ std::string FilenameFromPath(const std::string& path) {
         return path.substr(pos + 1);
     }
     return path;
+}
+
+namespace {
+
+std::vector<std::string> SplitDelimited(const std::string& value, char delimiter) {
+    std::vector<std::string> values;
+    size_t start = 0;
+    while (true) {
+        const size_t end = value.find(delimiter, start);
+        values.push_back(value.substr(start, end == std::string::npos ? end : end - start));
+        if (end == std::string::npos) return values;
+        start = end + 1;
+    }
+}
+
+}  // namespace
+
+bool ConvertSendDocumentsAttachments(const char* delimiter,
+                                     const char* filePaths,
+                                     const char* fileNames,
+                                     std::vector<Attachment>& attachments) {
+    attachments.clear();
+    if (!filePaths || !filePaths[0]) return true;
+
+    // Simple MAPI defines a one-character delimiter.  For a single path the
+    // delimiter is irrelevant, so tolerate a null/empty value; list parsing
+    // otherwise has no unambiguous meaning and fails rather than publishing a
+    // partial message.
+    const std::string paths = AnsiToUtf8(filePaths);
+    if (paths.empty()) return false;
+    if (!delimiter || !delimiter[0]) {
+        Attachment attachment;
+        attachment.path = paths;
+        attachment.filename = FilenameFromPath(paths);
+        attachment.size = 0;
+        return !attachment.filename.empty() && attachment.filename != "." &&
+               attachment.filename != ".." && (attachments.push_back(attachment), true);
+    }
+
+    const char separator = delimiter[0];
+    const std::vector<std::string> pathParts = SplitDelimited(paths, separator);
+    const std::vector<std::string> nameParts = fileNames && fileNames[0]
+        ? SplitDelimited(AnsiToUtf8(fileNames), separator)
+        : std::vector<std::string>{};
+    std::set<std::string> effectiveNames;
+    attachments.reserve(pathParts.size());
+    for (size_t i = 0; i < pathParts.size(); ++i) {
+        if (pathParts[i].empty()) {
+            attachments.clear();
+            return false;
+        }
+        const std::string requestedName = i < nameParts.size() ? nameParts[i] : "";
+        const std::string filename = FilenameFromPath(requestedName.empty() ? pathParts[i] : requestedName);
+        if (filename.empty() || filename == "." || filename == ".." ||
+            !effectiveNames.insert(filename).second) {
+            attachments.clear();
+            return false;
+        }
+        attachments.push_back({filename, pathParts[i], 0});
+    }
+    return true;
 }
 
 // QUICK-260423-qpx: many legacy Simple MAPI callers (Spanish SendEmail-style

@@ -43,9 +43,9 @@ func TestAppDataDir_EnvPrecedence(t *testing.T) {
 // to ignore TEMP/TMP entirely and resolve via %LOCALAPPDATA%\go-mapi\queue to
 // match the DLL-side SHGetFolderPathW(CSIDL_LOCAL_APPDATA) path.
 //
-//	1. GOMAPI_WATCH_DIR        → used as-is (test / per-session override)
-//	2. %LOCALAPPDATA%\go-mapi\queue
-//	3. platform fallback (os.UserCacheDir) — POSIX CI compile only
+//  1. GOMAPI_WATCH_DIR        → used as-is (test / per-session override)
+//  2. %LOCALAPPDATA%\go-mapi\queue
+//  3. platform fallback (os.UserCacheDir) — POSIX CI compile only
 //
 // TEMP and TMP are intentionally NOT consulted. This regression guard fails
 // if either env var ever leaks back into the resolved path.
@@ -90,37 +90,6 @@ func TestWatcherDir_EnvPrecedence(t *testing.T) {
 		t.Setenv("LOCALAPPDATA", "")
 		if got := watcherDir(); got == "" {
 			t.Error("watcherDir() returned empty string with no env vars set — callers assume non-empty")
-		}
-	})
-}
-
-func TestUpdatesStagingDir_EnvPrecedence(t *testing.T) {
-	t.Run("GOMAPI_UPDATES_DIR wins", func(t *testing.T) {
-		tmp := t.TempDir()
-		t.Setenv("GOMAPI_UPDATES_DIR", tmp)
-		t.Setenv("ProgramData", `C:\OtherProgramData`)
-		got := updatesStagingDir()
-		if got != tmp {
-			t.Errorf("GOMAPI_UPDATES_DIR should win: got %q, want %q", got, tmp)
-		}
-	})
-	t.Run("ProgramData used when override empty", func(t *testing.T) {
-		t.Setenv("GOMAPI_UPDATES_DIR", "")
-		t.Setenv("ProgramData", `C:\ProgramData`)
-		got := updatesStagingDir()
-		want := filepath.Join(`C:\ProgramData`, "go-mapi", "updates")
-		if got != want {
-			t.Errorf("ProgramData should be used: got %q, want %q", got, want)
-		}
-	})
-	t.Run("fallback when no env", func(t *testing.T) {
-		t.Setenv("GOMAPI_UPDATES_DIR", "")
-		t.Setenv("ProgramData", "")
-		got := updatesStagingDir()
-		// Just assert it ends with go-mapi/updates and is rooted in TempDir.
-		wantSuffix := filepath.Join("go-mapi", "updates")
-		if !strings.HasSuffix(got, wantSuffix) {
-			t.Errorf("fallback should end with %q, got %q", wantSuffix, got)
 		}
 	})
 }

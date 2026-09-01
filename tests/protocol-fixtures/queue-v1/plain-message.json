@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "interceptorVersion": "4.0.0",
+  "timestamp": "2026-08-29T10:30:00.123Z",
+  "subject": "Quarterly report",
+  "body": "Please review the attached report.",
+  "bodyFormat": "plain",
+  "recipients": {
+    "to": [
+      {
+        "name": "Ada Lovelace",
+        "address": "ada@example.com"
+      }
+    ],
+    "cc": [],
+    "bcc": []
+  },
+  "attachments": [],
+  "originApp": "WINWORD.EXE"
+}

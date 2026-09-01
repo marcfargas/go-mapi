@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 2,
+  "components": {
+    "app": {
+      "displayName": "go-mapi app",
+      "path": "src/app",
+      "versionFile": "src/app/VERSION",
+      "artifact": "go-mapi.exe",
+      "architectures": ["amd64"],
+      "scope": "per-user",
+      "role": "Wails/tray application and queue consumer",
+      "releaseCadence": "independent",
+      "queueProtocol": "queue-v1",
+      "requires": {
+        "component": "interceptor",
+        "minInclusive": "4.0.0"
+      }
+    },
+    "interceptor": {
+      "displayName": "go-mapi interceptor",
+      "path": "src/interceptor",
+      "versionFile": "src/interceptor/interceptor-version.txt",
+      "artifact": "go-mapi.dll",
+      "publicationNames": {
+        "x86": "go-mapi-x86.dll",
+        "x64": "go-mapi-x64.dll"
+      },
+      "architectures": ["x86", "x64"],
+      "scope": "machine-wide",
+      "role": "x86/x64 MAPI DLL and queue producer",
+      "releaseCadence": "independent",
+      "queueProtocol": "queue-v1",
+      "requires": {
+        "component": "app",
+        "minInclusive": "4.0.0",
+        "maxExclusive": "5.0.0"
+      }
+    }
+  }
+}

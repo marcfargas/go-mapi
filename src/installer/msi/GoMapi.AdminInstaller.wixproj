@@ -1,0 +1,15 @@
+<Project Sdk="WixToolset.Sdk/4.0.5">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName>go-mapi-interceptor</OutputName>
+    <DefineConstants>
+      ProductVersion=$(ProductVersion);
+      ProductCode=$(ProductCode);
+      RequiredAppMin=$(RequiredAppMin);
+      SourceX64=$(SourceX64);
+      SourceX86=$(SourceX86);
+      CustomActionBinary=$(CustomActionBinary)
+    </DefineConstants>
+  </PropertyGroup>
+</Project>

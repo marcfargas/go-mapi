@@ -48,7 +48,7 @@ func TestSettingsUpdateDefaultsEnabled(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GOMAPI_APPDATA_DIR", dir)
 
-	got := loadSettings()
+	got := loadSettings().Settings
 	if !got.UpdateChecksEnabled {
 		t.Errorf("UpdateChecksEnabled should default to true on first run, got false")
 	}
@@ -68,7 +68,7 @@ func TestSettingsUpdateBackCompatPartialJSON(t *testing.T) {
 		t.Fatalf("saveSettingsRaw: %v", err)
 	}
 
-	got := loadSettings()
+	got := loadSettings().Settings
 	if !got.UpdateChecksEnabled {
 		t.Errorf("UpdateChecksEnabled should default to true when field is absent, got false")
 	}
@@ -77,9 +77,10 @@ func TestSettingsUpdateBackCompatPartialJSON(t *testing.T) {
 	}
 }
 
-// Test 1c: corrupt JSON falls back to the full default AppSettings (Mode=manual,
-// UpdateChecksEnabled=true) without surfacing an error.
-func TestSettingsUpdateCorruptFallsBackToDefaults(t *testing.T) {
+// Test 1c: corrupt JSON keeps safe non-mode defaults, but must leave Mode empty
+// and surface the settings issue so callers cannot mistake invalid persisted
+// configuration for an explicit manual-mode choice.
+func TestSettingsUpdateCorruptFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GOMAPI_APPDATA_DIR", dir)
 
@@ -87,12 +88,16 @@ func TestSettingsUpdateCorruptFallsBackToDefaults(t *testing.T) {
 		t.Fatalf("saveSettingsRaw: %v", err)
 	}
 
-	got := loadSettings()
+	result := loadSettings()
+	got := result.Settings
 	if !got.UpdateChecksEnabled {
 		t.Error("UpdateChecksEnabled should default to true on corrupt JSON")
 	}
-	if got.Mode != "manual" {
-		t.Errorf("Mode should default to manual on corrupt JSON, got %q", got.Mode)
+	if got.Mode != "" {
+		t.Errorf("Mode should fail closed on corrupt JSON, got %q", got.Mode)
+	}
+	if result.Issue == nil || result.Issue.Kind != "malformed" {
+		t.Fatalf("corrupt JSON issue = %+v, want malformed", result.Issue)
 	}
 }
 

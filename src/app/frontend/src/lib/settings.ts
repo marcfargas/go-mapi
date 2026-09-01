@@ -14,6 +14,7 @@
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import {
   GetSettings,
+  GetSettingsState,
   SaveSettings,
   GetMode,
   SetMode,
@@ -22,10 +23,17 @@ import {
   GetPausedState,
   GetUpdateState,
   CheckForUpdatesNow,
+  OpenDefaultAppsSettings,
+  DismissDefaultAppsPrompt,
+  GetStartupState,
+  SetAutostartEnabled,
+  OpenStartupSettings,
 } from '../../wailsjs/go/main/App';
 import type { main } from '../../wailsjs/go/models';
 
 export type AppSettings = main.AppSettings;
+export type SettingsLoadResult = main.SettingsLoadResult;
+export type StartupState = main.StartupState;
 export type Mode = 'manual' | 'auto-draft';
 export type ErrorCategory = 'signed-out' | 'network' | 'gmail';
 
@@ -56,9 +64,36 @@ export async function fetchSettings(): Promise<AppSettings> {
   return await GetSettings();
 }
 
+/** Read settings together with any non-destructive parse/validation issue. */
+export async function fetchSettingsState(): Promise<SettingsLoadResult> {
+  return await GetSettingsState();
+}
+
 /** Persist settings. Single-writer invariant: call only from UI handlers. */
 export async function saveSettings(s: AppSettings): Promise<void> {
   await SaveSettings(s);
+}
+
+/** Open the Windows-owned Default Apps page; the app never writes UserChoice. */
+export async function openDefaultAppsSettings(): Promise<void> {
+  await OpenDefaultAppsSettings();
+}
+
+/** Stop showing the first-run guidance without claiming the default changed. */
+export async function dismissDefaultAppsPrompt(): Promise<void> {
+  await DismissDefaultAppsPrompt();
+}
+
+export async function fetchStartupState(): Promise<StartupState> {
+  return await GetStartupState();
+}
+
+export async function setAutostartEnabled(enabled: boolean): Promise<StartupState> {
+  return await SetAutostartEnabled(enabled);
+}
+
+export async function openStartupSettings(): Promise<void> {
+  await OpenStartupSettings();
 }
 
 /** Convenience: read current mode. Plan 09's App.svelte uses this on mount. */

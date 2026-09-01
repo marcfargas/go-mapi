@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock wailsjs bindings — Plan 04 surfaces these; Plan 11-03 adds update wrappers.
 vi.mock('../../wailsjs/go/main/App', () => ({
   GetSettings: vi.fn(),
+  GetSettingsState: vi.fn(),
   SaveSettings: vi.fn(),
   GetMode: vi.fn(),
   SetMode: vi.fn(),
@@ -11,6 +12,11 @@ vi.mock('../../wailsjs/go/main/App', () => ({
   GetPausedState: vi.fn(),
   GetUpdateState: vi.fn(),
   CheckForUpdatesNow: vi.fn(),
+  OpenDefaultAppsSettings: vi.fn(),
+  DismissDefaultAppsPrompt: vi.fn(),
+  GetStartupState: vi.fn(),
+  SetAutostartEnabled: vi.fn(),
+  OpenStartupSettings: vi.fn(),
 }));
 
 vi.mock('../../wailsjs/runtime/runtime', () => ({
@@ -19,6 +25,7 @@ vi.mock('../../wailsjs/runtime/runtime', () => ({
 
 import {
   GetSettings,
+  GetSettingsState,
   SaveSettings,
   GetMode,
   SetMode,
@@ -27,10 +34,16 @@ import {
   GetPausedState,
   GetUpdateState,
   CheckForUpdatesNow,
+  OpenDefaultAppsSettings,
+  DismissDefaultAppsPrompt,
+  GetStartupState,
+  SetAutostartEnabled,
+  OpenStartupSettings,
 } from '../../wailsjs/go/main/App';
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import {
   fetchSettings,
+  fetchSettingsState,
   saveSettings,
   getMode,
   setMode,
@@ -42,6 +55,11 @@ import {
   fetchUpdateState,
   checkForUpdatesNow,
   subscribeUpdateState,
+  openDefaultAppsSettings,
+  dismissDefaultAppsPrompt,
+  fetchStartupState,
+  setAutostartEnabled,
+  openStartupSettings,
   type UpdateState,
 } from './settings';
 
@@ -61,10 +79,42 @@ describe('settings.ts', () => {
     expect(GetSettings).toHaveBeenCalledOnce();
   });
 
+  it('fetchSettingsState preserves a typed invalid-mode issue', async () => {
+    const state = { settings: { mode: '' }, issue: { kind: 'invalid-mode', message: 'bad mode', path: 'settings.json' } };
+    asMock(GetSettingsState).mockResolvedValue(state);
+    expect(await fetchSettingsState()).toEqual(state);
+  });
+
+  it('opens Default Apps and records prompt dismissal through Go', async () => {
+    asMock(OpenDefaultAppsSettings).mockResolvedValue(undefined);
+    asMock(DismissDefaultAppsPrompt).mockResolvedValue(undefined);
+    await openDefaultAppsSettings();
+    await dismissDefaultAppsPrompt();
+    expect(OpenDefaultAppsSettings).toHaveBeenCalledOnce();
+    expect(DismissDefaultAppsPrompt).toHaveBeenCalledOnce();
+  });
+
+  it('reads and changes the observable Windows startup state', async () => {
+    const enabled = { backend: 'standalone', requested: true, registered: true, effective: 'enabled' };
+    asMock(GetStartupState).mockResolvedValue(enabled);
+    asMock(SetAutostartEnabled).mockResolvedValue(enabled);
+    asMock(OpenStartupSettings).mockResolvedValue(undefined);
+    expect(await fetchStartupState()).toEqual(enabled);
+    expect(await setAutostartEnabled(true)).toEqual(enabled);
+    await openStartupSettings();
+    expect(SetAutostartEnabled).toHaveBeenCalledWith(true);
+    expect(OpenStartupSettings).toHaveBeenCalledOnce();
+  });
+
   it('saveSettings forwards to SaveSettings with the given value', async () => {
     asMock(SaveSettings).mockResolvedValue(undefined);
     // Phase 11-03: AppSettings now includes the update-check fields (D-08).
-    const next = { mode: 'auto-draft' as const, update_checks_enabled: true };
+    const next = {
+      mode: 'auto-draft' as const,
+      autostart_enabled: true,
+      default_apps_prompted: false,
+      update_checks_enabled: true,
+    };
     await saveSettings(next);
     expect(SaveSettings).toHaveBeenCalledWith(next);
   });

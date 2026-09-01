@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "interceptorVersion": "4.0.0",
+  "timestamp": "2026-08-29T10:30:00.123Z",
+  "subject": "Invalid attachment descriptor",
+  "body": "This fixture must be rejected.",
+  "bodyFormat": "plain",
+  "recipients": { "to": [], "cc": [], "bcc": [] },
+  "attachments": [{ "filename": "missing-path.txt", "path": "", "size": 1 }],
+  "originApp": "WINWORD.EXE"
+}

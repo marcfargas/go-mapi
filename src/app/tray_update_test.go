@@ -205,7 +205,7 @@ func TestTrayToggleUpdateChecksWritesThroughAppSettings(t *testing.T) {
 	}
 
 	// Persisted settings reflect the change.
-	persisted := loadSettings()
+	persisted := loadSettings().Settings
 	if persisted.UpdateChecksEnabled {
 		t.Errorf("persisted UpdateChecksEnabled should be false after toggle off")
 	}
@@ -222,7 +222,7 @@ func TestTrayToggleUpdateChecksWritesThroughAppSettings(t *testing.T) {
 	if err := app.setUpdateChecksEnabled(true); err != nil {
 		t.Fatalf("setUpdateChecksEnabled(true): %v", err)
 	}
-	persisted = loadSettings()
+	persisted = loadSettings().Settings
 	if !persisted.UpdateChecksEnabled {
 		t.Errorf("persisted UpdateChecksEnabled should be true after toggle on")
 	}

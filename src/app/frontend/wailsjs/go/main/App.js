@@ -18,6 +18,14 @@ export function GetAuthStatus() {
   return window['go']['main']['App']['GetAuthStatus']();
 }
 
+export function GetComponentHealth() {
+  return window['go']['main']['App']['GetComponentHealth']();
+}
+
+export function GetAdminInstallState() {
+  return window['go']['main']['App']['GetAdminInstallState']();
+}
+
 export function GetMode() {
   return window['go']['main']['App']['GetMode']();
 }
@@ -34,6 +42,14 @@ export function GetSettings() {
   return window['go']['main']['App']['GetSettings']();
 }
 
+export function GetSettingsState() {
+  return window['go']['main']['App']['GetSettingsState']();
+}
+
+export function GetStartupState() {
+  return window['go']['main']['App']['GetStartupState']();
+}
+
 export function GetUpdateState() {
   return window['go']['main']['App']['GetUpdateState']();
 }
@@ -46,6 +62,18 @@ export function PauseWatching() {
   return window['go']['main']['App']['PauseWatching']();
 }
 
+export function OpenDefaultAppsSettings() {
+  return window['go']['main']['App']['OpenDefaultAppsSettings']();
+}
+
+export function OpenStartupSettings() {
+  return window['go']['main']['App']['OpenStartupSettings']();
+}
+
+export function DismissDefaultAppsPrompt() {
+  return window['go']['main']['App']['DismissDefaultAppsPrompt']();
+}
+
 export function ResumeWatching() {
   return window['go']['main']['App']['ResumeWatching']();
 }
@@ -56,6 +84,10 @@ export function SaveSettings(arg1) {
 
 export function SetMode(arg1) {
   return window['go']['main']['App']['SetMode'](arg1);
+}
+
+export function SetAutostartEnabled(arg1) {
+  return window['go']['main']['App']['SetAutostartEnabled'](arg1);
 }
 
 export function SetPaused(arg1) {
@@ -76,6 +108,10 @@ export function SetUpdateChecksEnabled(arg1) {
 
 export function SignIn() {
   return window['go']['main']['App']['SignIn']();
+}
+
+export function StartAdminRepair() {
+  return window['go']['main']['App']['StartAdminRepair']();
 }
 
 export function SignOut() {

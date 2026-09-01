@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "interceptorVersion": "4.0.0",
+  "timestamp": "2026-08-29T10:30:00.123Z",
+  "subject": "Unsupported protocol revision",
+  "body": "This fixture must be rejected.",
+  "bodyFormat": "plain",
+  "recipients": { "to": [], "cc": [], "bcc": [] },
+  "attachments": [],
+  "originApp": "WINWORD.EXE"
+}

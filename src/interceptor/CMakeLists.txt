@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(go-mapi-interceptor)
 
+if(WIN32)
+    enable_language(RC)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -8,6 +12,29 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED GO_MAPI_VERSION)
     set(GO_MAPI_VERSION "0.0.0-dev")
 endif()
+if(NOT DEFINED GO_MAPI_REQUIRED_APP_MIN)
+    set(GO_MAPI_REQUIRED_APP_MIN "4.0.0")
+endif()
+if(NOT DEFINED GO_MAPI_REQUIRED_APP_MAX)
+    set(GO_MAPI_REQUIRED_APP_MAX "")
+endif()
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(GO_MAPI_ARCH "x64")
+else()
+    set(GO_MAPI_ARCH "x86")
+endif()
+
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" GO_MAPI_VERSION_NUMERIC "${GO_MAPI_VERSION}")
+if(GO_MAPI_VERSION_NUMERIC)
+    set(GO_MAPI_VERSION_MAJOR "${CMAKE_MATCH_1}")
+    set(GO_MAPI_VERSION_MINOR "${CMAKE_MATCH_2}")
+    set(GO_MAPI_VERSION_PATCH "${CMAKE_MATCH_3}")
+else()
+    set(GO_MAPI_VERSION_MAJOR 0)
+    set(GO_MAPI_VERSION_MINOR 0)
+    set(GO_MAPI_VERSION_PATCH 0)
+endif()
+configure_file(version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/version.rc" @ONLY)
 
 # Build options
 option(BUILD_TESTS "Build test harness" ON)
@@ -26,6 +53,12 @@ enable_testing()
 add_library(message_converter_obj OBJECT
     message_converter.cpp
 )
+
+add_library(component_compat_obj OBJECT
+    component_compat.cpp
+)
+
+target_include_directories(component_compat_obj PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 
 target_include_directories(message_converter_obj PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -50,7 +83,9 @@ add_library(go-mapi SHARED
     mapi_impl.cpp
     json_writer.cpp
     fs_utils.cpp
+    "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
     $<TARGET_OBJECTS:message_converter_obj>
+    $<TARGET_OBJECTS:component_compat_obj>
 )
 
 # Set DLL output directory
@@ -68,6 +103,9 @@ target_include_directories(go-mapi PRIVATE
 # Inject version as compile definition
 target_compile_definitions(go-mapi PRIVATE
     GO_MAPI_VERSION="${GO_MAPI_VERSION}"
+    GO_MAPI_REQUIRED_APP_MIN="${GO_MAPI_REQUIRED_APP_MIN}"
+    GO_MAPI_REQUIRED_APP_MAX="${GO_MAPI_REQUIRED_APP_MAX}"
+    GO_MAPI_ARCH="${GO_MAPI_ARCH}"
 )
 
 # Platform-specific settings

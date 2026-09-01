@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "interceptorVersion": "4.0.0",
+  "timestamp": "not-an-rfc3339-timestamp",
+  "subject": "Invalid timestamp",
+  "body": "This fixture must be rejected.",
+  "bodyFormat": "plain",
+  "recipients": { "to": [], "cc": [], "bcc": [] },
+  "attachments": [],
+  "originApp": "WINWORD.EXE"
+}
