@@ -7,38 +7,49 @@ import (
 	"testing"
 )
 
-// These checks keep the distributor workflow on the component release
-// entrypoints. They deliberately inspect the checked-in workflow and scripts:
-// a release must not silently regain a direct build command that bypasses the
-// independent component-version files' development-version guards.
-func TestInstallerReleaseUsesComponentReleaseEntrypoints(t *testing.T) {
+// These checked-in workflow checks make the component split a release
+// authorization boundary. Only app-v* and admin-v* workflows may have the
+// GitHub permission that can publish a release. The two historical workflows
+// remain useful manual build checks, but may never regain release authority.
+func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "installer-release.yml"))
-	if err != nil {
-		t.Fatalf("read installer release workflow: %v", err)
-	}
-	content := string(workflow)
-	for _, want := range []string{
-		"src/app/VERSION', 'src/interceptor/interceptor-version.txt",
-		"npm run build:interceptor:release",
-		"scripts/build-wails.ps1 -Release -UseEnvironmentCredentials -Aumid com.marcfargas.gomapi",
+	for _, release := range []struct {
+		path string
+		tag  string
+	}{
+		{"app-release.yml", "tags: ['app-v*']"},
+		{"admin-release.yml", "tags: ['admin-v*']"},
 	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("installer release workflow is missing %q", want)
+		workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", release.path))
+		if err != nil {
+			t.Fatalf("read %s: %v", release.path, err)
+		}
+		content := string(workflow)
+		for _, want := range []string{release.tag, "contents: write", "softprops/action-gh-release@v2"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("authoritative workflow %s is missing %q", release.path, want)
+			}
 		}
 	}
+}
 
-	packageJSON, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
-	if err != nil {
-		t.Fatalf("read package.json: %v", err)
-	}
-	for _, want := range []string{
-		`"build:interceptor:release"`,
-		`-Arch x64 -Config Release -Release`,
-		`-Arch x86 -Config Release -Release`,
-	} {
-		if !strings.Contains(string(packageJSON), want) {
-			t.Errorf("package release entrypoint is missing %q", want)
+func TestLegacyReleaseWorkflowsAreValidationOnly(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	for _, legacy := range []string{"installer-release.yml", "interceptor-release.yml"} {
+		workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", legacy))
+		if err != nil {
+			t.Fatalf("read %s: %v", legacy, err)
+		}
+		content := string(workflow)
+		for _, want := range []string{"workflow_dispatch:", "contents: read"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("legacy workflow %s is missing validation-only guard %q", legacy, want)
+			}
+		}
+		for _, forbidden := range []string{"contents: write", "softprops/action-gh-release", "tags:", "signpath/github-action-submit-signing-request"} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("legacy workflow %s must not regain distribution authority %q", legacy, forbidden)
+			}
 		}
 	}
 }

@@ -1,27 +1,21 @@
-name: Release Interceptor
+name: Legacy interceptor validation
 
+# The interceptor is published only by admin-release.yml on admin-v* tags,
+# together with its signed MSI and signed metadata. A bare-DLL release is not
+# a valid admin installation contract. This manual workflow is retained as a
+# build verifier and may not create releases.
 on:
-  push:
-    tags:
-      - 'interceptor-v*'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  verify-and-publish:
-    name: Verify and publish interceptor
+  verify:
+    name: Verify both interceptor architectures
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate interceptor release version
-        shell: pwsh
-        run: |
-          $version = (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim()
-          if ([string]::IsNullOrWhiteSpace($version) -or $version -eq '0.0.0-dev') { throw 'src/interceptor/interceptor-version.txt must be a release version' }
-          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "interceptor-v$version") { throw 'tag must be interceptor-v<src/interceptor/interceptor-version.txt>' }
 
       - name: Install MinGW clang toolchain
         shell: pwsh
@@ -32,20 +26,15 @@ jobs:
           & "$env:TEMP\install-scoop.ps1"
           scoop install mingw-mstorsjo-llvm-ucrt
           if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
-          # The verifier's later step uses ctest and llvm-nm/nm by name.
-          # Scoop changes the user PATH only; persist its shims for the next
-          # GitHub Actions PowerShell session just as the build workflow does.
           "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Verify and stage both interceptor architectures
         shell: pwsh
         run: .\src\interceptor\verify-release.ps1
 
-      - name: Publish interceptor release assets
-        if: github.event_name == 'push'
-        uses: softprops/action-gh-release@v2
+      - name: Upload verification artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            release/interceptor/go-mapi-x86.dll
-            release/interceptor/go-mapi-x64.dll
-            release/interceptor/interceptor-artifacts.json
+          name: interceptor-verification-${{ github.sha }}
+          path: release/interceptor/
+          retention-days: 7
