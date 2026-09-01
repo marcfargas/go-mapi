@@ -1,0 +1,3 @@
+interface:
+  display_name: "go-mapi DevTest validation"
+  short_description: "Validate go-mapi on approved DevTest Windows"

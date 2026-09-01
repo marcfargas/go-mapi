@@ -1,3 +1,0 @@
-interface:
-  display_name: "go-mapi Crabbox"
-  short_description: "Validate go-mapi on disposable Azure Windows VMs"
