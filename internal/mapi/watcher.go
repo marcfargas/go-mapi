@@ -91,10 +91,8 @@ func (ew *EmailWatcher) Start() error {
 		return fmt.Errorf("failed to watch directory: %w", err)
 	}
 
-	if err := ew.processExistingFiles(); err != nil {
-		// Non-fatal: log via logInfo is not available here (no logging in internal/)
-		_ = err
-	}
+	// Initial-scan failures are non-fatal; subsequent filesystem events remain watched.
+	_ = ew.processExistingFiles()
 
 	go ew.watchLoop()
 	return nil
@@ -389,13 +387,6 @@ func (ew *EmailWatcher) processFile(filename string) {
 	// Generate unique ID from content
 	id := generateID(data, filename)
 
-	// Store email — mutate HostVersion before publish to avoid concurrent write race.
-	// See FOUND-01: stamp before taking the lock so concurrent GetEmails/Snapshot
-	// readers never see an unstamped pointer.
-	// (Note: Version is not available inside internal/mapi — callers stamp HostVersion
-	// by wrapping the callback if needed. The watcher sets it to empty here;
-	// native-host adapters may re-stamp via their callback.)
-
 	ew.mu.Lock()
 	ew.emails[id] = &mail
 	ew.fileToID[filename] = id
@@ -459,7 +450,7 @@ func (ew *EmailWatcher) moveToErrors(filename, reason string) {
 	dst := filepath.Join(ew.errorsDir, filename)
 
 	if err := os.Rename(src, dst); err != nil {
-		// Best effort: if rename fails, log inline
+		// Best effort: the caller already receives the original processing error.
 		return
 	}
 

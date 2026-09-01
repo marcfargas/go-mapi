@@ -232,9 +232,5 @@ func base64Wrap(data []byte) string {
 
 // Base64URLEncode encodes bytes to base64url without padding
 func Base64URLEncode(data []byte) string {
-	s := base64.StdEncoding.EncodeToString(data)
-	s = strings.ReplaceAll(s, "+", "-")
-	s = strings.ReplaceAll(s, "/", "_")
-	s = strings.TrimRight(s, "=")
-	return s
+	return base64.RawURLEncoding.EncodeToString(data)
 }
