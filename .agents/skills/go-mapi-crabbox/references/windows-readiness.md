@@ -67,33 +67,25 @@ the shim directory.
 
 ## Desktop inspection
 
-Use `rdpilot` for Windows desktop work. Azure Windows has an RDP listener and
-Remote Desktop firewall rules on the guest; do not use Crabbox's VNC screenshot
-path as the desktop readiness test. First inspect the NSG. If its current rules
-do not expose TCP 3389, add a temporary rule restricted to the current host's
-single public `/32`, then remove that exact rule during cleanup. Connect with a
-self-owned RDPilot session name, perceive the desktop before input, and always
-disconnect explicitly.
+Crabbox owns the desktop credentials for this lane. Do not ask the user for
+RDP credentials, open public RDP, add NSG rules, or configure RDPilot against
+the leased VM. Use Crabbox's managed desktop path instead. Wait several
+minutes after desktop warmup before treating a desktop failure as meaningful.
 
-Use the interactive RDP session for WebView2/Wails E2E. A checked-in desktop
-wrapper must write an exit marker that SSH-side polling can read, so a detached
-desktop launch becomes a bounded test result.
+For command-driven desktop validation, prove the selected launch mechanism
+with a durable marker first. On the observed image, `crabbox desktop terminal`
+opened Mintty but did not execute appended commands; `crabbox desktop launch`
+successfully ran direct PowerShell in the managed desktop context. Persist
+stdout/stderr and an explicit exit marker in a VM-local log (for example under
+`C:\\ProgramData\\crabbox`), then retrieve it through a safe read-only path.
+Do not rely on `desktop proof` when the guest lacks `scp.exe` or SFTP: proof
+artifact collection can fail before it reports the command outcome.
 
-RDPilot deploys its configured local sensor through its RDPDR `RDPILOT` drive;
-do not copy it through SSH. When bootstrap fails, diagnose the actual remote
-interactive session with PowerShell: confirm `fDisableCdm=0`, inspect the
-interactive user's `%TEMP%` for the copied executable, inspect its `cmd.exe`
-command line, and check Defender/CodeIntegrity events. The bootstrap command
-must remain below the Windows Run/ShellExecute 260-character limit after
-environment-variable expansion. On Crabbox profiles the original command can
-lose the final two characters, preventing launch even though RDP and RDPDR are
-healthy. Fix and test that command in RDPilot before treating the VM as a
-sensor or keyring failure.
-
-The two real keyring tests require an RDP RemoteInteractive credential set;
-SSH/WinRM fails with `ERROR_NO_SUCH_LOGON_SESSION` by design. Compile the test
-binary via the SSH lane, run only those tests inside RDPilot, capture a durable
-exit marker, and confirm `cmdkey /list` contains no leftover `go-mapi` target.
+The real keyring tests require the managed interactive desktop token;
+SSH/WinRM fails with `ERROR_NO_SUCH_LOGON_SESSION` by design. Use the managed
+desktop command path, with explicit `GOROOT`/`PATH` if the desktop shell does
+not inherit Go. Capture a durable exit marker; an empty `cmdkey /list` after a
+passing run is expected cleanup behavior.
 
 ## Sync and validation sequence
 
@@ -111,6 +103,16 @@ native-Windows failure; verify direct SSH stdin separately, then use a
 candidate with the input-bypass repair. Do not start a second sync while the
 first client still owns that workspace. Record the fault and clean up the
 owned VM if the transport cannot be recovered.
+
+If an explicitly authorized full-resync still leaves only Git metadata or
+omits current files, use a non-destructive fallback: transfer a ZIP or exact
+files in conservative base64 chunks and write them with full-path Windows
+PowerShell. In a local SSH chunk-reading loop, redirect each SSH invocation's
+stdin from `/dev/null`, otherwise SSH can consume the next base64 chunk. The
+observed guest lacked usable `scp.exe`, SFTP, and `tar`; do not assume those
+utilities exist. Prefer per-file updates for a small delta and verify their
+hashes before test execution. Do not test a desktop-token feature through SSH
+simply because SSH was used for transport.
 
 Then run the repository gates as evidence-bearing commands. Do not waive a
 failure. The interceptor harness must load the built DLL of matching bitness,

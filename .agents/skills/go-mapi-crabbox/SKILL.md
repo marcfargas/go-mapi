@@ -71,5 +71,40 @@ exact lease tag and recorded resource IDs. Do not delete shared VNet, NSG, or
 storage infrastructure. If Crabbox rejects a stale claim, pause the run and
 record the failed command before using an exact-resource Azure fallback.
 
+## Session-proven Windows constraints
+
+- Use one task-owned desktop VM at a time. Always specify `--desktop
+  --keep=false`, wait several minutes for desktop warmup, and reuse that VM
+  sequentially for related validation rather than starting retry leases.
+- Crabbox manages the remote desktop credentials. Do not request credentials
+  from the user, expose public RDP, change NSG rules, or configure RDPilot for
+  this validation lane.
+- Run tests that need the interactive Windows user context (including real
+  Credential Manager/keyring tests) through Crabbox managed desktop launch.
+  Plain SSH may be used only for narrowly scoped source transport or read-only
+  diagnostics; it is not a substitute for the desktop-token test path.
+- Treat a successful `run --full-resync` as unproven until expected source
+  files are present and hashed on the guest. On the observed Windows image,
+  normal sync or an archive overlay could report success while omitting source
+  files. Use an explicitly authorized, non-destructive per-file base64/
+  PowerShell fallback, then hash-check the transferred files. Do not start a
+  competing sync while an earlier owner is active.
+- `crabbox desktop terminal` may only open Mintty and not execute appended
+  commands. First prove the exact command path with a durable marker; use
+  `crabbox desktop launch` for managed-desktop command execution when terminal
+  does not create that marker. Persist output and an explicit exit marker in a
+  VM-local durable log, since `desktop proof` can fail when the guest lacks
+  `scp.exe`/SFTP.
+- A successful desktop-control command is not evidence that the command reached
+  the session. On the observed Windows lease, `desktop launch` returned without
+  creating its marker, `desktop terminal` opened Mintty, `desktop paste` plus
+  Enter created no marker, `desktop type` was unsupported, and `desktop doctor`
+  had no Windows full-check support. For UAC or other desktop-token evidence,
+  stop and record this as a Crabbox managed-input blocker after one marker probe;
+  never replace that evidence with SSH.
+- Never kill a guest workspace-owner/sync process or remove its marker without
+  explicit authorization for the exact PID/marker. A partial archive can be
+  bypassed with per-file transfer; do not delete it merely to retry.
+
 For stateful browser UAT only, route to `crabbox-browser-profile-persistence`.
 Automated fake-OAuth validation starts with a fresh profile.
