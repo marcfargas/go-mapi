@@ -64,6 +64,13 @@ type adminReleaseRepairConfig struct {
 // authorization sequence. Handoff is deliberately the final operation:
 // invalid metadata, stale replay, wrong bytes, or a signer-policy failure
 // cannot reach the parent-owned elevation path.
+//
+// Replay state is committed only after every pre-UAC check has produced a
+// staged, signer-authorized MSI. This keeps a transient download, staging, or
+// trust failure from advancing durable state and preventing a later retry.
+// The commit intentionally precedes Handoff: elevation is outside this trust
+// boundary, and an identical release remains an idempotent replay if consent,
+// UAC, or msiexec subsequently fails.
 func newAdminReleaseRepairAttempt(config adminReleaseRepairConfig) adminRepairAttempt {
 	return func(ctx context.Context, _ ComponentHealthState) (bool, error) {
 		if config.Fetch == nil || config.Stage == nil || config.Inspector == nil || config.Handoff == nil || config.Replay.Path == "" || config.Now == nil {
@@ -76,9 +83,6 @@ func newAdminReleaseRepairAttempt(config adminReleaseRepairConfig) adminRepairAt
 		release, err := verifyAdminRelease(config.Root, envelope, config.AppVersion, config.Now())
 		if err != nil {
 			return false, fmt.Errorf("verify admin release metadata: %w", err)
-		}
-		if err := config.Replay.Accept(release); err != nil {
-			return false, fmt.Errorf("accept admin release metadata: %w", err)
 		}
 		bytes, err := downloadAuthorizedAdminRelease(ctx, config.HTTPClient, config.Root, release, config.Now())
 		if err != nil {
@@ -97,6 +101,9 @@ func newAdminReleaseRepairAttempt(config adminReleaseRepairConfig) adminRepairAt
 		}
 		if err := verifyAdminAuthenticodePolicy(release.Payload.Publisher, identity); err != nil {
 			return false, err
+		}
+		if err := config.Replay.Accept(release); err != nil {
+			return false, fmt.Errorf("accept verified admin release: %w", err)
 		}
 		if err := config.Handoff(ctx, authorizedAdminMSICandidate{Release: release, Path: msiPath}); err != nil {
 			if errors.Is(err, errAdminMSIRebootRequired) {
