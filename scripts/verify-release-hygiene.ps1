@@ -13,13 +13,13 @@
        --remote-debugging-port=... to WebView2.
 
   Neither may appear in the release artifact. This script greps the
-  installer-release workflow for both markers and exits non-zero if
+  app-release workflow for both markers and exits non-zero if
   anything is found. It is meant to run as a workflow step on every
   release-tag push before binaries are built.
 
 .PARAMETER WorkflowPath
   Path to the release workflow YAML. Defaults to
-  .github/workflows/installer-release.yml.
+  .github/workflows/app-release.yml.
 
 .PARAMETER BuildEnvDump
   Optional path to a file containing a dump of `env` (or PowerShell
@@ -28,7 +28,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$WorkflowPath = ".github/workflows/installer-release.yml",
+  [string]$WorkflowPath = ".github/workflows/app-release.yml",
   [string]$BuildEnvDump = ""
 )
 
@@ -64,23 +64,23 @@ $workflowCode = $codeLines -join "`n"
 
 # 1. The release workflow must not pass -tags e2e to the Go build.
 if ($workflowCode -match '-tags\s+[^\s]*e2e') {
-  Fail "installer-release workflow contains '-tags e2e' — this would ship test hooks in production"
+  Fail "app-release workflow contains '-tags e2e' — this would ship test hooks in production"
 } else {
-  Pass "no '-tags e2e' in installer-release workflow"
+  Pass "no '-tags e2e' in app-release workflow"
 }
 
 # 2. The release workflow must not export GOMAPI_DEBUG_BROWSER_ARGS.
 if ($workflowCode -match 'GOMAPI_DEBUG_BROWSER_ARGS') {
-  Fail "installer-release workflow references GOMAPI_DEBUG_BROWSER_ARGS — this would expose WebView2 CDP in release builds"
+  Fail "app-release workflow references GOMAPI_DEBUG_BROWSER_ARGS — this would expose WebView2 CDP in release builds"
 } else {
-  Pass "no GOMAPI_DEBUG_BROWSER_ARGS in installer-release workflow"
+  Pass "no GOMAPI_DEBUG_BROWSER_ARGS in app-release workflow"
 }
 
 # 3. Likewise for GOMAPI_E2E_* overrides.
 if ($workflowCode -match 'GOMAPI_E2E_') {
-  Fail "installer-release workflow references GOMAPI_E2E_* — e2e fakes must never reach release builds"
+  Fail "app-release workflow references GOMAPI_E2E_* — e2e fakes must never reach release builds"
 } else {
-  Pass "no GOMAPI_E2E_* env vars in installer-release workflow"
+  Pass "no GOMAPI_E2E_* env vars in app-release workflow"
 }
 
 # 4. Optional: scan an env dump captured at build time.

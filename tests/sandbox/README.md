@@ -1,11 +1,11 @@
 # tests/sandbox — Windows Sandbox local repro harness (REL-02)
 
-Local alternative to `.github/workflows/installer-smoke.yml`. Runs the full
+Local alternative to the `CI / Validate user app packages` job. Runs the full
 v2.0.0 installer install → verify registry → uninstall flow inside a fresh
 Windows Sandbox so you can reproduce CI failures (or verify changes)
 without touching your host's MAPI registration or `%ProgramFiles%`.
 
-**This does not replace CI.** `installer-smoke.yml` remains the
+**This does not replace CI.** The `CI / Validate user app packages` job remains the
 authoritative ship gate. The sandbox harness is the fast local feedback
 loop (~5 min) and the fallback UAT environment for REL-06 when marcwin
 isn't available.
@@ -116,7 +116,7 @@ Windows Defender scanning the sandbox template.
 |------|-------------|------|
 | `test-dll-registration.ps1` | sandbox, `-RegistrationOnly` | DLL registration sanity |
 | `install-and-verify.ps1` | sandbox, `-FullTest` | Install → verify → uninstall round-trip |
-| `src/installer/tests/installer.Tests.ps1` | CI (`installer-smoke.yml`) | Pester 5 authoritative smoke test |
+| `src/installer/tests/installer.Tests.ps1` | Legacy local combined-installer check | Pester 5 compatibility smoke test |
 | Playwright `tests/e2e/*.spec.ts` | CI (`e2e.yml`) | End-to-end browser → host → mock Gmail |
 
 The sandbox harness is INTENTIONALLY lighter than the Pester smoke test

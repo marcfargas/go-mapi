@@ -9,8 +9,7 @@ import (
 
 // These checked-in workflow checks make the component split a release
 // authorization boundary. Only app-v* and admin-v* workflows may have the
-// GitHub permission that can publish a release. The two historical workflows
-// remain useful manual build checks, but may never regain release authority.
+// GitHub permissions or actions that can publish a component release.
 func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	for _, release := range []struct {
@@ -31,25 +30,47 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			}
 		}
 	}
-}
 
-func TestLegacyReleaseWorkflowsAreValidationOnly(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	for _, legacy := range []string{"installer-release.yml", "interceptor-release.yml"} {
-		workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", legacy))
+	workflowDir := filepath.Join(repoRoot, ".github", "workflows")
+	entries, err := os.ReadDir(workflowDir)
+	if err != nil {
+		t.Fatalf("read workflow directory: %v", err)
+	}
+	expectedWorkflows := map[string]bool{
+		"ci.yml":                    true,
+		"app-release.yml":           true,
+		"admin-release.yml":         true,
+		"component-integration.yml": true,
+	}
+	seenWorkflows := make(map[string]bool, len(expectedWorkflows))
+	for _, entry := range entries {
+		if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yml" && filepath.Ext(entry.Name()) != ".yaml") {
+			continue
+		}
+		if !expectedWorkflows[entry.Name()] {
+			t.Errorf("unexpected workflow %s; keep the repository workflow topology to the four component contracts", entry.Name())
+		}
+		seenWorkflows[entry.Name()] = true
+		if entry.Name() == "app-release.yml" || entry.Name() == "admin-release.yml" {
+			continue
+		}
+		workflow, err := os.ReadFile(filepath.Join(workflowDir, entry.Name()))
 		if err != nil {
-			t.Fatalf("read %s: %v", legacy, err)
+			t.Fatalf("read %s: %v", entry.Name(), err)
 		}
 		content := string(workflow)
-		for _, want := range []string{"workflow_dispatch:", "contents: read"} {
-			if !strings.Contains(content, want) {
-				t.Errorf("legacy workflow %s is missing validation-only guard %q", legacy, want)
+		for _, forbidden := range []string{
+			"contents: write", "softprops/action-gh-release", "signpath/github-action-submit-signing-request",
+			"microsoft/microsoft-store-apppublisher", "wingetcreate.exe", "tags: ['app-v*']", "tags: ['admin-v*']",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("non-release workflow %s must not contain %q", entry.Name(), forbidden)
 			}
 		}
-		for _, forbidden := range []string{"contents: write", "softprops/action-gh-release", "tags:", "signpath/github-action-submit-signing-request"} {
-			if strings.Contains(content, forbidden) {
-				t.Errorf("legacy workflow %s must not regain distribution authority %q", legacy, forbidden)
-			}
+	}
+	for workflow := range expectedWorkflows {
+		if !seenWorkflows[workflow] {
+			t.Errorf("required workflow %s is missing", workflow)
 		}
 	}
 }
@@ -123,24 +144,47 @@ func TestAppArtifactVerifierUsesPEMetadataForGuiArtifact(t *testing.T) {
 	}
 }
 
-func TestAppWorkflowUsesGuardedReleaseArtifactEntrypoint(t *testing.T) {
+func TestAppReleaseUsesGuardedArtifactEntrypoint(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "app.yml"))
+	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "app-release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	content := string(workflow)
 	for _, want := range []string{
-		"workflow_dispatch:", "app_version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
-		"src/app/VERSION", "npm run build:app:release", "scripts/verify-app-artifact.ps1", "github.event_name == 'workflow_dispatch'",
+		"workflow_dispatch:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
+		"src/app/VERSION", "npm run build:app:release", "verify-app-distribution.ps1", "inputs.sign",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("app release workflow is missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"build:interceptor", "build:installer", "makensis"} {
+	for _, forbidden := range []string{"build:interceptor", "build:installer", "src/installer/msi"} {
 		if strings.Contains(content, forbidden) {
-			t.Errorf("app workflow must not invoke an admin component command: %q", forbidden)
+			t.Errorf("app release must not invoke an admin component command: %q", forbidden)
+		}
+	}
+}
+
+func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(workflow)
+	for _, want := range []string{
+		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
+		"Build interceptor", "Validate user app packages", "Validate admin MSI lifecycle",
+		"AdminLifecycle.Tests.ps1", "go test -race -v ./internal/mapi/... ./src/app/...",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("CI workflow is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"softprops/action-gh-release", "signpath/github-action-submit-signing-request", "environment: app-release", "environment: admin-release"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("CI workflow must not have release authority %q", forbidden)
 		}
 	}
 }

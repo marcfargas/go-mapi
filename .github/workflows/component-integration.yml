@@ -12,6 +12,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 # This workflow validates the checked-in gate contract and publishes that
 # result. The authoritative real x86/x64 caller run is performed by
 # scripts/run-component-integration.ps1 in one managed interactive Azure

@@ -1,0 +1,245 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_call:
+    inputs:
+      run_race:
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      run_race:
+        description: 'Run the Windows Go race detector in addition to ordinary CI'
+        required: false
+        type: boolean
+        default: false
+
+  schedule:
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    if: github.event_name != 'schedule'
+    name: User app
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: '1'
+      GOMAPI_OAUTH_CLIENT_ID: ci-client
+      GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Assert clean app-only checkout
+        shell: pwsh
+        run: |
+          $absent = @('src/app/frontend/dist','src/app/build/bin','src/interceptor/build-x86','src/interceptor/build-x64')
+          foreach ($path in $absent) { if (Test-Path $path) { throw "unexpected output: $path" } }
+      - run: npm ci
+      - name: Assert npm did not build components
+        shell: pwsh
+        run: |
+          if (Test-Path src/app/frontend/dist) { throw 'frontend must be built by the scoped command' }
+          if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'interceptor output is forbidden' }
+      - run: npm run test:app
+      - run: npm run check:app
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: npm run build:app
+      - name: Reassert app-only outputs
+        shell: pwsh
+        run: |
+          if (-not (Test-Path src/app/frontend/dist)) { throw 'scoped command did not build frontend' }
+          if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'interceptor output is forbidden' }
+          if (-not (Test-Path src/app/build/bin/go-mapi.exe)) { throw 'app artifact missing' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-app
+          path: src/app/build/bin/go-mapi.exe
+
+  build-interceptor:
+    if: github.event_name != 'schedule'
+    name: Build interceptor (${{ matrix.arch }}, ${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        config: [Debug, Release]
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dual-bitness MinGW clang toolchain
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          $bin = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin"
+          foreach ($exe in @('x86_64-w64-mingw32-clang.exe','i686-w64-mingw32-clang.exe')) {
+            if (-not (Test-Path "$bin\$exe")) { throw "Missing $exe in $bin" }
+          }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build interceptor and matching harness
+        working-directory: src/interceptor
+        run: .\build.ps1 -Arch ${{ matrix.arch }} -Config ${{ matrix.config }} -Tests -Clean
+      - name: Run matching-bitness harness
+        working-directory: src/interceptor
+        run: .\build-${{ matrix.arch }}\bin\go-mapi-test-harness.exe .\build-${{ matrix.arch }}\bin\go-mapi.dll
+      - name: Run C++ unit tests
+        working-directory: src/interceptor/build-${{ matrix.arch }}
+        run: ctest --output-on-failure --build-config ${{ matrix.config }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-dll-${{ matrix.arch }}-${{ matrix.config }}
+          path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi.dll
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-tests-${{ matrix.arch }}-${{ matrix.config }}
+          path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi-test-harness.exe
+          if-no-files-found: error
+
+  app-distribution:
+    if: github.event_name != 'schedule'
+    name: Validate user app packages
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: '1'
+      GOMAPI_OAUTH_CLIENT_ID: ci-client
+      GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Set validation version
+        shell: pwsh
+        run: Set-Content src/app/VERSION -Value 4.0.0 -NoNewline -Encoding ascii
+      - run: npm ci
+      - run: npm run -w @marcfargas/go-mapi-app-frontend build
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: npm run build:app
+      - name: Install standalone packager
+        shell: pwsh
+        run: choco install nsis --version=3.11 -y --no-progress
+      - name: Build current user-app packages
+        shell: pwsh
+        run: |
+          .\scripts\build-app-msix.ps1 -Version 4.0.0 -IdentityName com.marcfargas.gomapi.validation -Publisher 'CN=go-mapi validation' -PublisherDisplayName 'go-mapi validation'
+          .\scripts\build-app-installer.ps1 -Version 4.0.0
+      - name: Verify current user-app package boundary
+        shell: pwsh
+        run: .\scripts\verify-app-distribution.ps1 -Version 4.0.0 -MsixPath release/app/go-mapi-4.0.0-x64.msix -InstallerPath release/app/go-mapi-user-4.0.0-x64.exe
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-mapi-user-package-validation-${{ github.sha }}
+          path: release/app/
+          if-no-files-found: warn
+          retention-days: 7
+
+  admin-msi:
+    if: github.event_name != 'schedule'
+    name: Validate admin MSI lifecycle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - name: Set validation version
+        shell: pwsh
+        run: Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
+      - name: Install dual-bitness MinGW clang toolchain
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build and verify x86/x64 interceptor release inputs
+        shell: pwsh
+        run: .\src\interceptor\verify-release.ps1
+      - name: Build and verify current admin MSI
+        shell: pwsh
+        run: |
+          .\src\installer\msi\build.ps1 -Version 4.0.0
+          .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi
+      - name: Install Pester 5
+        shell: pwsh
+        run: |
+          Install-PackageProvider NuGet -Force -Confirm:$false | Out-Null
+          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+      - name: Exercise install, repair, rollback, cleanup, and uninstall
+        shell: pwsh
+        run: Invoke-Pester -Path src/installer/msi/tests/AdminLifecycle.Tests.ps1 -Output Detailed -CI
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-mapi-admin-msi-validation-${{ github.sha }}
+          path: release/admin/
+          if-no-files-found: warn
+          retention-days: 7
+
+  verify-interceptor-release:
+    if: github.event_name == 'workflow_dispatch'
+    name: Verify release interceptor artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set validation version
+        shell: pwsh
+        run: Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
+      - name: Install dual-bitness MinGW clang toolchain
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Verify and stage both interceptor architectures
+        shell: pwsh
+        run: .\src\interceptor\verify-release.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: interceptor-verification-${{ github.sha }}
+          path: release/interceptor/
+          retention-days: 7
+
+  release-contract:
+    if: github.event_name != 'schedule'
+    name: Validate split release boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - run: go test ./internal/mapi -run '^TestOnlySplitReleaseContractsCanPublish$' -count=1
+
+  go-race:
+    if: github.event_name == 'schedule' || inputs.run_race
+    name: Go test -race (windows-latest)
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - run: go test -race -v ./internal/mapi/... ./src/app/...

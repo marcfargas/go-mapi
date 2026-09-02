@@ -3,10 +3,8 @@
 # Local v3.0 RC installer build for the Phase 11 sandbox smoke.
 #
 # Why this script exists:
-# - The CI workflow `installer-release.yml` builds the signed/unsigned
-#   installer and uploads it as `go-mapi-setup-unsigned`. For Phase 11
-#   pre-GA smoke we need a fresh v3.0 installer before the release is
-#   published, so we either download that CI artifact or build locally.
+# - The v3 combined installer is no longer built or published by CI. For Phase
+#   11 compatibility smoke, build this legacy artifact locally only.
 # - `!addplugindir "${__FILEDIR__}\plugins"` in `src/installer/go-mapi.nsi`
 #   does not always register under some pwsh/MSYS invocations, so this
 #   wrapper passes the plugin dir via `/X`-style preamble with an
@@ -26,8 +24,7 @@
 # NOTE: `aumidOverride` lives in `package main` (src/app/toast.go). The Go
 # linker only recognises the `main.<var>` form for main-package symbols; the
 # full-module-path form (`github.com/marcfargas/go-mapi/app.aumidOverride`)
-# is silently ignored, leaving the binary with the dev AUMID. This matches
-# the ldflag form used by `.github/workflows/installer-release.yml` for GA.
+# is silently ignored, leaving the binary with the dev AUMID.
 # - Fresh `go-mapi.dll` at `src\interceptor\build\bin\` (`npm run build:interceptor`).
 #
 # Output:

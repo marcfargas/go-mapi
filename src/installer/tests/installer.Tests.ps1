@@ -26,7 +26,7 @@ BeforeAll {
     # Dot-source the AUMID reader helper (defines Get-ShortcutAumid + .NET types).
     . "$PSScriptRoot\AumidReader.ps1"
 
-    # The installer binary is produced by the CI workflow (installer-smoke.yml)
+    # The legacy combined-installer binary is produced only by this local compatibility check.
     # via `makensis src\installer\go-mapi.nsi` at the repo root.
     # Path resolution:
     #   From src/installer/tests/installer.Tests.ps1 ..\..\..\ = repo root
