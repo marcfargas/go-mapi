@@ -140,7 +140,9 @@ func (a *App) startup(ctx context.Context) {
 	// StartHidden: true → visible starts false. Mirror that here so toggleWindow
 	// will WindowShow on the first left-click.
 	a.setVisible(false)
-	a.startTray()
+	if shouldStartTray() {
+		a.startTray()
+	}
 
 	// Named-event raise dispatcher — wakes when second instance calls SetEvent.
 	go waitForRaiseSignal(a.shutdownCtx.Done(), func() {
