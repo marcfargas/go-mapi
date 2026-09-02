@@ -22,9 +22,14 @@ request to alter the shared Azure platform.
 - Use native OpenSSH for automation. Record whether the host identity was
   verified. If the caller explicitly authorizes relaxed host checking for a
   disposable lease, record it as **unverified**; never imply it was pinned.
-- Do not require RDPilot for non-interactive installer, interceptor, or
-  WebView2/CDP validation. Use it only when interactive desktop control is
-  actually required.
+- Do not require RDPilot for non-interactive installer or interceptor
+  validation. Wails/WebView2 CDP validation does require a logged-on Windows
+  desktop session: SSH/Run Command execute in Session 0, where WebView2 may
+  create an environment but Wails cannot create its UI surface.
+- For that desktop lane, use RDPilot and require a successful connection and
+  first perception before source transfer. If perception times out after
+  connect, disconnect, collect the approved read-only DVC diagnostic, and do
+  not retry, use ordinary RDP as a substitute, or continue the desktop lane.
 
 ## Source transfer
 
