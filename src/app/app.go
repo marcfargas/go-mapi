@@ -288,13 +288,10 @@ func (a *App) startup(ctx context.Context) {
 	// — the app still runs; we just never detect updates until next
 	// start (D-04 silent-failure invariant extends to the updater
 	// bootstrap itself).
-	if fetcher, err := newGitHubReleaseFetcher(); err != nil {
-		logError("updates: init GitHub fetcher: %v", err)
-	} else {
+	if fetcher := newUpdateCheckFetcher(Version); fetcher != nil {
 		a.updates = newUpdateService(Version, fetcher, logInfo)
 		a.updateState.Store(&UpdateState{
 			CurrentVersion: Version,
-			InstallerURL:   installerDownloadURL,
 			Enabled:        a.settings.UpdateChecksEnabled,
 			LastCheckedAt:  a.settings.LastUpdateCheck,
 		})
@@ -812,13 +809,16 @@ func (a *App) runGatedUpdateCheck(ctx context.Context) {
 func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 	prior := a.GetUpdateState()
 	merged := UpdateState{
-		CurrentVersion:   newState.CurrentVersion,
-		InstallerURL:     installerDownloadURL,
-		LastCheckedAt:    newState.LastCheckedAt,
-		Enabled:          newState.Enabled,
-		LatestVersion:    newState.LatestVersion,
-		LatestReleaseURL: newState.LatestReleaseURL,
-		UpdateAvailable:  newState.UpdateAvailable,
+		CurrentVersion:             newState.CurrentVersion,
+		InstallerURL:               newState.InstallerURL,
+		LastCheckedAt:              newState.LastCheckedAt,
+		Enabled:                    newState.Enabled,
+		LatestVersion:              newState.LatestVersion,
+		LatestReleaseURL:           newState.LatestReleaseURL,
+		UpdateAvailable:            newState.UpdateAvailable,
+		InterceptorLatestVersion:   newState.InterceptorLatestVersion,
+		InterceptorUpdateAvailable: newState.InterceptorUpdateAvailable,
+		Compatibility:              newState.Compatibility,
 	}
 	if fetchErr != nil {
 		// Preserve whatever the user previously saw — banner must not
@@ -826,6 +826,9 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 		merged.LatestVersion = prior.LatestVersion
 		merged.LatestReleaseURL = prior.LatestReleaseURL
 		merged.UpdateAvailable = prior.UpdateAvailable
+		merged.InterceptorLatestVersion = prior.InterceptorLatestVersion
+		merged.InterceptorUpdateAvailable = prior.InterceptorUpdateAvailable
+		merged.Compatibility = prior.Compatibility
 	}
 	if merged.CurrentVersion == "" {
 		merged.CurrentVersion = Version

@@ -21,8 +21,9 @@ shows up in your Gmail inbox.
 - Works with any Windows app that uses "Send to Mail recipient"
 - Drafts land in Gmail — review and send normally, nothing is sent automatically
 - Manual or automatic draft creation (your choice)
-- Your emails go directly to Gmail's servers — nowhere else. No third-party
-  servers, no telemetry, no analytics.
+- Your emails go directly to Gmail's servers — nowhere else. Update checks use
+  our first-party service only for privacy-minimized aggregate adoption
+  statistics; they never include email, account, or message data.
 
 ## Before you install
 
@@ -63,7 +64,10 @@ in your inbox. Switch between modes in the go-mapi window.
 go-mapi tells you when a new version is available. You choose when to
 install it — updates are never installed without your say-so. When a new
 version is ready, click the banner to open the download page and run the
-new installer yourself.
+new installer yourself. Update checks contact `go-mapi.app` and report only
+the app version, distribution channel, operating system, and coarse
+country/area aggregates. They do not use an install identifier, cookies, or
+your email/account data; downloads remain on GitHub.
 
 ## License
 

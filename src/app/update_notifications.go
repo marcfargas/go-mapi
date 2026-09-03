@@ -59,10 +59,8 @@ func buildUpdateNotificationPlan(s UpdateState) *updateNotificationPlan {
 		return nil
 	}
 	url := s.LatestReleaseURL
-	if url == "" {
-		// Fallback: the repo's releases page. Never the installer URL —
-		// that link lives in the in-app panel per D-02.
-		url = "https://github.com/" + gitHubOwner + "/" + gitHubRepo + "/releases"
+	if url == "" || !allowedUpdateURL(url) {
+		return nil
 	}
 	title := "go-mapi update available"
 	body := "Version " + s.LatestVersion + " is ready on GitHub."
@@ -87,9 +85,9 @@ func buildUpdateNotificationPlan(s UpdateState) *updateNotificationPlan {
 // flip-to-true fires again — supports users who install manually and
 // then continue running the app through a future release.
 type updateNotificationTracker struct {
-	mu           sync.Mutex
-	dispatch     func(*updateNotificationPlan)
-	lastVersion  string
+	mu            sync.Mutex
+	dispatch      func(*updateNotificationPlan)
+	lastVersion   string
 	lastAvailable bool
 }
 
