@@ -4,12 +4,8 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
 	"time"
-
-	"github.com/creativeprojects/go-selfupdate"
 )
 
 // Phase 11 — notify-only update service (REL-03, REL-05).
@@ -32,27 +28,14 @@ import (
 //   - D-08: update checks default enabled. AppSettings handles the default;
 //     the service stays a pure consumer of the (already-defaulted) settings.
 //
-// Why not go-selfupdate's DetectLatest flow? The current release layout
-// publishes `go-mapi-setup.exe` only, and DetectLatest's asset matcher
-// expects `{cmd}_{goos}_{goarch}` or archived variants and reports
-// found=false when no matching asset exists (11-RESEARCH.md Pitfall 1). We
-// therefore use ListReleases as a GitHub client layer, do our own
-// metadata-only version compare, and hand the user the stable installer
-// URL to download manually.
+// Release availability comes from the versioned, first-party update-check
+// contract. The client compares metadata only and hands the user a fixed,
+// versioned download route; it never downloads or replaces its own binary.
 
 const (
-	// gitHubOwner / gitHubRepo are hardcoded to the repo slug so no user
-	// input or settings file can redirect update checks to a different
-	// origin (threat T-11-01-01 partial mitigation + Pitfall-4 guard).
-	gitHubOwner = "marcfargas"
-	gitHubRepo  = "go-mapi"
-
-	// installerDownloadURL is the stable installer URL shown to users
-	// when an update is available (D-02, REL-02). Intentionally hardcoded;
-	// never constructed from release metadata so a tampered release name
-	// cannot redirect downloads (T-11-01-01).
-	installerDownloadURL = "https://github.com/" + gitHubOwner + "/" + gitHubRepo +
-		"/releases/latest/download/go-mapi-setup.exe"
+	// installerDownloadURL remains a safe empty-state value; available updates
+	// always replace it with a validated, versioned go-mapi.app route.
+	installerDownloadURL = ""
 
 	// updateCheckWindow is the cadence floor between background checks
 	// (REL-03: "every 24h").
@@ -97,23 +80,26 @@ type UpdateState struct {
 	// Enabled mirrors AppSettings.UpdateChecksEnabled so tray/frontend
 	// can render the toggle state without reading settings themselves.
 	Enabled bool `json:"enabled"`
+
+	// InterceptorLatestVersion and InterceptorUpdateAvailable are advisory
+	// component status only. They never authorize or trigger installation.
+	InterceptorLatestVersion   string `json:"interceptorLatestVersion"`
+	InterceptorUpdateAvailable bool   `json:"interceptorUpdateAvailable"`
+	Compatibility              string `json:"compatibility"`
 }
 
-// latestRelease is the subset of release metadata the service needs.
-// Keeping this as our own type (rather than leaking go-selfupdate's
-// Release struct) means tests can stub without pulling any third-party
-// type into the service contract.
+// latestRelease is the subset of the update-check result that the cadence
+// service needs. Keeping it local makes the contract transport easy to stub.
 type latestRelease struct {
-	Version    string
-	ReleaseURL string
+	Version                    string
+	ReleaseURL                 string
+	InterceptorVersion         string
+	InterceptorUpdateAvailable bool
+	Compatibility              string
 }
 
-// releaseFetcher abstracts "ask GitHub for the newest stable release"
-// so tests can inject a stub without a real HTTP call. The production
-// implementation (gitHubReleaseFetcher) uses go-selfupdate's
-// GitHubSource.ListReleases and picks the highest-versioned non-draft,
-// non-prerelease tag ourselves — matching GitHub's "latest release"
-// semantics without relying on DetectLatest's asset matcher.
+// releaseFetcher abstracts the fixed update-check contract so tests can inject
+// a stub without a real HTTP call.
 type releaseFetcher interface {
 	FetchLatestRelease(ctx context.Context) (*latestRelease, error)
 }
@@ -173,7 +159,6 @@ func (s *updateService) MaybeCheck(ctx context.Context, settings updateSettings)
 	// callers have a valid snapshot even on the opt-out path.
 	state := UpdateState{
 		CurrentVersion: s.currentVersion,
-		InstallerURL:   installerDownloadURL,
 		Enabled:        settings.Enabled,
 		LastCheckedAt:  settings.LastUpdateCheck,
 	}
@@ -214,7 +199,6 @@ func (s *updateService) CheckNow(ctx context.Context) (UpdateState, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	state := UpdateState{
 		CurrentVersion: s.currentVersion,
-		InstallerURL:   installerDownloadURL,
 		LastCheckedAt:  now,
 		Enabled:        true, // caller may overwrite; CheckNow semantically assumes the user asked for a check
 	}
@@ -233,7 +217,11 @@ func (s *updateService) CheckNow(ctx context.Context) (UpdateState, error) {
 
 	state.LatestVersion = rel.Version
 	state.LatestReleaseURL = rel.ReleaseURL
+	state.InstallerURL = rel.ReleaseURL
 	state.UpdateAvailable = isNewerVersion(s.currentVersion, rel.Version)
+	state.InterceptorLatestVersion = rel.InterceptorVersion
+	state.InterceptorUpdateAvailable = rel.InterceptorUpdateAvailable
+	state.Compatibility = rel.Compatibility
 	return state, nil
 }
 
@@ -378,62 +366,4 @@ func isDevVersion(v string) bool {
 		return true
 	}
 	return false
-}
-
-// --- Production release fetcher ---------------------------------------
-
-// gitHubReleaseFetcher is the production implementation that uses
-// go-selfupdate.GitHubSource.ListReleases to enumerate releases for
-// our repo, filter out drafts and prereleases, and return the
-// highest-versioned stable release. No asset matching — that is the
-// path this phase intentionally avoids.
-type gitHubReleaseFetcher struct {
-	source *selfupdate.GitHubSource
-}
-
-// newGitHubReleaseFetcher builds a real GitHub-backed fetcher. The
-// returned fetcher is safe to share across goroutines (go-selfupdate's
-// source holds no mutable state beyond the HTTP client).
-func newGitHubReleaseFetcher() (*gitHubReleaseFetcher, error) {
-	src, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("updates: new GitHub source: %w", err)
-	}
-	return &gitHubReleaseFetcher{source: src}, nil
-}
-
-// FetchLatestRelease asks GitHub for the list of releases, filters
-// to stable non-draft entries, and returns the highest-versioned one.
-// Returns (nil, nil) if no stable release exists yet (legal during
-// pre-GA development).
-func (g *gitHubReleaseFetcher) FetchLatestRelease(ctx context.Context) (*latestRelease, error) {
-	if g == nil || g.source == nil {
-		return nil, errors.New("updates: github source not initialised")
-	}
-	repo := selfupdate.NewRepositorySlug(gitHubOwner, gitHubRepo)
-	releases, err := g.source.ListReleases(ctx, repo)
-	if err != nil {
-		return nil, fmt.Errorf("updates: list releases: %w", err)
-	}
-	var best *latestRelease
-	for _, r := range releases {
-		if r == nil {
-			continue
-		}
-		if r.GetDraft() || r.GetPrerelease() {
-			continue
-		}
-		tag := r.GetTagName()
-		if tag == "" {
-			continue
-		}
-		candidate := &latestRelease{
-			Version:    trimVersion(tag),
-			ReleaseURL: r.GetURL(),
-		}
-		if best == nil || compareSemver(candidate.Version, best.Version) > 0 {
-			best = candidate
-		}
-	}
-	return best, nil
 }

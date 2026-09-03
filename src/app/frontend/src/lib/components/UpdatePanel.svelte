@@ -123,6 +123,16 @@
         <dd>{update.currentVersion || 'unknown'}</dd>
         <dt>Last checked</dt>
         <dd>{lastCheckedLabel}</dd>
+        <dt>Interceptor</dt>
+        <dd>
+          {#if update.interceptorUpdateAvailable}
+            Update available{update.interceptorLatestVersion ? ` (${update.interceptorLatestVersion})` : ''}
+          {:else}
+            {update.interceptorLatestVersion || 'No update reported'}
+          {/if}
+        </dd>
+        <dt>Components</dt>
+        <dd>{update.compatibility || 'unknown'}</dd>
       </dl>
 
       <p class="default-note">

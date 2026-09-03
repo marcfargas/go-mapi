@@ -193,11 +193,8 @@ func (a *App) handleUpdateDownloadAction() {
 // tray error is raised on missing default-browser registration.
 func openUpdateReleasePage(s UpdateState) {
 	url := s.LatestReleaseURL
-	if url == "" {
-		// Fallback: the repo's releases page, which always works even
-		// when no LatestReleaseURL has been captured yet (e.g. a stale
-		// install with no successful fetch since upgrade).
-		url = "https://github.com/" + gitHubOwner + "/" + gitHubRepo + "/releases"
+	if url == "" || !allowedUpdateURL(url) {
+		return
 	}
 	if err := browser.OpenURL(url); err != nil {
 		logInfo("updates: open release page (silent per D-04): %v", err)

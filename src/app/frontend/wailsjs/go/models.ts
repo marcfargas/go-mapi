@@ -89,6 +89,9 @@ export namespace main {
 	    updateAvailable: boolean;
 	    lastCheckedAt: string;
 	    enabled: boolean;
+	    interceptorLatestVersion?: string;
+	    interceptorUpdateAvailable?: boolean;
+	    compatibility?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateState(source);
@@ -103,6 +106,9 @@ export namespace main {
 	        this.updateAvailable = source["updateAvailable"];
 	        this.lastCheckedAt = source["lastCheckedAt"];
 	        this.enabled = source["enabled"];
+	        this.interceptorLatestVersion = source["interceptorLatestVersion"];
+	        this.interceptorUpdateAvailable = source["interceptorUpdateAvailable"];
+	        this.compatibility = source["compatibility"];
 	    }
 	}
 

@@ -12,12 +12,14 @@ managed desktops, group policy.
 - ~40–50 MB RAM per signed-in session (idle, after 10 min — see *RAM sizing* below)
 - SHA-256 checksums published with every release (`SHA256SUMS.txt`)
 - Per-user OAuth tokens in Windows Credential Manager (DPAPI-scoped)
-- Outbound network: Gmail API + Google OAuth + GitHub Releases (update check). Nothing else.
+- Outbound network: Gmail API + Google OAuth + `go-mapi.app` (update checks);
+  GitHub release downloads occur only after an explicit update action.
 
 **Positioning**
 
 - LGPL-3.0-or-later — FOSS, no per-seat licensing, source on GitHub
-- No telemetry, no content retention, no analytics
+- Privacy-minimized first-party aggregate update statistics; no email/content
+  retention or per-install tracking
 
 ## Code signing status
 
@@ -276,16 +278,21 @@ distribution tooling:
 
 go-mapi makes network calls only to:
 
-- `https://github.com/marcfargas/go-mapi/releases/latest/download/...`
-  (update check and asset download — only when automatic updates are enabled
-  or when the user clicks "download update")
+- `https://go-mapi.app/api/updates/v1/check` (an update check when enabled or
+  explicitly requested) and a versioned `go-mapi.app` download route after an
+  explicit update action; that route redirects to the signed GitHub artifact
 - Google OAuth endpoints (sign-in and token refresh)
 - Gmail API (`https://gmail.googleapis.com/`) — only when the user is signed in
 
-No telemetry. No content retention. Email content is never stored outside of
+The update service records daily aggregate counts for app version,
+distribution channel, operating system, result, and Cloudflare-derived country
+and first-level area. It stores no raw application events, install identifier,
+cookies, application-level IP/user-agent values, account data, email data, or
+interceptor-version telemetry; low-count regional cells aggregate to country
+and counters expire after 12 months. Email content is never stored outside of
 Gmail's own API. The silent-update log at `%ProgramData%\go-mapi\updates\update.log`
 records version transitions and download success/failure only — no message
-bodies, no recipient data, no credential material.
+bodies, recipient data, or credential material.
 
 Credential storage: each user's OAuth tokens are stored in the Windows
 Credential Manager (DPAPI-scoped, per user). go-mapi never stores tokens in
