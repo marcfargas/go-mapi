@@ -190,7 +190,9 @@ jobs:
           Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser -Repository PSGallery -TrustRepository -Reinstall
       - name: Exercise install, repair, rollback, cleanup, and uninstall
         shell: pwsh
-        run: Invoke-Pester -Path src/installer/msi/tests/AdminLifecycle.Tests.ps1 -Output Detailed -CI
+        run: |
+          $container = New-PesterContainer -Path src/installer/msi/tests/AdminLifecycle.Tests.ps1 -Data @{ MsiPath = (Resolve-Path release/admin/go-mapi-interceptor.msi).Path }
+          Invoke-Pester -Container $container -Output Detailed -CI
       - uses: actions/upload-artifact@v4
         if: always()
         with:
