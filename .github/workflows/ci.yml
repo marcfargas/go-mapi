@@ -70,6 +70,9 @@ jobs:
     name: Build interceptor (${{ matrix.arch }}, ${{ matrix.config }})
     runs-on: windows-latest
     strategy:
+      # Keep all architecture/configuration results visible when one leg fails.
+      # This avoids masking a second bitness regression behind a cancellation.
+      fail-fast: false
       matrix:
         config: [Debug, Release]
         arch: [x64, x86]

@@ -55,6 +55,19 @@ function Test-CanonicalSemVer([string]$Value) {
     return $true
 }
 
+function Get-SHA256Hex([string]$Path) {
+    # Do not depend on the optional Get-FileHash cmdlet. The app build is used
+    # by both Windows PowerShell and PowerShell 7 in CI and on customer build
+    # hosts, while this .NET API is available in both supported shells.
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 # Resolve script directory manually. $PSScriptRoot is unreliable inside param
 # default expressions in PS 5.1; compute it here instead.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -237,7 +250,7 @@ try {
         }
         artifact = [ordered]@{
             filename = [string]$app.artifact
-            sha256 = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            sha256 = Get-SHA256Hex $artifactPath
             peProductVersion = $AppVersion
         }
     }

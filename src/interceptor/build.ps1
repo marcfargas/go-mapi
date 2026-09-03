@@ -62,7 +62,8 @@ if (-not (Test-Path $clangBin)) {
 $triple = if ($Arch -eq "x64") { "x86_64-w64-mingw32" } else { "i686-w64-mingw32" }
 $gccPath = Join-Path $clangBin "$triple-clang.exe"
 $gxxPath = Join-Path $clangBin "$triple-clang++.exe"
-foreach ($p in @($gccPath, $gxxPath)) {
+$rcPath = Join-Path $clangBin "$triple-windres.exe"
+foreach ($p in @($gccPath, $gxxPath, $rcPath)) {
     if (-not (Test-Path $p)) {
         Write-Error "Required compiler not found: $p"
         exit 1
@@ -95,6 +96,7 @@ Write-Host "CMake: $cmakePath"
 Write-Host "Ninja: $ninjaPath"
 Write-Host "GCC:   $gccPath"
 Write-Host "G++:   $gxxPath"
+Write-Host "RC:    $rcPath"
 Write-Host "Interceptor Root: $interceptorRoot"
 Write-Host ""
 
@@ -156,6 +158,7 @@ $cmakeArgs = @(
     "-DCMAKE_BUILD_TYPE=$Config",
     "-DCMAKE_C_COMPILER=$gccPath",
     "-DCMAKE_CXX_COMPILER=$gxxPath",
+    "-DCMAKE_RC_COMPILER=$rcPath",
     "-DCMAKE_MAKE_PROGRAM=$ninjaPath",
     "-DBUILD_TESTS=$(if ($Tests) { 'ON' } else { 'OFF' })",
     "-DGO_MAPI_VERSION=$goMapiVersion",

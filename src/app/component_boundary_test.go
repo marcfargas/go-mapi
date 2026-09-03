@@ -38,6 +38,13 @@ func TestUserComponentHasNoMachineScopeOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, token := range forbidden {
+			// The user app deliberately owns the narrowly scoped, verified
+			// elevation handoff to the separately installed administrator MSI.
+			// Its protected ProgramData staging and ShellExecute "runas" use must
+			// remain confined to this one implementation file.
+			if file == "admin_elevation_windows.go" && (token == "ProgramData" || token == "RunAs") {
+				continue
+			}
 			// The standalone app owns exactly one current-user Startup Apps
 			// registration. Keep the generic registry-write ban for every other
 			// app file; the focused assertion below constrains this exception.
@@ -64,6 +71,19 @@ func TestUserComponentHasNoMachineScopeOperations(t *testing.T) {
 			if strings.Contains(strings.ToLower(line), token) {
 				t.Errorf("app command couples to admin component: %s", line)
 			}
+		}
+	}
+}
+
+func TestAdminElevationHandoffStaysNarrowlyScoped(t *testing.T) {
+	data, err := os.ReadFile("admin_elevation_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"secureAdminStageTree", "shellExecuteRunAs", "--install-admin-component", "msiexec.exe"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("admin elevation handoff missing %q", want)
 		}
 	}
 }
