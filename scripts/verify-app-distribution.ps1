@@ -8,10 +8,29 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Resolve-MakeAppx {
+    $command = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+
+    $sdkBinRoot = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Windows Kits\10\bin'
+    if (Test-Path -LiteralPath $sdkBinRoot) {
+        $candidate = Get-ChildItem -LiteralPath $sdkBinRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $path = Join-Path $_.FullName 'x64\makeappx.exe'
+                if (Test-Path -LiteralPath $path) { $path }
+            } |
+            Select-Object -First 1
+        if ($candidate) { return $candidate }
+    }
+    throw 'makeappx.exe was not found on PATH or in the installed Windows SDK'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $versionInput = (Get-Content (Join-Path $repoRoot "src/app/VERSION") -Raw).Trim()
 if ($Version -ne $versionInput) { throw "Distribution version does not match src/app/VERSION" }
-$makeAppx = (Get-Command makeappx.exe -ErrorAction Stop).Source
+$makeAppx = Resolve-MakeAppx
 $msix = [IO.Path]::GetFullPath((Join-Path $repoRoot $MsixPath))
 $installer = [IO.Path]::GetFullPath((Join-Path $repoRoot $InstallerPath))
 foreach ($artifact in @($msix, $installer)) {

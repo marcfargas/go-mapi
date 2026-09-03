@@ -9,6 +9,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Resolve-MakeAppx {
+    $command = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+
+    # The GitHub Windows 2025/VS2026 image installs the Windows SDK but no
+    # longer places its bin directory on PATH. Resolve the newest installed
+    # SDK explicitly while preserving the normal developer PATH behavior.
+    $sdkBinRoot = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Windows Kits\10\bin'
+    if (Test-Path -LiteralPath $sdkBinRoot) {
+        $candidate = Get-ChildItem -LiteralPath $sdkBinRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $path = Join-Path $_.FullName 'x64\makeappx.exe'
+                if (Test-Path -LiteralPath $path) { $path }
+            } |
+            Select-Object -First 1
+        if ($candidate) { return $candidate }
+    }
+    throw 'makeappx.exe was not found on PATH or in the installed Windows SDK'
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $versionInput = (Get-Content (Join-Path $repoRoot "src/app/VERSION") -Raw).Trim()
 if ($Version -notmatch '^\d+\.\d+\.\d+$' -or $Version -eq '0.0.0') { throw "Version must be a stable major.minor.patch value" }
@@ -17,7 +39,7 @@ $packageVersion = "$Version.0"
 
 $appPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $AppExe))
 if (-not (Test-Path $appPath -PathType Leaf)) { throw "App executable not found: $appPath" }
-$makeAppx = (Get-Command makeappx.exe -ErrorAction Stop).Source
+$makeAppx = Resolve-MakeAppx
 $outputPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $OutputDirectory))
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("go-mapi-msix-" + [Guid]::NewGuid().ToString('N'))
