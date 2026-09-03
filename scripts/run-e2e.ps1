@@ -75,7 +75,9 @@ Get-Process -Name 'go-mapi' -ErrorAction SilentlyContinue | ForEach-Object {
 
 Write-Host '[run-e2e] running Playwright…' -ForegroundColor Cyan
 if ($SmokeOnly) {
-  npm exec --workspace=@marcfargas/go-mapi-e2e -- playwright test smoke.spec.ts
+  # Keep the fast acceptance path tied to a maintained test. The original
+  # smoke.spec.ts was retired when queue-lifecycle coverage replaced it.
+  npm exec --workspace=@marcfargas/go-mapi-e2e -- playwright test --grep 'Test 1'
 } else {
   npm run e2e
 }

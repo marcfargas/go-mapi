@@ -43,6 +43,13 @@ export interface WailsAppFixture {
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 const APP_BINARY = join(REPO_ROOT, 'src', 'app', 'build', 'bin', 'go-mapi.exe');
 
+function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    operation,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`operation timed out after ${timeoutMs}ms`)), timeoutMs)),
+  ]);
+}
+
 function isPortFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = createConnection({ host: '127.0.0.1', port, timeout: 200 }, () => {
@@ -64,15 +71,41 @@ async function pickCdpPort(): Promise<number> {
   throw new Error('e2e: no free CDP port in 9223..9233');
 }
 
-async function waitForCdp(port: number, timeoutMs: number): Promise<void> {
+async function waitForCdp(port: number, timeoutMs: number): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown = null;
   while (Date.now() < deadline) {
+    // Node's fetch has no default timeout. Without an abort signal a TCP
+    // connection that accepts but never responds would hold this await past
+    // the fixture deadline and make the entire Playwright run hang.
+    const controller = new AbortController();
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
+    const probeDeadline = new Promise<never>((_, reject) => {
+      probeTimer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('CDP probe timed out'));
+      }, 1_000);
+    });
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
-      if (res.ok) return;
+      const endpoint = await Promise.race([
+        fetch(`http://127.0.0.1:${port}/json/version`, {
+          signal: controller.signal,
+        }).then(async (res) => {
+          if (!res.ok) throw new Error(`CDP probe returned HTTP ${res.status}`);
+          const payload: unknown = await res.json();
+          const endpoint = (payload as { webSocketDebuggerUrl?: unknown }).webSocketDebuggerUrl;
+          if (typeof endpoint !== 'string' || endpoint.length === 0) {
+            throw new Error('CDP probe returned no webSocketDebuggerUrl');
+          }
+          return endpoint;
+        }),
+        probeDeadline,
+      ]);
+      return endpoint;
     } catch (err) {
       lastErr = err;
+    } finally {
+      if (probeTimer) clearTimeout(probeTimer);
     }
     await new Promise((r) => setTimeout(r, 250));
   }
@@ -163,11 +196,11 @@ export const test = base.extend<{ app: WailsAppFixture }>({
     let browser: Browser | null = null;
     let page: Page | null = null;
     try {
-      await waitForCdp(cdpPort, 20_000);
+      const cdpEndpoint = await waitForCdp(cdpPort, 20_000);
       if (appExitedEarly) {
         throw new Error('e2e: app exited before CDP came up');
       }
-      browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      browser = await chromium.connectOverCDP(cdpEndpoint, { timeout: 10_000 });
       const picked = await pickAppPage(browser);
       page = picked.page;
       // Don't await full load — Wails page is already loaded by the time
@@ -183,15 +216,15 @@ export const test = base.extend<{ app: WailsAppFixture }>({
       });
     } finally {
       try {
-        if (browser) await browser.close();
+        if (browser) await settleWithin(browser.close(), 5_000);
       } catch {
         /* ignore — we only borrowed the CDP channel */
       }
       if (child.pid !== undefined) {
-        await killTree(child.pid);
+        await settleWithin(killTree(child.pid), 5_000);
       }
-      await gmail.close().catch(() => {});
-      await oauth.close().catch(() => {});
+      await settleWithin(gmail.close(), 5_000).catch(() => {});
+      await settleWithin(oauth.close(), 5_000).catch(() => {});
       await rm(watchDir, { recursive: true, force: true }).catch(() => {});
       await rm(appDataDir, { recursive: true, force: true }).catch(() => {});
     }
