@@ -184,8 +184,10 @@ jobs:
       - name: Install Pester 5
         shell: pwsh
         run: |
-          Install-PackageProvider NuGet -Force -Confirm:$false | Out-Null
-          Install-Module Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+          # PackageManagement's NuGet provider is no longer published for the
+          # PowerShell 7.6 runner image. PSResourceGet ships with pwsh and
+          # installs Pester directly from PSGallery without that legacy bridge.
+          Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser -Repository PSGallery -TrustRepository -Reinstall
       - name: Exercise install, repair, rollback, cleanup, and uninstall
         shell: pwsh
         run: Invoke-Pester -Path src/installer/msi/tests/AdminLifecycle.Tests.ps1 -Output Detailed -CI
