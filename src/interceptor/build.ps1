@@ -69,6 +69,10 @@ foreach ($p in @($gccPath, $gxxPath, $rcPath)) {
         exit 1
     }
 }
+# CMake serialises the RC compiler verbatim into generated CMake code. Use
+# forward slashes so a Windows user-profile path cannot introduce an invalid
+# escape (for example, `\Users`) in CMakeRCCompiler.cmake.
+$rcPathForCMake = $rcPath -replace '\\', '/'
 
 # Check for CMake (prefer the one bundled with MinGW if available)
 $cmakePath = Join-Path $clangBin "cmake.exe"
@@ -158,7 +162,7 @@ $cmakeArgs = @(
     "-DCMAKE_BUILD_TYPE=$Config",
     "-DCMAKE_C_COMPILER=$gccPath",
     "-DCMAKE_CXX_COMPILER=$gxxPath",
-    "-DCMAKE_RC_COMPILER=$rcPath",
+    "-DCMAKE_RC_COMPILER=$rcPathForCMake",
     "-DCMAKE_MAKE_PROGRAM=$ninjaPath",
     "-DBUILD_TESTS=$(if ($Tests) { 'ON' } else { 'OFF' })",
     "-DGO_MAPI_VERSION=$goMapiVersion",
