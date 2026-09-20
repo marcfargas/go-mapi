@@ -26,7 +26,7 @@ func saveSettingsRaw(dir, body string) error {
 var nopLogger = func(format string, args ...any) {}
 
 // stubReleaseFetcher is an in-memory implementation of releaseFetcher used by
-// tests to avoid real GitHub HTTP. A test can set release to simulate a newer
+// tests to avoid real update-service HTTP. A test can set release to simulate a newer
 // release, or set err to simulate a network/API failure.
 type stubReleaseFetcher struct {
 	release *latestRelease
@@ -102,7 +102,7 @@ func TestSettingsUpdateCorruptFailsClosed(t *testing.T) {
 }
 
 // Test 2: when UpdateChecksEnabled=false, background cadence returns without
-// invoking the GitHub Releases client. Core opt-out invariant for REL-05.
+// invoking the first-party update service. Core opt-out invariant for REL-05.
 func TestUpdateServiceOptOutSkipsFetch(t *testing.T) {
 	stub := &stubReleaseFetcher{}
 	svc := newUpdateService("0.0.0-dev", stub, nopLogger)
@@ -159,7 +159,7 @@ func TestUpdateServiceStaleCheckTriggersFetch(t *testing.T) {
 	stub := &stubReleaseFetcher{
 		release: &latestRelease{
 			Version:    "3.0.0",
-			ReleaseURL: "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.0",
+			ReleaseURL: appUpdateDownloadURL("3.0.0"),
 		},
 	}
 	svc := newUpdateService("0.0.0-dev", stub, nopLogger)
@@ -190,7 +190,7 @@ func TestUpdateServiceDetectsAvailableUpdate(t *testing.T) {
 	stub := &stubReleaseFetcher{
 		release: &latestRelease{
 			Version:    "3.0.0",
-			ReleaseURL: "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.0",
+			ReleaseURL: appUpdateDownloadURL("3.0.0"),
 		},
 	}
 	svc := newUpdateService("2.1.0", stub, nopLogger)
@@ -205,11 +205,11 @@ func TestUpdateServiceDetectsAvailableUpdate(t *testing.T) {
 	if state.LatestVersion != "3.0.0" {
 		t.Errorf("expected LatestVersion=3.0.0, got %q", state.LatestVersion)
 	}
-	if state.LatestReleaseURL != "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.0" {
+	if state.LatestReleaseURL != appUpdateDownloadURL("3.0.0") {
 		t.Errorf("unexpected LatestReleaseURL: %q", state.LatestReleaseURL)
 	}
-	if state.InstallerURL != "https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe" {
-		t.Errorf("InstallerURL must be the stable installer URL (D-02), got %q", state.InstallerURL)
+	if state.InstallerURL != appUpdateDownloadURL("3.0.0") {
+		t.Errorf("InstallerURL must be the versioned first-party route, got %q", state.InstallerURL)
 	}
 	if state.CurrentVersion != "2.1.0" {
 		t.Errorf("expected CurrentVersion=2.1.0, got %q", state.CurrentVersion)
@@ -228,7 +228,7 @@ func TestUpdateServiceNoUpdateWhenCurrentIsLatest(t *testing.T) {
 	stub := &stubReleaseFetcher{
 		release: &latestRelease{
 			Version:    "3.0.0",
-			ReleaseURL: "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.0",
+			ReleaseURL: appUpdateDownloadURL("3.0.0"),
 		},
 	}
 	svc := newUpdateService("3.0.0", stub, nopLogger)
@@ -249,7 +249,7 @@ func TestUpdateServiceDevVersionSeesUpdate(t *testing.T) {
 	stub := &stubReleaseFetcher{
 		release: &latestRelease{
 			Version:    "3.0.0",
-			ReleaseURL: "https://example.invalid",
+			ReleaseURL: appUpdateDownloadURL("3.0.0"),
 		},
 	}
 	svc := newUpdateService("0.0.0-dev", stub, nopLogger)
@@ -266,7 +266,7 @@ func TestUpdateServiceDevVersionSeesUpdate(t *testing.T) {
 // QUICK-260423-qpx: dev-build version compare must not offer a downgrade.
 // Before the fix, isDevVersion() shortcut returned true unconditionally
 // for any "*-dev" current, so a 3.0.0-dev build would see v2.1.0 (the
-// newest stable GitHub release at the time) as an "upgrade" and show
+// stable release returned at the time) as an "upgrade" and show
 // the user a downgrade offer.
 func TestIsNewerVersion_DevBuildNotOfferedDowngrade(t *testing.T) {
 	cases := []struct {

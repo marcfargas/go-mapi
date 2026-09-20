@@ -64,8 +64,20 @@ func TestUpdateCheckFetcherRejectsInvalidSchemaAndRoute(t *testing.T) {
 			}
 		})
 	}
-	if !allowedUpdateURL(appUpdateDownloadURL("4.0.1")) || allowedUpdateURL("https://github.com/marcfargas/go-mapi/releases/latest") {
-		t.Fatal("allowed update route validation is wrong")
+	if !allowedUpdateURL(appUpdateDownloadURL("4.0.1")) {
+		t.Fatal("versioned first-party route was rejected")
+	}
+	for _, rawURL := range []string{
+		"https://github.com/marcfargas/go-mapi/releases/latest",
+		"https://go-mapi.app/downloads/app/not-semver/x64",
+		"https://go-mapi.app/downloads/app/4.0.1/x64/extra",
+		"https://go-mapi.app/downloads/app/4.0.1/x64?source=other",
+		"https://go-mapi.app/downloads/app/4.0.1/x64#fragment",
+		"https://user@go-mapi.app/downloads/app/4.0.1/x64",
+	} {
+		if allowedUpdateURL(rawURL) {
+			t.Errorf("untrusted update route was accepted: %q", rawURL)
+		}
 	}
 }
 

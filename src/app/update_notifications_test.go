@@ -15,26 +15,24 @@ import (
 //
 // Invariants under test:
 //   - D-03: helper NEVER launches an installer, NEVER quits-and-installs,
-//     NEVER replaces a binary. The only action exposed is "open release
-//     page in browser."
+//     NEVER replaces a binary. The only action exposed is "open validated
+//     download page in browser."
 //   - D-04: update-check failures do NOT trigger a notification.
 //   - REL-04: notification fires only when UpdateAvailable flips true,
 //     and it carries exactly one Download action.
-//   - Scope: the tray notification surface does NOT expose the direct
-//     stable installer URL — that link lives in the in-app panel
-//     (reserved for 11-03). The tray/notification side points only at
-//     the GitHub release page.
+//   - Scope: every notification action uses the validated, versioned
+//     go-mapi.app download route returned by the first-party service.
 // ---------------------------------------------------------------------
 
 // Test 1: when update state flips to available, the notification helper
-// produces exactly one Download action and the target is the release
-// page (never the stable installer URL).
-func TestUpdateNotificationDownloadActionOpensReleasePage(t *testing.T) {
+// produces exactly one Download action targeting the first-party route.
+func TestUpdateNotificationDownloadActionOpensVersionedRoute(t *testing.T) {
+	downloadURL := appUpdateDownloadURL("3.0.1")
 	state := UpdateState{
 		CurrentVersion:   "3.0.0",
 		LatestVersion:    "3.0.1",
-		LatestReleaseURL: "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.1",
-		InstallerURL:     installerDownloadURL,
+		LatestReleaseURL: downloadURL,
+		InstallerURL:     downloadURL,
 		UpdateAvailable:  true,
 	}
 
@@ -49,15 +47,12 @@ func TestUpdateNotificationDownloadActionOpensReleasePage(t *testing.T) {
 	if !strings.EqualFold(act.Label, "Download") {
 		t.Errorf("action label = %q, want %q (case-insensitive)", act.Label, "Download")
 	}
-	if act.URL != state.LatestReleaseURL {
-		t.Errorf("action URL = %q, want release page %q (not the installer URL)",
-			act.URL, state.LatestReleaseURL)
+	if act.URL != state.InstallerURL {
+		t.Errorf("action URL = %q, want versioned download page %q",
+			act.URL, state.InstallerURL)
 	}
-	// Explicit guard: the notification side must NEVER point at the
-	// direct installer URL — that affordance is reserved for the in-app
-	// update panel (11-03).
-	if act.URL == installerDownloadURL {
-		t.Error("Download action on tray notification must not point at the stable installer URL (reserved for in-app panel)")
+	if !allowedUpdateURL(act.URL) {
+		t.Errorf("notification action must use an allowed update URL, got %q", act.URL)
 	}
 	// Title/body carry update language so the toast is comprehensible.
 	if !strings.Contains(strings.ToLower(plan.Body+plan.Title), "update") {
@@ -68,29 +63,13 @@ func TestUpdateNotificationDownloadActionOpensReleasePage(t *testing.T) {
 	}
 }
 
-// Test 1b: with no LatestReleaseURL recorded, the fallback URL is the
-// repo's releases landing page — still never the installer.
-func TestUpdateNotificationFallsBackToReleasesLandingPage(t *testing.T) {
-	state := UpdateState{
-		CurrentVersion:  "3.0.0",
-		LatestVersion:   "3.0.1",
-		InstallerURL:    installerDownloadURL,
-		UpdateAvailable: true,
-		// LatestReleaseURL intentionally empty.
-	}
-	plan := buildUpdateNotificationPlan(state)
-	if plan == nil {
-		t.Fatal("buildUpdateNotificationPlan: got nil for an available update")
-	}
-	if len(plan.Actions) != 1 {
-		t.Fatalf("expected exactly 1 Download action, got %d", len(plan.Actions))
-	}
-	url := plan.Actions[0].URL
-	if url == installerDownloadURL {
-		t.Error("fallback must not point at the installer URL")
-	}
-	if !strings.Contains(url, "github.com/marcfargas/go-mapi/releases") {
-		t.Errorf("fallback URL should point at the repo releases page; got %q", url)
+// Test 1b: missing or untrusted URLs must not create a clickable action.
+func TestUpdateNotificationRejectsMissingOrUntrustedRoute(t *testing.T) {
+	for _, rawURL := range []string{"", "https://github.com/marcfargas/go-mapi/releases/latest", "https://example.invalid/v3.0.1"} {
+		state := UpdateState{CurrentVersion: "3.0.0", LatestVersion: "3.0.1", InstallerURL: rawURL, UpdateAvailable: true}
+		if plan := buildUpdateNotificationPlan(state); plan != nil {
+			t.Errorf("URL %q produced plan %+v", rawURL, plan)
+		}
 	}
 }
 
@@ -100,8 +79,8 @@ func TestNoSelfUpdateSurface(t *testing.T) {
 	state := UpdateState{
 		CurrentVersion:   "3.0.0",
 		LatestVersion:    "3.0.1",
-		LatestReleaseURL: "https://github.com/marcfargas/go-mapi/releases/tag/v3.0.1",
-		InstallerURL:     installerDownloadURL,
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 		UpdateAvailable:  true,
 	}
 	plan := buildUpdateNotificationPlan(state)
@@ -141,7 +120,6 @@ func TestUpdateNotificationSilentOnFailure(t *testing.T) {
 	state := UpdateState{
 		CurrentVersion:  "3.0.0",
 		LatestVersion:   "", // no fetch ever succeeded
-		InstallerURL:    installerDownloadURL,
 		UpdateAvailable: false,
 	}
 	if plan := buildUpdateNotificationPlan(state); plan != nil {
@@ -169,7 +147,8 @@ func TestUpdateNotificationFiresOnlyOnFlipToAvailable(t *testing.T) {
 		UpdateAvailable:  true,
 		CurrentVersion:   "3.0.0",
 		LatestVersion:    "3.0.1",
-		LatestReleaseURL: "https://example.invalid/v3.0.1",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 	}
 	tracker.Observe(avail)
 	if calls.Load() != 1 {
@@ -190,7 +169,8 @@ func TestUpdateNotificationFiresOnlyOnFlipToAvailable(t *testing.T) {
 		UpdateAvailable:  true,
 		CurrentVersion:   "3.0.1",
 		LatestVersion:    "3.0.2",
-		LatestReleaseURL: "https://example.invalid/v3.0.2",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.2"),
+		InstallerURL:     appUpdateDownloadURL("3.0.2"),
 	})
 	if calls.Load() != 2 {
 		t.Errorf("second flip-to-available must fire again; calls=%d", calls.Load())
@@ -206,27 +186,33 @@ func TestUpdateNotificationRefiresOnNewerVersion(t *testing.T) {
 
 	tracker := newUpdateNotificationTracker(dispatch)
 	tracker.Observe(UpdateState{
-		UpdateAvailable: true,
-		CurrentVersion:  "3.0.0",
-		LatestVersion:   "3.0.1",
+		UpdateAvailable:  true,
+		CurrentVersion:   "3.0.0",
+		LatestVersion:    "3.0.1",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 	})
 	if calls.Load() != 1 {
 		t.Fatalf("first available state must fire; calls=%d", calls.Load())
 	}
 	// Same version → no re-fire.
 	tracker.Observe(UpdateState{
-		UpdateAvailable: true,
-		CurrentVersion:  "3.0.0",
-		LatestVersion:   "3.0.1",
+		UpdateAvailable:  true,
+		CurrentVersion:   "3.0.0",
+		LatestVersion:    "3.0.1",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 	})
 	if calls.Load() != 1 {
 		t.Errorf("same latest version must not re-fire; calls=%d", calls.Load())
 	}
 	// Newer version → re-fire.
 	tracker.Observe(UpdateState{
-		UpdateAvailable: true,
-		CurrentVersion:  "3.0.0",
-		LatestVersion:   "3.0.2",
+		UpdateAvailable:  true,
+		CurrentVersion:   "3.0.0",
+		LatestVersion:    "3.0.2",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.2"),
+		InstallerURL:     appUpdateDownloadURL("3.0.2"),
 	})
 	if calls.Load() != 2 {
 		t.Errorf("newer version must re-fire; calls=%d", calls.Load())
@@ -252,7 +238,8 @@ func TestUpdateNotificationWiredToUpdateStateObserver(t *testing.T) {
 		UpdateAvailable:  true,
 		CurrentVersion:   "3.0.0",
 		LatestVersion:    "3.0.1",
-		LatestReleaseURL: "https://example.invalid/v3.0.1",
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 	})
 	if calls.Load() != 1 {
 		t.Errorf("observer dispatch must call tracker; calls=%d", calls.Load())
@@ -268,9 +255,9 @@ func TestUpdateNotificationDefaultHasNoDebouncing(t *testing.T) {
 	var calls atomic.Int32
 	tracker := newUpdateNotificationTracker(func(*updateNotificationPlan) { calls.Add(1) })
 	// Two flips in quick succession with distinct latest versions.
-	tracker.Observe(UpdateState{UpdateAvailable: true, LatestVersion: "3.0.1"})
+	tracker.Observe(UpdateState{UpdateAvailable: true, LatestVersion: "3.0.1", InstallerURL: appUpdateDownloadURL("3.0.1")})
 	time.Sleep(5 * time.Millisecond)
-	tracker.Observe(UpdateState{UpdateAvailable: true, LatestVersion: "3.0.2"})
+	tracker.Observe(UpdateState{UpdateAvailable: true, LatestVersion: "3.0.2", InstallerURL: appUpdateDownloadURL("3.0.2")})
 	if calls.Load() != 2 {
 		t.Errorf("default tracker must fire per distinct flip; calls=%d", calls.Load())
 	}

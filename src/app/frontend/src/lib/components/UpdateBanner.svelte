@@ -7,7 +7,7 @@
     caller — App.svelte — is responsible for that gate; this component
     is unconditionally visible when mounted).
   - Exposes a single "View update" action that opens the full panel.
-    The panel owns both the release page and the installer link (D-02);
+    The panel owns the validated download-page action (D-02);
     the banner intentionally stays link-free so the container in
     App.svelte never has to decide which affordance is "primary".
   - Accessible as role="region" with an aria-label so tests and

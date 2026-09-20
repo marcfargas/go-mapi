@@ -284,7 +284,7 @@ func (a *App) startup(ctx context.Context) {
 	}
 
 	// Phase 11: initialize notify-only update service and wire Wails
-	// event emission. Failing to build the GitHub fetcher is non-fatal
+	// event emission. Failing to build the update fetcher is non-fatal
 	// — the app still runs; we just never detect updates until next
 	// start (D-04 silent-failure invariant extends to the updater
 	// bootstrap itself).
@@ -724,7 +724,6 @@ func (a *App) GetUpdateState() UpdateState {
 	}
 	return UpdateState{
 		CurrentVersion: Version,
-		InstallerURL:   installerDownloadURL,
 	}
 }
 
@@ -955,11 +954,11 @@ func (a *App) handleToastAction(args string) {
 		a.showWindow()
 	case "open-update":
 		// Phase 11 Plan 02: update-available toast body was clicked.
-		// Open the release page in the browser; D-03 invariant — never
-		// launch an installer. openUpdateReleasePage handles the
-		// LatestReleaseURL vs fallback decision and swallows
+		// Open the validated download page in the browser; D-03 invariant —
+		// never launch an installer. openUpdateDownloadPage validates the
+		// first-party route and swallows
 		// browser.Open failures silently per D-04.
-		openUpdateReleasePage(a.GetUpdateState())
+		openUpdateDownloadPage(a.GetUpdateState())
 	default:
 		logError("toast: unknown action %q", op)
 		a.showWindow()

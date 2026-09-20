@@ -15,14 +15,13 @@ import (
 //
 //   - D-03: this surface NEVER downloads, stages, launches, quits-and-
 //     installs, or replaces a binary. The only action it exposes is
-//     "open the release page in the user's default browser."
+//     "open the validated download page in the user's default browser."
 //   - D-04: update-check failures are silent. If the fetch returned
 //     an error, applyUpdateCheckResult preserves the prior user-visible
 //     state; the tracker observes the resulting snapshot and, because
 //     UpdateAvailable is not flipped, does not fire a notification.
-//   - Scope split: the tray notification side points only at the GitHub
-//     release page. The direct stable installer URL is reserved for the
-//     in-app update panel owned by plan 11-03.
+//   - The action accepts only the versioned go-mapi.app download route
+//     produced by the first-party update-check contract.
 //
 // The plan struct is deliberately narrow — no Exec, Launch, Install,
 // Replace, Quit, Staged, or Run fields — so D-03 regressions cannot
@@ -32,7 +31,7 @@ import (
 
 // updateNotificationAction is a single clickable action on the toast.
 // `URL` is the only effect contract — clicking opens it in the user's
-// default browser via openUpdateReleasePage, which itself swallows
+// default browser via openUpdateDownloadPage, which itself swallows
 // browser failures silently per D-04.
 type updateNotificationAction struct {
 	Label string
@@ -58,12 +57,12 @@ func buildUpdateNotificationPlan(s UpdateState) *updateNotificationPlan {
 	if !s.UpdateAvailable {
 		return nil
 	}
-	url := s.LatestReleaseURL
+	url := s.InstallerURL
 	if url == "" || !allowedUpdateURL(url) {
 		return nil
 	}
 	title := "go-mapi update available"
-	body := "Version " + s.LatestVersion + " is ready on GitHub."
+	body := "Version " + s.LatestVersion + " is ready to download."
 	return &updateNotificationPlan{
 		Title: title,
 		Body:  body,
@@ -165,7 +164,7 @@ func (a *App) wireUpdateNotificationsWith(dispatch func(*updateNotificationPlan)
 // pushUpdateNotification is the production dispatch: it builds a
 // Windows toast for the plan and pushes it through the existing toast
 // subsystem (toast_windows.go). Click-through on the body opens the
-// release URL via openUpdateReleasePage (which handles the browser
+// download URL via openUpdateDownloadPage (which handles the browser
 // open and silent-failure case).
 //
 // We piggyback on the existing AUMID/activator/icon configuration so
@@ -182,7 +181,7 @@ func pushUpdateNotification(a *App, plan *updateNotificationPlan) {
 	}
 	// Use the same ActivationType + argument format as other toasts so
 	// handleToastAction can pick up the click. We route through a
-	// dedicated "open-update-url" action that calls openUpdateReleasePage
+	// dedicated "open-update-url" action that calls openUpdateDownloadPage
 	// via the App binding.
 	n := toast.Notification{
 		AppID: activeAUMID(),

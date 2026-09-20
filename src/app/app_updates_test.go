@@ -79,7 +79,6 @@ func newAppForUpdateTests(t *testing.T, fetcher releaseFetcher, version string) 
 	app.updates = newUpdateService(version, fetcher, nopLogger)
 	app.updateState.Store(&UpdateState{
 		CurrentVersion: version,
-		InstallerURL:   installerDownloadURL,
 		Enabled:        app.settings.UpdateChecksEnabled,
 	})
 	shutdownCtx, cancel := context.WithCancel(context.Background())
@@ -101,7 +100,7 @@ func TestStartupUpdateRunsOneBackgroundCheckWhenStale(t *testing.T) {
 	})
 
 	fetcher := &countingFetcher{
-		release: &latestRelease{Version: "3.0.0", ReleaseURL: "https://example.invalid/v3.0.0"},
+		release: &latestRelease{Version: "3.0.0", ReleaseURL: appUpdateDownloadURL("3.0.0")},
 	}
 	app := newAppForUpdateTests(t, fetcher, "2.1.0")
 
@@ -177,7 +176,7 @@ func TestCheckForUpdatesNowBypassesCadence(t *testing.T) {
 	})
 
 	fetcher := &countingFetcher{
-		release: &latestRelease{Version: "3.0.0", ReleaseURL: "https://example.invalid/v3.0.0"},
+		release: &latestRelease{Version: "3.0.0", ReleaseURL: appUpdateDownloadURL("3.0.0")},
 	}
 	app := newAppForUpdateTests(t, fetcher, "2.1.0")
 
@@ -228,8 +227,8 @@ func TestStartupUpdateFailureKeepsPriorStateUserInvisible(t *testing.T) {
 	prior := &UpdateState{
 		CurrentVersion:   "2.1.0",
 		LatestVersion:    "3.0.0",
-		LatestReleaseURL: "https://example.invalid/v3.0.0",
-		InstallerURL:     installerDownloadURL,
+		LatestReleaseURL: appUpdateDownloadURL("3.0.0"),
+		InstallerURL:     appUpdateDownloadURL("3.0.0"),
 		UpdateAvailable:  true,
 		LastCheckedAt:    time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339),
 		Enabled:          true,
@@ -270,8 +269,8 @@ func TestManualCheckFailurePreservesPriorState(t *testing.T) {
 	app.updateState.Store(&UpdateState{
 		CurrentVersion:   "2.1.0",
 		LatestVersion:    "3.0.0",
-		LatestReleaseURL: "https://example.invalid/v3.0.0",
-		InstallerURL:     installerDownloadURL,
+		LatestReleaseURL: appUpdateDownloadURL("3.0.0"),
+		InstallerURL:     appUpdateDownloadURL("3.0.0"),
 		UpdateAvailable:  true,
 		Enabled:          true,
 	})
@@ -357,7 +356,7 @@ func TestUpdateSchedulerLongSessionRechecks(t *testing.T) {
 	})
 
 	fetcher := &countingFetcher{
-		release: &latestRelease{Version: "3.0.0", ReleaseURL: "https://example.invalid"},
+		release: &latestRelease{Version: "3.0.0", ReleaseURL: appUpdateDownloadURL("3.0.0")},
 	}
 	app := newAppForUpdateTests(t, fetcher, "2.1.0")
 
@@ -386,7 +385,7 @@ func TestUpdateSchedulerRespectsOptOutAtRuntime(t *testing.T) {
 		LastUpdateCheck:     time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339),
 	})
 	fetcher := &countingFetcher{
-		release: &latestRelease{Version: "3.0.0", ReleaseURL: "https://example.invalid"},
+		release: &latestRelease{Version: "3.0.0", ReleaseURL: appUpdateDownloadURL("3.0.0")},
 	}
 	app := newAppForUpdateTests(t, fetcher, "2.1.0")
 
@@ -420,7 +419,6 @@ func TestUpdateSchedulerSilentFailure(t *testing.T) {
 		LatestVersion:   "3.0.0",
 		UpdateAvailable: true,
 		Enabled:         true,
-		InstallerURL:    installerDownloadURL,
 	})
 
 	// Must not panic.
@@ -445,7 +443,7 @@ func TestUpdateStateChangeNotifiesObservers(t *testing.T) {
 	})
 
 	fetcher := &countingFetcher{
-		release: &latestRelease{Version: "3.0.0", ReleaseURL: "https://example.invalid"},
+		release: &latestRelease{Version: "3.0.0", ReleaseURL: appUpdateDownloadURL("3.0.0")},
 	}
 	app := newAppForUpdateTests(t, fetcher, "2.1.0")
 
@@ -488,7 +486,7 @@ func TestGetUpdateStateAlwaysPopulatesCurrentVersion(t *testing.T) {
 	if state.CurrentVersion != "2.1.0" {
 		t.Errorf("expected CurrentVersion=2.1.0, got %q", state.CurrentVersion)
 	}
-	if state.InstallerURL != installerDownloadURL {
-		t.Errorf("InstallerURL must be the stable download URL, got %q", state.InstallerURL)
+	if state.InstallerURL != "" {
+		t.Errorf("InstallerURL must be empty before an available update is reported, got %q", state.InstallerURL)
 	}
 }

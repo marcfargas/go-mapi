@@ -3,10 +3,9 @@
 
   Design:
   - Opened from UpdateBanner "View update" action in the root shell.
-  - Exposes BOTH required links (D-02):
-    1. GitHub release page (human-readable release notes)
-    2. Stable installer URL (direct download of go-mapi-setup.exe)
-    Both route through Wails' BrowserOpenURL — we must NOT use plain
+  - Exposes the validated, versioned go-mapi.app download route returned by
+    the backend. It redirects to the signed GitHub artifact and routes through
+    Wails' BrowserOpenURL — we must NOT use a plain
     <a href> because WebView2 would open the URL inside the app window
     rather than the user's system browser.
   - Shows current version and last checked timestamp (D-07).
@@ -51,10 +50,6 @@
     } catch {
       return iso;
     }
-  }
-
-  function openReleasePage() {
-    if (update.latestReleaseUrl) BrowserOpenURL(update.latestReleaseUrl);
   }
 
   function openInstaller() {
@@ -102,14 +97,7 @@
             class="primary link"
             onclick={openInstaller}
           >
-            Download installer (go-mapi-setup.exe)
-          </button>
-          <button
-            type="button"
-            class="secondary link"
-            onclick={openReleasePage}
-          >
-            Release notes
+            Open download page
           </button>
         </div>
       {:else}
@@ -214,10 +202,6 @@
   .primary {
     background: var(--c-accent);
     color: white;
-  }
-  .secondary {
-    background: #eee;
-    color: var(--c-text);
   }
   .status {
     display: grid;

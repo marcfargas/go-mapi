@@ -154,7 +154,7 @@ export function subscribePauseChanged(
 //   - Silent-failure rule (D-04): the backend already logs and preserves the
 //     prior cached state on network failure. The wrapper therefore swallows
 //     any promise rejection so UI handlers do not accidentally surface a
-//     user-visible error for a transient GitHub outage.
+//     user-visible error for a transient update-service outage.
 // ---------------------------------------------------------------------------
 
 /** Fetch the current cached update state from Go (safe for Promise.all hydration). */

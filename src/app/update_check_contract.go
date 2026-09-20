@@ -194,5 +194,9 @@ func appUpdateDownloadURL(version string) string {
 
 func allowedUpdateURL(value string) bool {
 	u, err := url.Parse(value)
-	return err == nil && u.Scheme == "https" && u.Host == "go-mapi.app" && strings.HasPrefix(u.Path, "/downloads/app/")
+	if err != nil || u.Scheme != "https" || u.Host != "go-mapi.app" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" {
+		return false
+	}
+	parts := strings.Split(u.Path, "/")
+	return len(parts) == 5 && parts[1] == "downloads" && parts[2] == "app" && mapi.IsStrictReleaseVersion(parts[3]) && parts[4] == "x64"
 }

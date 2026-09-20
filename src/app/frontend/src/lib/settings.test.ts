@@ -185,8 +185,8 @@ describe('settings.ts', () => {
     const sampleState: UpdateState = {
       currentVersion: '3.0.0',
       latestVersion: '3.0.1',
-      latestReleaseUrl: 'https://github.com/marcfargas/go-mapi/releases/tag/v3.0.1',
-      installerUrl: 'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe',
+      latestReleaseUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
+      installerUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
       updateAvailable: true,
       lastCheckedAt: '2026-04-21T12:00:00Z',
       enabled: true,
@@ -211,8 +211,8 @@ describe('settings.ts', () => {
       expect(version).toBe('3.0.0');
       expect(last).toBe('2026-04-21T12:00:00Z');
       expect(enabled).toBe(true);
-      expect(release).toContain('releases/tag/');
-      expect(installer).toContain('go-mapi-setup.exe');
+      expect(release).toBe('https://go-mapi.app/downloads/app/3.0.1/x64');
+      expect(installer).toBe(release);
     });
 
     it('checkForUpdatesNow forwards to CheckForUpdatesNow without requiring a context argument', async () => {

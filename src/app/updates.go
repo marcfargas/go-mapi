@@ -16,7 +16,7 @@ import (
 //     belongs to a later phase and must not reuse this service surface.
 //   - D-04: update-check failures are silent to the user. CheckNow returns
 //     (state, error); callers log the error but never flip a user-visible
-//     error banner or tray icon on transient GitHub/network failures.
+//     error banner or tray icon on transient update-service/network failures.
 //   - D-05: persisted preferences live in AppSettings (see settings.go),
 //     never in a second config file.
 //   - D-06: manual "Check for updates now" must exist as a callable path.
@@ -32,15 +32,9 @@ import (
 // contract. The client compares metadata only and hands the user a fixed,
 // versioned download route; it never downloads or replaces its own binary.
 
-const (
-	// installerDownloadURL remains a safe empty-state value; available updates
-	// always replace it with a validated, versioned go-mapi.app route.
-	installerDownloadURL = ""
-
-	// updateCheckWindow is the cadence floor between background checks
-	// (REL-03: "every 24h").
-	updateCheckWindow = 24 * time.Hour
-)
+// updateCheckWindow is the cadence floor between background checks
+// (REL-03: "every 24h").
+const updateCheckWindow = 24 * time.Hour
 
 // UpdateState is the single source of truth that tray and frontend render
 // from. Intentionally metadata-only — no fields for download paths,
@@ -56,14 +50,12 @@ type UpdateState struct {
 	// happened yet or the most recent fetch failed.
 	LatestVersion string `json:"latestVersion"`
 
-	// LatestReleaseURL points at the GitHub release page for
-	// LatestVersion. Used for the "Release notes" affordance (D-02).
+	// LatestReleaseURL is retained for Wails API compatibility and points at
+	// the same validated, versioned first-party route as InstallerURL.
 	LatestReleaseURL string `json:"latestReleaseUrl"`
 
-	// InstallerURL is the stable download URL shown in the update panel
-	// (D-02). Kept constant because we only ship one Windows installer
-	// asset today; future platforms would extend this type, not mutate
-	// the constant.
+	// InstallerURL is the validated, versioned go-mapi.app route shown in the
+	// update panel. The route redirects to the signed release artifact.
 	InstallerURL string `json:"installerUrl"`
 
 	// UpdateAvailable is true iff LatestVersion > CurrentVersion. Pure
@@ -193,7 +185,7 @@ func (s *updateService) MaybeCheck(ctx context.Context, settings updateSettings)
 //   - MaybeCheck when the cadence window has expired.
 //
 // Always refreshes LastCheckedAt so cadence advances on both success
-// and failure paths — otherwise a persistent GitHub outage would pin
+// and failure paths — otherwise a persistent update-service outage would pin
 // the app in a retry loop every startup.
 func (s *updateService) CheckNow(ctx context.Context) (UpdateState, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -247,8 +239,8 @@ func (s *updateService) cadenceExpired(now time.Time, lastISO string) bool {
 // version is NOT newer. Prior to QUICK-260423-qpx this function shortcut
 // isDevVersion(current) -> true unconditionally, which caused a 3.0.0-dev
 // user to see v2.1.0 as an "upgrade" when that was the newest stable tag
-// on GitHub. The compareSemver path below gets this right out of the
-// box because splitPrerelease treats the prerelease segment per semver
+// from the update service. The compareSemver path below gets this right out
+// of the box because splitPrerelease treats the prerelease segment per semver
 // (release > prerelease on equal main; main segments dominate otherwise).
 func isNewerVersion(current, latest string) bool {
 	if latest == "" {

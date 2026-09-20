@@ -26,7 +26,7 @@ vi.mock('../wailsjs/go/main/App', () => ({
     currentVersion: '3.0.0',
     latestVersion: '',
     latestReleaseUrl: '',
-    installerUrl: 'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe',
+    installerUrl: '',
     updateAvailable: false,
     lastCheckedAt: '',
     enabled: true,
@@ -81,7 +81,7 @@ vi.mock('./lib/settings', () => ({
     currentVersion: '3.0.0',
     latestVersion: '',
     latestReleaseUrl: '',
-    installerUrl: 'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe',
+    installerUrl: '',
     updateAvailable: false,
     lastCheckedAt: '',
     enabled: true,
@@ -330,9 +330,8 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
   const availableState = {
     currentVersion: '3.0.0',
     latestVersion: '3.0.1',
-    latestReleaseUrl: 'https://github.com/marcfargas/go-mapi/releases/tag/v3.0.1',
-    installerUrl:
-      'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe',
+    latestReleaseUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
+    installerUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
     updateAvailable: true,
     lastCheckedAt: '2026-04-21T12:00:00Z',
     enabled: true,
@@ -341,9 +340,8 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
   const noUpdateState = {
     currentVersion: '3.0.0',
     latestVersion: '3.0.0',
-    latestReleaseUrl: 'https://github.com/marcfargas/go-mapi/releases/tag/v3.0.0',
-    installerUrl:
-      'https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe',
+    latestReleaseUrl: '',
+    installerUrl: '',
     updateAvailable: false,
     lastCheckedAt: '2026-04-21T12:00:00Z',
     enabled: true,
@@ -382,39 +380,27 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
     expect(banner).toBeInTheDocument();
   });
 
-  it('opens the update panel exposing both the release page and the stable installer URL', async () => {
+  it('opens the update panel exposing the versioned first-party download page', async () => {
     const { fetchUpdateState } = await import('./lib/settings');
     vi.mocked(fetchUpdateState).mockResolvedValueOnce(availableState);
-    const { findByRole, findByText } = render(App);
+    const { findByRole, findByText, queryByText } = render(App);
     const openPanelBtn = await findByRole('button', { name: /view update|see details|open/i });
     await fireEvent.click(openPanelBtn);
 
-    // The panel exposes both URLs (D-02).
-    const releaseLink = await findByText(/release notes|release page/i);
-    const installerLink = await findByText(/download installer|download go-mapi-setup/i);
-    expect(releaseLink).toBeInTheDocument();
-    expect(installerLink).toBeInTheDocument();
+    expect(await findByText(/open download page/i)).toBeInTheDocument();
+    expect(queryByText(/release notes|release page/i)).toBeNull();
   });
 
-  it('clicking release/installer links routes through BrowserOpenURL (D-02)', async () => {
+  it('clicking the download link opens the validated first-party route', async () => {
     const { fetchUpdateState } = await import('./lib/settings');
     vi.mocked(fetchUpdateState).mockResolvedValueOnce(availableState);
     const { findByRole, findByText } = render(App);
     const openPanelBtn = await findByRole('button', { name: /view update|see details|open/i });
     await fireEvent.click(openPanelBtn);
 
-    const releaseLink = await findByText(/release notes|release page/i);
-    const installerLink = await findByText(/download installer|download go-mapi-setup/i);
-    await fireEvent.click(releaseLink);
-    await fireEvent.click(installerLink);
-
-    const urls = browserOpenURL.mock.calls.map((c) => c[0] as string);
-    expect(urls).toEqual(
-      expect.arrayContaining([
-        availableState.latestReleaseUrl,
-        availableState.installerUrl,
-      ]),
-    );
+    await fireEvent.click(await findByText(/open download page/i));
+    expect(browserOpenURL).toHaveBeenCalledOnce();
+    expect(browserOpenURL).toHaveBeenCalledWith(availableState.installerUrl);
   });
 
   it('panel shows current version and last checked timestamp (D-07)', async () => {

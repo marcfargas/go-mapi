@@ -170,33 +170,29 @@ func (a *App) setUpdateStateObserver(fn func(UpdateState)) {
 }
 
 // handleUpdateDownloadAction is the tray Download menu entry point
-// (REL-04 + D-03): opens the release page via the user's browser and
+// (REL-04 + D-03): opens the versioned download page via the user's browser and
 // NEVER launches an installer, quits-and-installs, or replaces the
 // running binary. Task 2 reuses the same helper from
 // update_notifications.go so the tray and the notification surface
 // converge on one download-action implementation.
 func (a *App) handleUpdateDownloadAction() {
-	openUpdateReleasePage(a.GetUpdateState())
+	openUpdateDownloadPage(a.GetUpdateState())
 }
 
-// openUpdateReleasePage opens the user's default browser at the release
-// page for the cached LatestVersion. Falls back to the project's GitHub
-// releases landing page if no LatestReleaseURL has been recorded yet —
-// we still never route the user to the stable installer URL here, since
-// the tray surface is the "learn more / browse" affordance; the direct
-// installer link lives in the in-app update panel owned by 11-03
-// (D-02).
+// openUpdateDownloadPage opens the user's default browser at the validated,
+// versioned first-party download route for the cached LatestVersion. Missing
+// or untrusted URLs are ignored rather than falling back to another origin.
 //
 // D-03 invariant: this function only opens a URL. It never downloads,
 // stages, launches, or replaces a binary.
 // D-04 invariant: a failed browser.Open is logged and swallowed — no
 // tray error is raised on missing default-browser registration.
-func openUpdateReleasePage(s UpdateState) {
-	url := s.LatestReleaseURL
+func openUpdateDownloadPage(s UpdateState) {
+	url := s.InstallerURL
 	if url == "" || !allowedUpdateURL(url) {
 		return
 	}
 	if err := browser.OpenURL(url); err != nil {
-		logInfo("updates: open release page (silent per D-04): %v", err)
+		logInfo("updates: open download page (silent per D-04): %v", err)
 	}
 }

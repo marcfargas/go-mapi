@@ -45,14 +45,16 @@ type trayState struct {
 // computeTrayVisual is a pure function — testable without a live systray.
 //
 // Icon priority (highest first, D-16 + Phase 11):
-//   error > has-queue > update-available > idle
+//
+//	error > has-queue > update-available > idle
 //
 // Tooltip (D-17 + Phase 11):
-//   "go-mapi — {segment} — N pending"
-//   • error path overrides to "go-mapi — <msg>"
-//   • when UpdateAvailable (and no error), " • Update available" is appended
-//     so the tray transition is observable even when the icon variant
-//     cannot be visually distinguished from has-queue.
+//
+//	"go-mapi — {segment} — N pending"
+//	• error path overrides to "go-mapi — <msg>"
+//	• when UpdateAvailable (and no error), " • Update available" is appended
+//	  so the tray transition is observable even when the icon variant
+//	  cannot be visually distinguished from has-queue.
 //
 // Segment priority (highest first): error > paused > signed-out > mode.
 func computeTrayVisual(s trayState) (icon []byte, tooltip string) {
@@ -142,11 +144,11 @@ func (a *App) onTrayReady() {
 		a.isUpdateChecksEnabled(),
 	)
 	// D-06: manual action bypasses the 24h cadence.
-	mCheckNow := systray.AddMenuItem("Check for updates now", "Check GitHub for a newer release")
+	mCheckNow := systray.AddMenuItem("Check for updates now", "Check for a newer release")
 	// The "Download" row only lights up when an update is available (D-03 + REL-04):
-	// clicking it opens the GitHub release page in the user's browser. It NEVER
+	// clicking it opens the validated download page in the user's browser. It NEVER
 	// launches an installer, quits-and-installs, or replaces the running binary.
-	mDownload := systray.AddMenuItem("Download update", "Open the latest release page on GitHub")
+	mDownload := systray.AddMenuItem("Download update", "Open the versioned download page")
 	if !a.snapshotUpdateAvailable() {
 		mDownload.Hide()
 	}
@@ -192,7 +194,7 @@ func (a *App) onTrayReady() {
 				// the systray message pump on a network call.
 				go a.runTrayManualUpdateCheck(a.shutdownCtx)
 			case <-mDownload.ClickedCh:
-				// REL-04 + D-03: open browser to the release page. Never launch
+				// REL-04 + D-03: open browser to the download page. Never launch
 				// an installer or quit-and-install. The helper handles the
 				// URL choice and the silent-failure-on-browser-open case.
 				a.handleUpdateDownloadAction()

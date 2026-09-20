@@ -196,7 +196,6 @@ func TestTrayToggleUpdateChecksWritesThroughAppSettings(t *testing.T) {
 	app.updateState.Store(&UpdateState{
 		CurrentVersion: "v3.0.0",
 		Enabled:        true,
-		InstallerURL:   installerDownloadURL,
 	})
 
 	// Flip off.
@@ -271,7 +270,7 @@ func TestTrayManualCheckInvokesAppBinding(t *testing.T) {
 	fetcher := &countingFetcher{
 		release: &latestRelease{
 			Version:    "3.0.1",
-			ReleaseURL: "https://example.invalid/v3.0.1",
+			ReleaseURL: appUpdateDownloadURL("3.0.1"),
 		},
 	}
 	app := newAppForUpdateTests(t, fetcher, "3.0.0")
@@ -342,8 +341,8 @@ func TestTrayManualCheckFailureStaysSilent(t *testing.T) {
 		CurrentVersion:   "3.0.0",
 		LatestVersion:    "3.0.1",
 		UpdateAvailable:  true,
-		LatestReleaseURL: "https://example.invalid/v3.0.1",
-		InstallerURL:     installerDownloadURL,
+		LatestReleaseURL: appUpdateDownloadURL("3.0.1"),
+		InstallerURL:     appUpdateDownloadURL("3.0.1"),
 	})
 
 	_ = app.runTrayManualUpdateCheck(context.Background())
