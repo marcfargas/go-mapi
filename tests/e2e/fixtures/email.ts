@@ -35,7 +35,10 @@ export class WatchDirHelper {
     const filename = opts.filename ?? `email-${Date.now()}-${randomBytes(4).toString('hex')}.json`;
     const message = {
       version: 1,
-      interceptorVersion: 'e2e',
+      // Keep the fixture inside the app's real v4 compatibility gate. The
+      // e2e build tag applies to the app binary, not to queue protocol
+      // versions, which must remain canonical SemVer.
+      interceptorVersion: '4.0.0',
       hostVersion: 'e2e',
       timestamp: opts.timestamp ?? new Date().toISOString(),
       subject: opts.subject ?? 'E2E test subject',
