@@ -45,7 +45,7 @@ namespace GoMapi.AdminCustomActions
                 var journal = new MigrationJournal
                 {
                     Schema = JournalSchema,
-                    ProductVersion = session["ProductVersion"],
+                    ProductVersion = session["GOMAPI_COMPONENT_VERSION"],
                     CreatedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     State = "prepared",
                     PreviousProviders = keepOriginal
@@ -75,7 +75,7 @@ namespace GoMapi.AdminCustomActions
                 {
                     ["JournalPath"] = paths.JournalPath,
                     ["InstallRoot"] = paths.InstallRoot,
-                    ["Version"] = session["ProductVersion"],
+                    ["Version"] = session["GOMAPI_COMPONENT_VERSION"],
                     ["RequiredAppMin"] = session["GOMAPI_REQUIRED_APP_MIN"],
                     ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
                 }.ToString();
@@ -483,7 +483,7 @@ namespace GoMapi.AdminCustomActions
         {
             var actualVersion = FileVersionInfo.GetVersionInfo(fullPath).ProductVersion;
             if (!string.Equals(actualVersion, version, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException(architecture + " PE ProductVersion does not match MSI version");
+                throw new InvalidDataException(architecture + " PE ProductVersion does not match component version");
             return new InstalledArtifact
             {
                 Architecture = architecture,

@@ -20,7 +20,8 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 	}
 	content := string(workflow)
 	for _, required := range []string{
-		"environment: system-component-release",
+		"environment: artifact-signing",
+		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
 		"ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64",
 		"Require protected admin metadata signing inputs",
 		"go-mapi-admin-root-v1",

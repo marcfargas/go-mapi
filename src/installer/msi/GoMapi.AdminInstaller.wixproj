@@ -4,7 +4,8 @@
     <InstallerPlatform>x64</InstallerPlatform>
     <OutputName>go-mapi-interceptor</OutputName>
     <DefineConstants>
-      ProductVersion=$(ProductVersion);
+      MsiProductVersion=$(MsiProductVersion);
+      ComponentVersion=$(ComponentVersion);
       ProductCode=$(ProductCode);
       RequiredAppMin=$(RequiredAppMin);
       SourceX64=$(SourceX64);

@@ -23,9 +23,8 @@ managed desktops, group policy.
 
 ## Code signing status
 
-**v3.0.0 is unsigned.** The release pipeline supports SignPath.io OSS
-signing, but v3.0.0 was published from a runner without the SignPath
-secrets configured and used the unsigned `staged/` build path.
+**v3.0.0 is unsigned.** The release pipeline now uses Azure Artifact Signing,
+but v3.0.0 predates that signing path and was published unsigned.
 
 Practical consequences for managed deployments:
 
