@@ -157,16 +157,13 @@ jobs:
       - name: Adopt signed packages and verify exact bytes
         shell: pwsh
         run: |
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') {
+          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          if ($public) {
             Copy-Item release/app-signed/* release/app/ -Force
+            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
+          } else {
+            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
           }
-          $verifyArgs = @{
-            Version = '${{ steps.version.outputs.version }}'
-            MsixPath = 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix'
-            InstallerPath = 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
-          }
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $verifyArgs.RequireSignature = $true }
-          & .\scripts\verify-app-distribution.ps1 @verifyArgs
 
       - name: Render winget manifests for the verified standalone hash
         shell: pwsh

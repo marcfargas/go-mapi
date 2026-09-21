@@ -153,9 +153,12 @@ jobs:
       - name: Build interceptor-only WiX MSI
         shell: pwsh
         run: |
-          $buildArgs = @{ Version = '${{ steps.version.outputs.version }}' }
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $buildArgs.RequireSignedInputs = $true }
-          & .\src\installer\msi\build.ps1 @buildArgs
+          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          if ($public) {
+            .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}' -RequireSignedInputs
+          } else {
+            .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}'
+          }
 
       - name: Upload MSI for signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
