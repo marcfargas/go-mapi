@@ -1,5 +1,12 @@
 # go-mapi for IT Administrators
 
+> **v4 release-candidate note:** go-mapi now has a per-user **user component**
+> and a machine-wide **system component**. The v3 combined
+> `go-mapi-setup.exe` instructions retained below describe stable 3.0 only;
+> they are not the v4 deployment contract. The final documentation pass will
+> replace them after the signed beta MSI, targeted distribution, upgrade, and
+> rollback paths have passed E2E.
+
 Audience: Windows / IT admins deploying go-mapi at scale — RDS, Citrix,
 managed desktops, group policy.
 

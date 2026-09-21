@@ -105,3 +105,36 @@ func TestUpdateCheckFetcherDoesNotCheckDevBuild(t *testing.T) {
 		t.Fatalf("release=%#v err=%v", release, err)
 	}
 }
+
+func TestUpdateReleaseTrackUsesOddEvenPolicy(t *testing.T) {
+	tests := map[string]string{
+		"3.0.4":         "stable",
+		"3.1.0-alpha.1": "development",
+		"3.1.0-beta.2":  "development",
+		"4.1.0":         "stable",
+		"3.1.0":         "unknown",
+		"4.1.0-beta.1":  "unknown",
+	}
+	for version, want := range tests {
+		if got := updateReleaseTrack(version); got != want {
+			t.Errorf("updateReleaseTrack(%q) = %q, want %q", version, got, want)
+		}
+	}
+}
+
+func TestDevelopmentReleaseChecksItsTargetedChannel(t *testing.T) {
+	fetcher := newUpdateCheckFetcher("3.1.0-beta.1")
+	if fetcher.request.ReleaseTrack != "development" {
+		t.Fatalf("track = %q", fetcher.request.ReleaseTrack)
+	}
+	called := false
+	fetcher.client = &http.Client{Transport: updateCheckRoundTripper(func(req *http.Request) (*http.Response, error) {
+		called = true
+		body := `{"schema":"go-mapi-update-check-v1","app":{"latestVersion":"3.1.0-beta.2","updateAvailable":true},"compatibility":"compatible"}`
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Cache-Control": []string{"no-store"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})}
+	release, err := fetcher.FetchLatestRelease(context.Background())
+	if err != nil || !called || release == nil || release.Version != "3.1.0-beta.2" {
+		t.Fatalf("called=%v release=%#v err=%v", called, release, err)
+	}
+}

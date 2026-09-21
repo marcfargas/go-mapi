@@ -32,7 +32,7 @@ TEST_CASE("C++ compatibility decisions match the shared fixture matrix") {
         CHECK(std::string(CompatibilityStatusName(result.status)) == field(object, "status"));
         ++cases;
     }
-    CHECK(cases >= 12);
+    CHECK(cases >= 15);
 }
 
 TEST_CASE("development and non-canonical versions are not release versions") {

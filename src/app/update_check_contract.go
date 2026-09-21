@@ -75,8 +75,8 @@ func updateDistributionChannel() string {
 }
 
 func updateReleaseTrack(version string) string {
-	if mapi.IsStrictReleaseVersion(version) {
-		return "stable"
+	if track := mapi.ReleaseTrack(version); track != "" {
+		return track
 	}
 	return "unknown"
 }
@@ -109,7 +109,7 @@ func (f *updateCheckFetcher) FetchLatestRelease(ctx context.Context) (*latestRel
 	if f == nil || f.client == nil {
 		return nil, errors.New("updates: check client not initialised")
 	}
-	if f.request.ReleaseTrack != "stable" {
+	if f.request.ReleaseTrack != "stable" && f.request.ReleaseTrack != "development" {
 		return nil, nil
 	}
 	body, err := json.Marshal(f.request)

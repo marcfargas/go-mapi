@@ -20,6 +20,7 @@ param(
     [string]$Config = "Debug",
     [switch]$Tests,
     [switch]$Clean,
+    [string]$Version,
     # `-Config Release` controls compiler optimisation; it is also useful for
     # local developer builds. `-Release` means the resulting DLL is intended
     # for distribution and therefore may not carry the development version.
@@ -130,8 +131,8 @@ Write-Host "Configuring CMake..."
 # the repository package metadata. Do not name this file VERSION: on
 # case-insensitive Windows filesystems that shadows libc++'s <version> header.
 $versionFile = Join-Path $interceptorRoot "interceptor-version.txt"
-$goMapiVersion = "0.0.0-dev"
-if (Test-Path $versionFile) {
+$goMapiVersion = if ([string]::IsNullOrWhiteSpace($Version)) { "0.0.0-dev" } else { $Version.Trim() }
+if ([string]::IsNullOrWhiteSpace($Version) -and (Test-Path $versionFile)) {
     $candidate = (Get-Content -LiteralPath $versionFile -Raw).Trim()
     if (-not [string]::IsNullOrWhiteSpace($candidate)) {
         $goMapiVersion = $candidate

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [develop]
   pull_request:
   workflow_call:
     inputs:
@@ -27,7 +27,7 @@ permissions:
 jobs:
   app:
     if: github.event_name != 'schedule'
-    name: User app
+    name: User component
     runs-on: windows-latest
     env:
       CGO_ENABLED: '1'
@@ -114,7 +114,7 @@ jobs:
 
   app-distribution:
     if: github.event_name != 'schedule'
-    name: Validate user app packages
+    name: Validate user component packages
     runs-on: windows-latest
     env:
       CGO_ENABLED: '1'
@@ -154,7 +154,7 @@ jobs:
 
   admin-msi:
     if: github.event_name != 'schedule'
-    name: Validate admin MSI lifecycle
+    name: Validate system component MSI lifecycle
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

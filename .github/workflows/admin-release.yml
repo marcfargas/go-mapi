@@ -1,4 +1,4 @@
-name: Release admin interceptor MSI
+name: Release system component
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Interceptor/admin version (for example 4.0.0)'
+        description: 'System-component version (for example 3.1.0-beta.1 or 4.1.0)'
         required: true
       sign:
         description: 'Sign DLLs and MSI with SignPath'
@@ -26,7 +26,7 @@ jobs:
     # This protected environment holds the release-only metadata inputs. It is
     # intentionally separate from ordinary build secrets so public releases
     # cannot silently fall back to an unsigned or developer-generated target.
-    environment: admin-release
+    environment: system-component-release
     runs-on: windows-latest
     env:
       HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
@@ -47,7 +47,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Resolve independent admin version
+      - name: Resolve independent system-component version
         id: version
         shell: pwsh
         run: |
@@ -56,7 +56,7 @@ jobs:
           } else {
             '${{ inputs.version }}'
           }
-          if ($version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "Invalid version: $version" }
+          .\scripts\resolve-release-track.ps1 -Version $version
           Set-Content src/interceptor/interceptor-version.txt -Value $version -NoNewline -Encoding ascii
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
 
@@ -306,6 +306,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: admin-v${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.track == 'development' }}
+          make_latest: ${{ steps.version.outputs.track == 'stable' }}
           files: |
             release/admin/go-mapi-interceptor.msi
             release/admin/admin-targets.json
@@ -313,7 +315,7 @@ jobs:
             release/winget/*.yaml
 
       - name: Submit winget update
-        if: (github.event_name == 'push' || inputs.publish) && env.HAS_WINGET_TOKEN == 'true'
+        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable' && env.HAS_WINGET_TOKEN == 'true'
         shell: pwsh
         env:
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}

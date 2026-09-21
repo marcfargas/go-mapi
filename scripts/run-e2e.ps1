@@ -41,13 +41,19 @@ if ($InstallDeps) {
 }
 
 if (-not $NoBuild) {
+  Write-Host '[run-e2e] building native x86/x64 MAPI producers…' -ForegroundColor Cyan
+  foreach ($architecture in @('x86', 'x64')) {
+    & (Join-Path $repoRoot 'src/interceptor/build.ps1') -Arch $architecture -Config Release -Tests -Clean -Version '3.1.0-beta.1'
+    if ($LASTEXITCODE -ne 0) { throw "native $architecture build failed ($LASTEXITCODE)" }
+  }
+
   Write-Host '[run-e2e] building e2e-tagged Wails binary…' -ForegroundColor Cyan
   Push-Location (Join-Path $repoRoot 'src/app')
   try {
     # ldflags injects fake OAuth creds so checkOAuthCredentials() passes.
     # The values are clearly-fake markers (T-11-06-02 mitigation).
     $ldflags = @(
-      '-X', 'main.Version=e2e',
+      '-X', 'main.Version=3.1.0-beta.1',
       '-X', 'main.oauthClientID=e2e-fake-client-do-not-use',
       '-X', 'main.oauthClientSecret=e2e-fake-secret-do-not-use',
       '-s', '-w'

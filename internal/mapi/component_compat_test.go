@@ -49,3 +49,27 @@ func TestStrictReleaseVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseTrack(t *testing.T) {
+	tests := map[string]string{
+		"3.0.0":                  "stable",
+		"3.1.0-alpha.1":          "development",
+		"3.1.0-beta.2":           "development",
+		"3.1.0-nightly.20260921": "development",
+		"4.1.0":                  "stable",
+		"4.1.0+build.1":          "stable",
+		"3.1.0":                  "",
+		"4.1.0-beta.1":           "",
+		"3.0.1-beta.1":           "",
+		"5.1.0-rc.1":             "",
+		"0.0.0-dev":              "",
+		"not-semver":             "",
+	}
+	for version, want := range tests {
+		t.Run(version, func(t *testing.T) {
+			if got := ReleaseTrack(version); got != want {
+				t.Fatalf("ReleaseTrack(%q) = %q, want %q", version, got, want)
+			}
+		})
+	}
+}

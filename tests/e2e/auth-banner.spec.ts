@@ -14,7 +14,7 @@ test('Test 5 — invalid_grant surfaces the re-auth banner within 3s', async ({ 
   app.gmail.failNextWith(401);
   app.gmail.failNextWith(401);
 
-  await app.watchDir.dropEmail({ subject: 'Trigger reauth' });
+  await app.nativeMapi.send('x64');
 
   const row = app.page.locator('[data-testid="queue-row"]').first();
   await expect(row).toBeVisible({ timeout: 3_000 });

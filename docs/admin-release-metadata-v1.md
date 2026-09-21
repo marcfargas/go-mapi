@@ -43,7 +43,7 @@ subscriber-identity EKU. The latter identity is tenant/certificate specific and
 must be supplied by the authorized SignPath configuration; it is not guessed
 from source. Private keys are never committed.
 
-The `admin-release` GitHub Environment supplies the concrete protected inputs:
+The `system-component-release` GitHub Environment supplies the concrete protected inputs:
 `ADMIN_RELEASE_ROOT_JSON`, `ADMIN_RELEASE_TARGETS_KEY_ID`,
 `ADMIN_RELEASE_METADATA_ORIGIN`, `ADMIN_RELEASE_PUBLISHER`,
 `ADMIN_RELEASE_EKUS_JSON`, `ADMIN_RELEASE_POLICY_ID`, and the secret

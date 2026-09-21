@@ -67,8 +67,10 @@ func TestUserReleaseFailsClosedAndPublishesVerifiedArtifacts(t *testing.T) {
 		"unsigned publication is forbidden", "signpath/github-action-submit-signing-request@v2",
 		"verify-app-distribution.ps1", "-RequireSignature", "app-distribution.json",
 		"microsoft/microsoft-store-apppublisher@v1.1", "winget-create/releases/download/v1.10.3.0/wingetcreate.exe",
-		"WINGET_CREATE_GITHUB_TOKEN", "environment: app-release",
+		"WINGET_CREATE_GITHUB_TOKEN", "environment: user-component-release",
 		"github.event_name == 'push' || inputs.publish || inputs.sign",
+		"prerelease: ${{ steps.version.outputs.track == 'development' }}",
+		"needs.build-sign-verify.outputs.track == 'stable'",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("app release contract missing %q", want)

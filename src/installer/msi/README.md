@@ -40,7 +40,8 @@ The lifecycle script seeds manual-registration, NSIS, update-staging, stale-file
 and dual-view fixtures; exercises install, repair, rollback, and uninstall; and
 preserves per-user Wails data. Run it only on a disposable elevated Windows VM.
 
-Public publication is signed-only. `admin-release.yml` signs both DLLs, then the
+Public publication is signed-only. The system-component release workflow
+(`admin-release.yml`, retained as an internal filename) signs both DLLs, then the
 MSI, verifies the result, emits immutable release metadata, and generates/submits
 the elevated machine-scope winget manifest. Microsoft Store publication remains
 the independently built user package's workflow; `admin-release.json` is the

@@ -1,7 +1,9 @@
 # Component integration gate
 
-This is the compatibility proof for independently released components. It is
-not an installer, update, cleanup, or branch-protection check.
+This is the focused compatibility proof for independently released components.
+The primary desktop E2E suite (`scripts/run-e2e.ps1`) also uses both native
+x86/x64 producers and the real Wails queue consumer; it does not synthesize
+successful queue descriptors from fixtures.
 
 On one task-owned CrabBox Windows lease, build or place the independently
 selected artifacts, then run:

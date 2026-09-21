@@ -12,6 +12,9 @@
     {"name":"leading-v","installed":"v4.0.0","minInclusive":"4.0.0","status":"invalid"},
     {"name":"partial","installed":"4.0","minInclusive":"4.0.0","status":"invalid"},
     {"name":"leading-zero","installed":"04.0.0","minInclusive":"4.0.0","status":"invalid"},
-    {"name":"contradictory","installed":"4.0.0","minInclusive":"5.0.0","maxExclusive":"4.0.0","status":"invalid"}
+    {"name":"contradictory","installed":"4.0.0","minInclusive":"5.0.0","maxExclusive":"4.0.0","status":"invalid"},
+    {"name":"odd-development-maps-to-promotion-line","installed":"3.1.0-beta.2","minInclusive":"4.0.0","maxExclusive":"5.0.0","status":"compatible"},
+    {"name":"odd-development-stays-below-promotion-stable","installed":"3.1.0-beta.2","minInclusive":"4.1.0","maxExclusive":"5.0.0","status":"below-minimum"},
+    {"name":"odd-stable-looking-version-is-not-remapped","installed":"3.1.0","minInclusive":"4.0.0","status":"below-minimum"}
   ]
 }

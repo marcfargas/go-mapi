@@ -1,6 +1,6 @@
 import { test as base, chromium, type Page, type BrowserContext, type Browser } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -9,7 +9,7 @@ import treeKill from 'tree-kill';
 
 import { startFakeGmail, type FakeGmailControl } from './fake-gmail';
 import { startFakeOAuth, type FakeOAuthControl } from './fake-oauth';
-import { WatchDirHelper } from './email';
+import { NativeMapiProducer } from './native-mapi';
 
 // Phase 11 plan 06 — Playwright fixture that boots the e2e-tagged Wails app,
 // connects to its WebView2 instance via CDP, and exposes helpers for tests.
@@ -26,7 +26,8 @@ import { WatchDirHelper } from './email';
 // Teardown:
 //   - Disconnect CDP (does NOT close WebView2 — we only borrow the channel).
 //   - tree-kill the app PID with SIGKILL (Windows: spawns taskkill /T /F).
-//   - Stop fake servers, remove tempdirs.
+//   - Stop fake servers, remove only descriptors created by this fixture and
+//     its private app-data directory. The real per-user queue itself is kept.
 //
 // One-instance constraint: the app uses a kernel-mode named mutex
 // (singleinstance.go). Two e2e fixtures cannot be alive at once; Playwright
@@ -34,7 +35,7 @@ import { WatchDirHelper } from './email';
 
 export interface WailsAppFixture {
   page: Page;
-  watchDir: WatchDirHelper;
+  nativeMapi: NativeMapiProducer;
   gmail: FakeGmailControl;
   oauth: FakeOAuthControl;
   appLogPath: string;
@@ -42,6 +43,16 @@ export interface WailsAppFixture {
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 const APP_BINARY = join(REPO_ROOT, 'src', 'app', 'build', 'bin', 'go-mapi.exe');
+const NATIVE_BINARIES = {
+  x86: {
+    harness: join(REPO_ROOT, 'src', 'interceptor', 'build-x86', 'bin', 'go-mapi-test-harness.exe'),
+    dll: join(REPO_ROOT, 'src', 'interceptor', 'build-x86', 'bin', 'go-mapi.dll'),
+  },
+  x64: {
+    harness: join(REPO_ROOT, 'src', 'interceptor', 'build-x64', 'bin', 'go-mapi-test-harness.exe'),
+    dll: join(REPO_ROOT, 'src', 'interceptor', 'build-x64', 'bin', 'go-mapi.dll'),
+  },
+};
 
 function settleWithin<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([
@@ -146,7 +157,14 @@ export const test = base.extend<{ app: WailsAppFixture }>({
       );
     }
 
-    const watchDir = await mkdtemp(join(tmpdir(), 'gomapi-e2e-watch-'));
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) throw new Error('e2e: LOCALAPPDATA is required for the native MAPI queue');
+    const watchDir = join(localAppData, 'go-mapi', 'queue');
+    await mkdir(watchDir, { recursive: true });
+    for (const binary of Object.values(NATIVE_BINARIES).flatMap(({ harness, dll }) => [harness, dll])) {
+      if (!existsSync(binary)) throw new Error(`e2e: native input missing: ${binary}`);
+    }
+    const nativeMapi = new NativeMapiProducer(watchDir, NATIVE_BINARIES);
     const appDataDir = await mkdtemp(join(tmpdir(), 'gomapi-e2e-appdata-'));
     const gmail = await startFakeGmail();
     const oauth = await startFakeOAuth();
@@ -209,7 +227,7 @@ export const test = base.extend<{ app: WailsAppFixture }>({
       const appLogPath = join(appDataDir, 'app.log');
       await use({
         page,
-        watchDir: new WatchDirHelper(watchDir),
+        nativeMapi,
         gmail,
         oauth,
         appLogPath,
@@ -225,7 +243,7 @@ export const test = base.extend<{ app: WailsAppFixture }>({
       }
       await settleWithin(gmail.close(), 5_000).catch(() => {});
       await settleWithin(oauth.close(), 5_000).catch(() => {});
-      await rm(watchDir, { recursive: true, force: true }).catch(() => {});
+      await nativeMapi.cleanup().catch(() => {});
       await rm(appDataDir, { recursive: true, force: true }).catch(() => {});
     }
   },
