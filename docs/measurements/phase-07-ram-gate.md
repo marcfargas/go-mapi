@@ -23,13 +23,11 @@ Per-session Private Working Set of go-mapi.exe (Wails + WebView2 Evergreen) unde
 
 ## Reproduce
 
-```powershell
-# Prereqs: Azure CLI ≥ 2.50, az login, Plan 03 binary built for windows/amd64
-cd src/app && wails build -clean -platform windows/amd64 && cd ../..
-pwsh scripts/azure-ram-gate.ps1 -N 5 -Confirm
-```
-
-~45 min wall time, ~$0.50 Azure spend, fully automated provision → measure → teardown.
+The original direct-Azure provisioner was retired when Windows validation moved
+to brokered CrabBox leases. The guest-side sampler remains at
+`scripts/measure-ram.ps1`; recreate the multi-user scheduled tasks on a
+task-owned Windows lease before using its `-Orchestrate` mode. The checked-in
+CSV is the durable evidence for the original gate.
 
 ## Caveats
 
@@ -46,8 +44,6 @@ None of these invalidate the iter-1 gate reading, which is tight (<1% stddev acr
 
 | Path | Role |
 |---|---|
-| `scripts/azure-ram-gate.ps1` | Azure CLI + PowerShell orchestration wrapper (provision → bootstrap → measure → pull → teardown). NO Terraform. |
 | `scripts/measure-ram.ps1` | On-VM worker + orchestrator + aggregate mode. |
-| `scripts/azure-ram-gate.README.md` | Prerequisites, parameters, cost, teardown notes. |
 | `docs/measurements/phase-07-ram-gate.csv` | Raw sample rows (8 columns, 39 rows). |
 | `.planning/phases/07-wails-shell-ram-gate/07-VERIFICATION.md` | Full gate verification + caveats + per-requirement verification. |

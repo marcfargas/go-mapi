@@ -44,7 +44,7 @@ src/interceptor/             # C++ MAPI DLL (unchanged from v1)
 internal/mapi/               # Shared Go core: watcher, protocol, Gmail client + MIME builder
 src/app/                     # Wails Go backend (tray, auth, App bindings, watcher bridge)
 src/app/frontend/            # Svelte 5 UI
-scripts/                     # Dev + measurement scripts (dev-wails, azure-ram-gate, measure-ram, test-drop-email)
+scripts/                     # Build, validation, diagnostics, and local development entrypoints
 tests/sandbox/               # MAPI DLL sandbox tests
 tests/protocol-fixtures/     # JSON fixtures consumed by internal/mapi integration tests
 .planning/                   # GSD planning artifacts (phase contexts, roadmap, requirements)
@@ -113,11 +113,14 @@ powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Arch x64 -Co
 
 ## Race detector
 
-```
+Build `src/app/frontend/dist` first because the Go binary embeds it:
+
+```powershell
+npm run build:app:frontend
 go test -race ./internal/mapi/... ./src/app/...
 ```
 
-Matches the per-PR CI gate and the nightly race-detector workflow.
+This matches the nightly race-detector workflow.
 
 ## IPC protocol
 
