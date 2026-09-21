@@ -37,10 +37,9 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 		t.Fatalf("read workflow directory: %v", err)
 	}
 	expectedWorkflows := map[string]bool{
-		"ci.yml":                    true,
-		"app-release.yml":           true,
-		"admin-release.yml":         true,
-		"component-integration.yml": true,
+		"ci.yml":            true,
+		"app-release.yml":   true,
+		"admin-release.yml": true,
 	}
 	seenWorkflows := make(map[string]bool, len(expectedWorkflows))
 	for _, entry := range entries {
@@ -48,7 +47,7 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			continue
 		}
 		if !expectedWorkflows[entry.Name()] {
-			t.Errorf("unexpected workflow %s; keep the repository workflow topology to the four component contracts", entry.Name())
+			t.Errorf("unexpected workflow %s; keep the repository workflow topology to CI and the two release contracts", entry.Name())
 		}
 		seenWorkflows[entry.Name()] = true
 		if entry.Name() == "app-release.yml" || entry.Name() == "admin-release.yml" {
@@ -153,15 +152,19 @@ func TestAppReleaseUsesGuardedArtifactEntrypoint(t *testing.T) {
 	content := string(workflow)
 	for _, want := range []string{
 		"workflow_dispatch:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
-		"src/app/VERSION", "npm run build:app:release", "verify-app-distribution.ps1", "inputs.sign",
+		"src/app/VERSION", "npm run build:app:release", "verify-app-artifact.ps1", "verify-app-distribution.ps1",
+		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("app release workflow is missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"build:interceptor", "build:installer", "src/installer/msi"} {
+	for _, forbidden := range []string{
+		"build:interceptor", "build:installer", "src/installer/msi",
+		"-tags e2e", "GOMAPI_DEBUG_BROWSER_ARGS", "GOMAPI_E2E_",
+	} {
 		if strings.Contains(content, forbidden) {
-			t.Errorf("app release must not invoke an admin component command: %q", forbidden)
+			t.Errorf("app release contains forbidden release content %q", forbidden)
 		}
 	}
 }
@@ -176,7 +179,7 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
 		"Build interceptor", "Validate user app packages", "Validate admin MSI lifecycle",
-		"AdminLifecycle.Tests.ps1", "go test -race -v ./internal/mapi/... ./src/app/...",
+		"AdminLifecycle.Tests.ps1", "npm run build:app:frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("CI workflow is missing %q", want)

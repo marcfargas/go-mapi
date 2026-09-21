@@ -122,6 +122,7 @@ func TestAdminReleaseFailsClosedAndDoesNotBuildApp(t *testing.T) {
 		"admin-v*", "SIGNPATH_API_TOKEN", "unsigned publication is forbidden", "-RequireSignedInputs",
 		"verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi -RequireSignature",
 		"ElevationRequirement: elevationRequired", "wingetcreate.exe update", "admin-release.json",
+		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
 		if !strings.Contains(workflow, want) && want != "ElevationRequirement: elevationRequired" {
 			t.Errorf("admin release workflow missing %q", want)

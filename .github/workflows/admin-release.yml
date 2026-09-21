@@ -110,7 +110,7 @@ jobs:
         run: .\src\interceptor\verify-release.ps1
 
       - name: Upload DLLs for signing
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         id: upload-dlls
         uses: actions/upload-artifact@v4
         with:
@@ -120,7 +120,7 @@ jobs:
             release/interceptor/go-mapi-x64.dll
 
       - name: Sign x86/x64 DLLs
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -132,7 +132,7 @@ jobs:
           wait-for-completion: true
 
       - name: Adopt signed DLLs and refresh artifact hashes
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: |
           foreach ($arch in @('x86','x64')) {
@@ -151,11 +151,11 @@ jobs:
         shell: pwsh
         run: |
           $args = @('-Version','${{ steps.version.outputs.version }}')
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignedInputs' }
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignedInputs' }
           & .\src\installer\msi\build.ps1 @args
 
       - name: Upload MSI for signing
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         id: upload-msi
         uses: actions/upload-artifact@v4
         with:
@@ -163,7 +163,7 @@ jobs:
           path: release/admin/go-mapi-interceptor.msi
 
       - name: Sign MSI
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -175,14 +175,14 @@ jobs:
           wait-for-completion: true
 
       - name: Adopt and verify signed MSI
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: |
           Copy-Item release/admin-signed/go-mapi-interceptor.msi release/admin/go-mapi-interceptor.msi -Force
           .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi -RequireSignature
 
       - name: Verify unsigned validation MSI
-        if: github.event_name == 'workflow_dispatch' && !inputs.sign
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign
         shell: pwsh
         run: .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi
 

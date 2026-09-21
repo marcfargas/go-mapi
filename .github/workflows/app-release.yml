@@ -72,9 +72,12 @@ jobs:
       - run: npm run check:app
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - run: npm run build:app:release
+      - name: Verify app artifact metadata before signing
+        shell: pwsh
+        run: .\scripts\verify-app-artifact.ps1
 
       - name: Upload app EXE for signing
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         id: upload-app
         uses: actions/upload-artifact@v4
         with:
@@ -82,7 +85,7 @@ jobs:
           path: src/app/build/bin/go-mapi.exe
 
       - name: Sign app EXE
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -94,7 +97,7 @@ jobs:
           wait-for-completion: true
 
       - name: Adopt signed app EXE
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: Copy-Item release/app-exe-signed/go-mapi.exe src/app/build/bin/go-mapi.exe -Force
 
@@ -117,7 +120,7 @@ jobs:
           .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
 
       - name: Upload packages for signing
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         id: upload-packages
         uses: actions/upload-artifact@v4
         with:
@@ -127,7 +130,7 @@ jobs:
             release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe
 
       - name: Sign MSIX and standalone installer
-        if: github.event_name == 'push' || inputs.sign
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -141,11 +144,11 @@ jobs:
       - name: Adopt signed packages and verify exact bytes
         shell: pwsh
         run: |
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') {
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') {
             Copy-Item release/app-signed/* release/app/ -Force
           }
           $args = @('-Version','${{ steps.version.outputs.version }}','-MsixPath','release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix','-InstallerPath','release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe')
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignature' }
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignature' }
           .\scripts\verify-app-distribution.ps1 @args
 
       - name: Render winget manifests for the verified standalone hash
@@ -187,10 +190,6 @@ jobs:
     runs-on: windows-latest
     environment: app-release
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: go-mapi-user-${{ needs.build-sign-verify.outputs.version }}
-          path: release
       - name: Submit the exact GitHub Release artifact to winget
         shell: pwsh
         env:

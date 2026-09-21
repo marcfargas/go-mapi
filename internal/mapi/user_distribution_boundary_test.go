@@ -68,6 +68,7 @@ func TestUserReleaseFailsClosedAndPublishesVerifiedArtifacts(t *testing.T) {
 		"verify-app-distribution.ps1", "-RequireSignature", "app-distribution.json",
 		"microsoft/microsoft-store-apppublisher@v1.1", "winget-create/releases/download/v1.10.3.0/wingetcreate.exe",
 		"WINGET_CREATE_GITHUB_TOKEN", "environment: app-release",
+		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("app release contract missing %q", want)

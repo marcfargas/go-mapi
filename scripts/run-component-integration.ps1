@@ -1,7 +1,7 @@
 # Runs the component-boundary MAPISendMail integration proof.  It is a
 # test-only activation path: each native harness explicitly LoadLibrarys its
 # supplied DLL, so this script neither packages nor registers a product
-# interceptor.  Run it in a managed interactive Windows desktop session.
+# interceptor. Run it on a task-owned CrabBox Windows lease.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$X64Dll,
