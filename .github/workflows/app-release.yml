@@ -73,7 +73,18 @@ jobs:
       - run: just test-user
       - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: just build-user-release
+      - name: Configure non-publishing validation credentials
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign
+        shell: pwsh
+        run: |
+          "GOMAPI_OAUTH_CLIENT_ID=ci-client" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
+          "GOMAPI_OAUTH_CLIENT_SECRET=ci-secret" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
+      - name: Build public user-component artifact
+        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        run: just build-user-release
+      - name: Build non-publishing validation artifact
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign
+        run: just build-user
       - name: Verify app artifact metadata before signing
         shell: pwsh
         run: .\scripts\verify-app-artifact.ps1
@@ -149,9 +160,13 @@ jobs:
           if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') {
             Copy-Item release/app-signed/* release/app/ -Force
           }
-          $args = @('-Version','${{ steps.version.outputs.version }}','-MsixPath','release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix','-InstallerPath','release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe')
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $args += '-RequireSignature' }
-          .\scripts\verify-app-distribution.ps1 @args
+          $verifyArgs = @{
+            Version = '${{ steps.version.outputs.version }}'
+            MsixPath = 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix'
+            InstallerPath = 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
+          }
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true') { $verifyArgs.RequireSignature = $true }
+          & .\scripts\verify-app-distribution.ps1 @verifyArgs
 
       - name: Render winget manifests for the verified standalone hash
         shell: pwsh
