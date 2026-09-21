@@ -37,4 +37,5 @@ patch coordinate (for example `3.1.4-alpha` then `3.1.5-beta`); changing only
 the prerelease suffix would reuse the same Store identity version.
 
 `3.0.x` predates this policy and is a stable legacy exception. It does not make
-new odd-major versions stable.
+new odd-major versions stable, and 3.0 versions are not accepted by the new
+release automation.

@@ -21,7 +21,8 @@ prerelease identifier (`alpha`, `beta`, or `nightly`). A tested development
 version promotes to the next even major while retaining minor and patch:
 `3.1.0-beta.2` promotes to `4.1.0`. Stable releases use even major versions and
 have no prerelease identifier. Existing stable `3.0.x` releases are a legacy
-exception rather than precedent for new releases.
+exception rather than precedent for new releases; the new release automation
+does not accept 3.0 versions.
 
 Development releases may traverse the complete signed release pipeline and
 targeted Microsoft Store/WinGet distribution. Public stable channels accept

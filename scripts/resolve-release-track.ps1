@@ -23,6 +23,9 @@ if ($prerelease) {
 }
 
 $legacyStable = $major -eq 3 -and $minor -eq 0
+if ($legacyStable) {
+    throw "3.0.x is a legacy stable line and cannot be used for a new release run: $Version"
+}
 $track = $null
 if (-not $prerelease -and (($major % 2) -eq 0 -or $legacyStable)) {
     $track = 'stable'
