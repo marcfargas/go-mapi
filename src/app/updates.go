@@ -1,5 +1,3 @@
-//go:build windows
-
 package main
 
 import (
@@ -10,7 +8,7 @@ import (
 
 // Phase 11 — notify-only update service (REL-03, REL-05).
 //
-// Scope boundary (locked by phase CONTEXT.md):
+// Scope boundary:
 //   - D-03: notify-only. No download, no installer launch, no in-process
 //     binary replacement. Ever. Any future helper that "quits and installs"
 //     belongs to a later phase and must not reuse this service surface.

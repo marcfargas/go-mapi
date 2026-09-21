@@ -1,15 +1,16 @@
 # Component integration gate
 
 This is the focused compatibility proof for independently released components.
-The primary desktop E2E suite (`scripts/run-e2e.ps1`) also uses both native
-x86/x64 producers and the real Wails queue consumer; it does not synthesize
-successful queue descriptors from fixtures.
+The ordinary Playwright suite exercises the user component against an isolated
+queue directory on every development platform. This Windows-only gate proves
+that both native system-component architectures emit descriptors accepted by
+the real user-component queue consumer.
 
 On one task-owned CrabBox Windows lease, build or place the independently
 selected artifacts, then run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 `
+just e2e-system-windows `
   -X64Dll src/interceptor/build-x64/bin/go-mapi.dll `
   -X64Harness src/interceptor/build-x64/bin/go-mapi-test-harness.exe `
   -X86Dll src/interceptor/build-x86/bin/go-mapi.dll `

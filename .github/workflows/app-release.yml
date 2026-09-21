@@ -45,13 +45,14 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
+      - uses: extractions/setup-just@v2
 
       - name: Resolve independent user-component version
         id: version
         shell: pwsh
         run: |
           $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' -replace '^app-v','' } else { '${{ inputs.version }}' }
-          .\scripts\resolve-release-track.ps1 -Version $version
+          go run ./internal/mapi/cmd/release-track --github-output $env:GITHUB_OUTPUT -- $version
           [IO.File]::WriteAllText('src/app/VERSION', $version, [Text.Encoding]::ASCII)
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
 
@@ -69,10 +70,10 @@ jobs:
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
 
       - run: npm ci
-      - run: npm run test:app
-      - run: npm run check:app
+      - run: just test-user
+      - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: npm run build:app:release
+      - run: just build-user-release
       - name: Verify app artifact metadata before signing
         shell: pwsh
         run: .\scripts\verify-app-artifact.ps1

@@ -43,6 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -56,7 +59,7 @@ jobs:
           } else {
             '${{ inputs.version }}'
           }
-          .\scripts\resolve-release-track.ps1 -Version $version
+          go run ./internal/mapi/cmd/release-track --github-output $env:GITHUB_OUTPUT -- $version
           Set-Content src/interceptor/interceptor-version.txt -Value $version -NoNewline -Encoding ascii
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
 

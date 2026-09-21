@@ -16,8 +16,8 @@ to this in your browser, and you can call your Go code from devtools.
 To build a redistributable, production mode package, use `wails build`.
 ## Component boundary
 
-This is the per-user Wails queue consumer. Build it with `npm run build:app` at
-the repository root; test it with `npm run test:app`. It consumes queue-v1 and
+This is the per-user Wails queue consumer. Build it with `just build-user` at
+the repository root; test it with `just test-user` and `just e2e-user`. It consumes queue-v1 and
 can start with an empty queue when no interceptor is installed. The app does
 not install, register, elevate, or download the machine-wide interceptor.
 
@@ -66,8 +66,8 @@ preserves those paths and saved credentials; only the standalone uninstall
 checkbox (or a separately confirmed in-app action for Store users) invokes
 `--purge-user-data`.
 
-Use `scripts/build-app-msix.ps1`, `scripts/build-app-installer.ps1`, and
-`scripts/verify-app-distribution.ps1` after the guarded Wails release build.
+Use `just package-user-msix`, `just package-user-standalone`, and
+`just verify-user-distribution` after the guarded Wails release build.
 Public GitHub Actions releases fail closed unless the app EXE and both packages
 complete the configured signing route. No app package contains or registers
 the interceptor.

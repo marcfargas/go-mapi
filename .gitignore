@@ -39,6 +39,7 @@ CMakeUserPresets.json
 PLANNING_AGENT.md
 TODO.txt
 TODO.md
+/CONTEXT.md
 
 # Test outputs
 test-results/

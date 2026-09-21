@@ -11,7 +11,7 @@ import (
 // update_notifications.go owns the notify-only reaction to an update
 // becoming available on the tray/notification surface.
 //
-// Scope boundary (locked by phase CONTEXT.md + plan threat model):
+// Scope boundary:
 //
 //   - D-03: this surface NEVER downloads, stages, launches, quits-and-
 //     installs, or replaces a binary. The only action it exposes is

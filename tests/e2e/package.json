@@ -9,7 +9,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.45.0",
-    "@types/node": "^20.0.0",
-    "tree-kill": "^1.2.2"
+    "@types/node": "^20.0.0"
   }
 }

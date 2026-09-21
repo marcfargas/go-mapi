@@ -25,9 +25,30 @@ permissions:
   contents: read
 
 jobs:
-  app:
+  user-component:
     if: github.event_name != 'schedule'
-    name: User component
+    name: User component (cross-platform)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: '1'
+      GOMAPI_OAUTH_CLIENT_ID: ci-client
+      GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: extractions/setup-just@v2
+      - run: npm ci
+      - run: just test-user
+      - run: just check-user
+      - run: npx playwright install --with-deps chromium
+      - run: just e2e-user
+
+  user-windows-shell:
+    if: github.event_name != 'schedule'
+    name: User component Windows shell
     runs-on: windows-latest
     env:
       CGO_ENABLED: '1'
@@ -39,21 +60,10 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - name: Assert clean app-only checkout
-        shell: pwsh
-        run: |
-          $absent = @('src/app/frontend/dist','src/app/build/bin','src/interceptor/build-x86','src/interceptor/build-x64')
-          foreach ($path in $absent) { if (Test-Path $path) { throw "unexpected output: $path" } }
+      - uses: extractions/setup-just@v2
       - run: npm ci
-      - name: Assert npm did not build components
-        shell: pwsh
-        run: |
-          if (Test-Path src/app/frontend/dist) { throw 'frontend must be built by the scoped command' }
-          if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'interceptor output is forbidden' }
-      - run: npm run test:app
-      - run: npm run check:app
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: npm run build:app
+      - run: just build-user
       - name: Reassert app-only outputs
         shell: pwsh
         run: |
@@ -126,13 +136,13 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
+      - uses: extractions/setup-just@v2
       - name: Set validation version
         shell: pwsh
         run: Set-Content src/app/VERSION -Value 4.0.0 -NoNewline -Encoding ascii
       - run: npm ci
-      - run: npm run -w @marcfargas/go-mapi-app-frontend build
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: npm run build:app
+      - run: just build-user
       - name: Install standalone packager
         shell: pwsh
         run: choco install nsis --version=3.11 -y --no-progress
@@ -225,6 +235,7 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
+      - uses: extractions/setup-just@v2
       - run: npm ci
-      - run: npm run build:app:frontend
+      - run: just build-frontend
       - run: go test -race -v ./internal/mapi/... ./src/app/...

@@ -1,6 +1,6 @@
 package main
 
-// AUMIDs — pinned per RESEARCH §2 + CONTEXT.md §Specifics.
+// AUMIDs are stable identities shared by notification registration and activation.
 const (
 	aumidDev  = "com.marcfargas.gomapi.dev"
 	aumidProd = "com.marcfargas.gomapi" // Phase 10 installer uses this; kept here for source truth.
