@@ -45,6 +45,7 @@ func EvaluateCompatibility(installed string, required CounterpartRequirement, ac
 		result.Status = CompatibilityInvalid
 		return result
 	}
+	got = compatibilityCoordinate(got)
 	minimum, err := parseStrictSemVer(required.MinInclusive)
 	if err != nil || required.Component == "" {
 		result.Status = CompatibilityInvalid
@@ -73,12 +74,50 @@ func EvaluateCompatibility(installed string, required CounterpartRequirement, ac
 	return result
 }
 
+// compatibilityCoordinate compares a publishable odd-major development build
+// at the coordinate it will occupy after promotion. Its prerelease ordering is
+// retained, so 3.1.0-beta.1 is still below stable 4.1.0 while satisfying a
+// broad >=4.0.0,<5.0.0 compatibility range.
+func compatibilityCoordinate(version semVersion) semVersion {
+	if version.major%2 == 1 && len(version.pre) > 0 && version.major < ^uint64(0) {
+		switch version.pre[0] {
+		case "alpha", "beta", "nightly":
+			version.major++
+		}
+	}
+	return version
+}
+
 func IsStrictReleaseVersion(value string) bool {
 	if value == "0.0.0-dev" {
 		return false
 	}
 	_, err := parseStrictSemVer(value)
 	return err == nil
+}
+
+// ReleaseTrack classifies canonical versions by the product release policy.
+// Empty means the version is not publishable on a known release line.
+func ReleaseTrack(value string) string {
+	version, err := parseStrictSemVer(value)
+	if err != nil || value == "0.0.0-dev" {
+		return ""
+	}
+	if len(version.pre) == 0 {
+		if version.major%2 == 0 || version.major == 3 && version.minor == 0 {
+			return "stable"
+		}
+		return ""
+	}
+	if version.major%2 == 0 || version.major == 3 && version.minor == 0 {
+		return ""
+	}
+	switch version.pre[0] {
+	case "alpha", "beta", "nightly":
+		return "development"
+	default:
+		return ""
+	}
 }
 
 type semVersion struct {

@@ -1,5 +1,3 @@
-//go:build windows
-
 package main
 
 import (
@@ -7,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/sys/windows"
 )
 
 // AppSettings is the persisted per-user settings for go-mapi. Phase 9 ships
@@ -172,25 +168,4 @@ func saveSettings(s AppSettings) error {
 		return fmt.Errorf("settings: atomic rename: %w", err)
 	}
 	return nil
-}
-
-// moveFileAtomic wraps windows.MoveFileEx with REPLACE_EXISTING + WRITE_THROUGH.
-// On Windows, os.Rename is NOT atomic when the target exists (issue #8914).
-// MoveFileEx IS atomic on NTFS for same-volume source/dest. WRITE_THROUGH
-// forces a physical disk commit before return (crash-safe at the cost of
-// ~1-5ms latency per save — acceptable for UI-triggered writes).
-func moveFileAtomic(src, dst string) error {
-	srcW, err := windows.UTF16PtrFromString(src)
-	if err != nil {
-		return err
-	}
-	dstW, err := windows.UTF16PtrFromString(dst)
-	if err != nil {
-		return err
-	}
-	return windows.MoveFileEx(
-		srcW,
-		dstW,
-		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
-	)
 }

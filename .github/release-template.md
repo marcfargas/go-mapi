@@ -1,24 +1,28 @@
-## go-mapi v3.0
+## go-mapi component vX.Y.Z
 
-A standalone Windows desktop app that routes legacy "Send to Mail recipient" calls to Gmail as drafts. Wails v2 + Svelte 5 + WebView2 + C++17 MAPI DLL.
+### Channel
 
-### ⚠️ v2.x is retired
+- Component: user / system
+- Release line: development / stable
+- Distribution: GitHub / Microsoft Store flight / WinGet target
+- Promotion source (stable releases): `X.Y.Z-beta.N`
 
-> **The v2.x Chrome/Edge extension + Go native-host is retired and receives no further updates.** Its store listings are frozen with deprecation messaging. If you are on v2.x:
->
-> 1. **Uninstall v2.x first** via **Settings → Apps → Installed apps** — this removes both the browser extension and the native-host.
-> 2. **Then install v3.0.** go-mapi does not migrate v2 artifacts, and running both side-by-side is unsupported.
+Development releases use odd major versions with an explicit `alpha`, `beta`,
+or `nightly` prerelease identifier. Stable releases use the corresponding even
+major without a prerelease identifier.
 
-### Install
+### Changes
 
-1. Download `go-mapi-setup.exe` from the assets below, or use the stable URL:
-   `https://github.com/marcfargas/go-mapi/releases/latest/download/go-mapi-setup.exe`
-2. Run the installer as administrator. Admin elevation is required because the installer registers go-mapi as a machine-wide MAPI handler under `HKLM\SOFTWARE\Clients\Mail`.
-3. First launch: sign in with your Google account — the app opens your default browser for OAuth consent.
+- <!-- user-visible change -->
 
-### Updates are manual
+### Verification
 
-go-mapi surfaces an in-app "update available" banner when a newer release is published, but does **not** replace its own binary. Clicking the banner opens this release page in your browser; you download and run the new installer yourself. Manual path is an explicit design decision, not a limitation.
+- [ ] Artifact versions match the tag and component manifest
+- [ ] All executable payloads are signed and signatures are verified
+- [ ] Targeted publication and clean-machine installation passed
+- [ ] Native x86 and x64 MAPI producers reached the real user-component queue consumer
+- [ ] Upgrade and rollback behavior passed for this channel
+- [ ] Stable only: the corresponding odd-major candidate passed promotion review
 
 ### System requirements
 
@@ -26,14 +30,10 @@ go-mapi surfaces an in-app "update available" banner when a newer release is pub
 - Microsoft Edge WebView2 Evergreen Runtime — auto-bootstrapped by the installer if missing
 - Gmail or Google Workspace account
 
-### Release artifacts
-
-- `go-mapi-setup.exe` — single-file installer (~7 MB, bundles WebView2 bootstrapper + MAPI DLL + Wails binary)
-
 ### License
 
-LGPL-3.0 — see [LICENSE](https://github.com/marcfargas/go-mapi/blob/main/LICENSE).
+LGPL-3.0-or-later — see [LICENSE](https://github.com/marcfargas/go-mapi/blob/develop/LICENSE).
 
 ---
 
-Full docs: [README](https://github.com/marcfargas/go-mapi#readme). Privacy model, uninstall steps, and the v2.x → v3.0 cutover note live there.
+Full docs: [README](https://github.com/marcfargas/go-mapi/blob/develop/README.md).

@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures/wails-app';
+import { test, expect } from './fixtures/user-component';
 
 // Phase 11 plan 06 — auth-banner regression coverage.
 //
@@ -14,7 +14,7 @@ test('Test 5 — invalid_grant surfaces the re-auth banner within 3s', async ({ 
   app.gmail.failNextWith(401);
   app.gmail.failNextWith(401);
 
-  await app.watchDir.dropEmail({ subject: 'Trigger reauth' });
+  await app.queue.send({ subject: 'Expired auth' });
 
   const row = app.page.locator('[data-testid="queue-row"]').first();
   await expect(row).toBeVisible({ timeout: 3_000 });

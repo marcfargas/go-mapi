@@ -1,4 +1,4 @@
-name: Release user app
+name: Release user component
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Stable app version (for example 4.0.0)'
+        description: 'User-component version (for example 3.1.0-beta.1 or 4.1.0)'
         required: true
       sign:
         description: 'Use the configured release-signing path'
@@ -22,13 +22,13 @@ permissions:
   actions: read
 
 concurrency:
-  group: user-app-release-${{ github.ref_name || inputs.version }}
+  group: user-component-release-${{ github.ref_name || inputs.version }}
   cancel-in-progress: false
 
 jobs:
   build-sign-verify:
     runs-on: windows-latest
-    environment: app-release
+    environment: user-component-release
     env:
       GOMAPI_OAUTH_CLIENT_ID: ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
@@ -38,19 +38,21 @@ jobs:
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
     outputs:
       version: ${{ steps.version.outputs.version }}
+      track: ${{ steps.version.outputs.track }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
+      - uses: extractions/setup-just@v2
 
-      - name: Resolve independent app version
+      - name: Resolve independent user-component version
         id: version
         shell: pwsh
         run: |
           $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' -replace '^app-v','' } else { '${{ inputs.version }}' }
-          if ($version -notmatch '^\d+\.\d+\.\d+$' -or $version -eq '0.0.0') { throw "Invalid stable app version: $version" }
+          go run ./internal/mapi/cmd/release-track --github-output $env:GITHUB_OUTPUT -- $version
           [IO.File]::WriteAllText('src/app/VERSION', $version, [Text.Encoding]::ASCII)
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
 
@@ -68,10 +70,10 @@ jobs:
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
 
       - run: npm ci
-      - run: npm run test:app
-      - run: npm run check:app
+      - run: just test-user
+      - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: npm run build:app:release
+      - run: just build-user-release
       - name: Verify app artifact metadata before signing
         shell: pwsh
         run: .\scripts\verify-app-artifact.ps1
@@ -177,6 +179,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.version.outputs.version }}
+          prerelease: ${{ steps.version.outputs.track == 'development' }}
+          make_latest: ${{ steps.version.outputs.track == 'stable' }}
           fail_on_unmatched_files: true
           files: |
             release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix
@@ -186,9 +190,9 @@ jobs:
 
   submit-winget:
     needs: build-sign-verify
-    if: github.event_name == 'push' || inputs.publish
+    if: (github.event_name == 'push' || inputs.publish) && needs.build-sign-verify.outputs.track == 'stable'
     runs-on: windows-latest
-    environment: app-release
+    environment: user-component-release
     steps:
       - name: Submit the exact GitHub Release artifact to winget
         shell: pwsh
@@ -201,9 +205,9 @@ jobs:
 
   submit-store:
     needs: build-sign-verify
-    if: github.event_name == 'push' || inputs.publish
+    if: (github.event_name == 'push' || inputs.publish) && needs.build-sign-verify.outputs.track == 'stable'
     runs-on: windows-latest
-    environment: app-release
+    environment: user-component-release
     steps:
       - uses: actions/download-artifact@v4
         with:

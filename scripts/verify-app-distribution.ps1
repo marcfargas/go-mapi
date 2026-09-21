@@ -30,6 +30,8 @@ function Resolve-MakeAppx {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $versionInput = (Get-Content (Join-Path $repoRoot "src/app/VERSION") -Raw).Trim()
 if ($Version -ne $versionInput) { throw "Distribution version does not match src/app/VERSION" }
+if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { throw "Distribution version must be canonical SemVer" }
+$packageVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
 $makeAppx = Resolve-MakeAppx
 $msix = [IO.Path]::GetFullPath((Join-Path $repoRoot $MsixPath))
 $installer = [IO.Path]::GetFullPath((Join-Path $repoRoot $InstallerPath))
@@ -47,6 +49,7 @@ try {
     $payload = @($files | Where-Object { $_.Extension -eq '.exe' })
     if ($payload.Count -ne 1 -or $payload[0].Name -ne 'go-mapi.exe') { throw "MSIX must contain exactly one executable payload: go-mapi.exe" }
     $manifest = Get-Content (Join-Path $stage "AppxManifest.xml") -Raw
+    if (-not $manifest.Contains("Version=`"$packageVersion`"")) { throw "MSIX identity version does not match $packageVersion" }
     foreach ($required in @('ProcessorArchitecture="x64"', 'Windows.FullTrustApplication', 'windows.startupTask', 'TaskId="go-mapi-user-startup-v4"', 'Enabled="true"', 'FileSystemWriteVirtualization>disabled', 'Name="runFullTrust"', 'Name="unvirtualizedResources"', 'MinVersion="10.0.18362.0"')) {
         if (-not $manifest.Contains($required)) { throw "MSIX manifest is missing: $required" }
     }

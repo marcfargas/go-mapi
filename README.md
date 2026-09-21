@@ -33,12 +33,19 @@ drafts on your behalf. That's the only sign-in step.
 
 ## Install
 
-1. Download `go-mapi-setup.exe` from the [latest release](https://github.com/marcfargas/go-mapi/releases/latest)
-2. Run it. Windows will ask for permission (UAC dialog) — click **Yes** to
-   continue. go-mapi needs this to register itself as the Windows mail
-   handler; you don't need to call IT.
-3. Sign in with your Gmail or Google Workspace account when prompted
-4. Done
+go-mapi v4 is split into two independently serviced packages:
+
+- The **user component** is the per-user tray application and Gmail client.
+- The **system component** is the machine-wide Windows MAPI integration. Its
+  installation requires administrator consent.
+
+During the v4 release-candidate period, install both packages from the selected
+test distribution. The final stable download locations will be published here
+only after the signed Store/WinGet release path has passed end-to-end
+verification.
+
+After installing both components, start go-mapi and sign in with your Gmail or
+Google Workspace account when prompted.
 
 go-mapi runs in the Windows notification area (the icons next to your
 clock). Click its icon to open the window or change settings.
@@ -61,13 +68,14 @@ in your inbox. Switch between modes in the go-mapi window.
 
 ## Updates
 
-go-mapi tells you when a new version is available. You choose when to
-install it — updates are never installed without your say-so. When a new
-version is ready, click the banner to open the download page and run the
-new installer yourself. Update checks contact `go-mapi.app` and report only
+go-mapi tells you when either component has a compatible update. You choose
+when to install it — updates are never installed without your say-so. The user
+component can download a verified system-component installer and asks for
+administrator consent only when Windows is ready to install it. Update checks
+contact `go-mapi.app` and report only
 the app version, distribution channel, operating system, and coarse
 country/area aggregates. They do not use an install identifier, cookies, or
-your email/account data; downloads remain on GitHub.
+your email/account data.
 
 ## License
 

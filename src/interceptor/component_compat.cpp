@@ -103,6 +103,15 @@ int Compare(const Version& left, const Version& right) {
     return 0;
 }
 
+Version CompatibilityCoordinate(Version version) {
+    if (version.major % 2 == 1 && version.major < (std::numeric_limits<uint64_t>::max)() &&
+        !version.prerelease.empty()) {
+        const auto& label = version.prerelease.front();
+        if (label == "alpha" || label == "beta" || label == "nightly") ++version.major;
+    }
+    return version;
+}
+
 } // namespace
 
 CompatibilityResult EvaluateCompatibility(const std::string& installed,
@@ -121,6 +130,7 @@ CompatibilityResult EvaluateCompatibility(const std::string& installed,
     if (hasMaximum && (!ParseVersion(required.maxExclusive, maximum) || Compare(maximum, minimum) <= 0)) {
         result.status = CompatibilityStatus::Invalid; return result;
     }
+    got = CompatibilityCoordinate(got);
     if (Compare(got, minimum) < 0) { result.status = CompatibilityStatus::BelowMinimum; return result; }
     if (hasMaximum && Compare(got, maximum) >= 0) { result.status = CompatibilityStatus::AboveMaximum; return result; }
     result.status = CompatibilityStatus::Compatible;

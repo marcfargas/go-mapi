@@ -20,7 +20,7 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 	}
 	content := string(workflow)
 	for _, required := range []string{
-		"environment: admin-release",
+		"environment: system-component-release",
 		"ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64",
 		"Require protected admin metadata signing inputs",
 		"go-mapi-admin-root-v1",
@@ -33,6 +33,8 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 		"maxExclusive = $requires.maxExclusive",
 		"interceptor compatibility requires an explicit maxExclusive app version",
 		"code-signing and a distinct subscriber-identity EKU",
+		"prerelease: ${{ steps.version.outputs.track == 'development' }}",
+		"steps.version.outputs.track == 'stable'",
 	} {
 		if !strings.Contains(content, required) {
 			t.Errorf("admin metadata release guard missing %q", required)

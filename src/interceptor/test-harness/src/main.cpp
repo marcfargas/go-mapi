@@ -67,7 +67,18 @@ int main(int argc, char* argv[]) {
         { "Send Documents Attachment Continuity", test_send_documents },
     };
 
+    std::string selectedCase;
+    if (argc == 4 && std::string(argv[2]) == "--case") selectedCase = argv[3];
+    if (argc > 2 && selectedCase.empty()) {
+        std::cerr << "Usage: go-mapi-test-harness.exe [dll-path] [--case case-name]" << std::endl;
+        return 2;
+    }
+
+    bool selectedCaseFound = selectedCase.empty();
+
     for (const auto& test : tests) {
+        if (!selectedCase.empty() && test.first != selectedCase) continue;
+        selectedCaseFound = true;
         int result = test.second();
         if (result == 0) {
             testsPassed++;
@@ -76,6 +87,11 @@ int main(int argc, char* argv[]) {
             testsFailed++;
             TestUtilities::PrintTestResult(test.first, false);
         }
+    }
+
+    if (!selectedCaseFound) {
+        std::cerr << "Unknown test case: " << selectedCase << std::endl;
+        return 2;
     }
 
     std::cout << std::endl;

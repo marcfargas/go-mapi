@@ -12,7 +12,7 @@ var (
 )
 
 // init lets `wails dev` pick up credentials from environment variables
-// (populated from .env.local via scripts/dev-wails.ps1) without requiring
+// (loaded from .env.local by the root Justfile) without requiring
 // the developer to repeat the -ldflags dance each run. In release builds
 // the env vars are unset and the -ldflags-injected values win.
 //

@@ -76,30 +76,28 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 
 func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	packageJSON, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	justfile, err := os.ReadFile(filepath.Join(repoRoot, "Justfile"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(packageJSON)
+	content := string(justfile)
 	for _, want := range []string{
-		`"build:app:frontend"`, `"build:app"`, `"build:app:release"`, `"test:app"`, `"check:app"`,
-		`"build:app": "powershell -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -UseEnvironmentCredentials"`,
-		`"build:app:release": "powershell -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials"`,
-		`"build": "npm run build:interceptor`, `"test": "npm run -w @marcfargas/go-mapi-app-frontend build`,
-		`"check": "npm run -w @marcfargas/go-mapi-app-frontend build`,
+		"build-frontend:", "build-user:", "build-user-release:", "test-user:", "check-user:", "e2e-user:",
+		"scripts/build-wails.ps1 -UseEnvironmentCredentials",
+		"scripts/build-wails.ps1 -Release -UseEnvironmentCredentials",
 	} {
 		if !strings.Contains(content, want) {
-			t.Errorf("package command contract missing %q", want)
+			t.Errorf("Just command contract missing %q", want)
 		}
 	}
 	for _, line := range strings.Split(content, "\n") {
-		if !strings.Contains(line, `:app`) {
+		if !strings.Contains(line, `-user`) {
 			continue
 		}
 		// A user-scoped standalone installer is still an app distribution
 		// command. Reject only admin/interceptor coupling here; the app workflow
 		// test below separately rejects the legacy combined installer entrypoint.
-		if strings.Contains(line, "interceptor") || strings.Contains(line, "build:installer") || strings.Contains(line, "makensis") {
+		if strings.Contains(line, "interceptor") || strings.Contains(line, "package-system") || strings.Contains(line, "makensis") {
 			t.Errorf("app command must be component-independent: %s", line)
 		}
 	}
@@ -152,7 +150,7 @@ func TestAppReleaseUsesGuardedArtifactEntrypoint(t *testing.T) {
 	content := string(workflow)
 	for _, want := range []string{
 		"workflow_dispatch:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
-		"src/app/VERSION", "npm run build:app:release", "verify-app-artifact.ps1", "verify-app-distribution.ps1",
+		"src/app/VERSION", "just build-user-release", "verify-app-artifact.ps1", "verify-app-distribution.ps1",
 		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
 		if !strings.Contains(content, want) {
@@ -178,14 +176,14 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	content := string(workflow)
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
-		"Build interceptor", "Validate user app packages", "Validate admin MSI lifecycle",
-		"AdminLifecycle.Tests.ps1", "npm run build:app:frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
+		"Build interceptor", "Validate user component packages", "Validate system component MSI lifecycle",
+		"AdminLifecycle.Tests.ps1", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("CI workflow is missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"softprops/action-gh-release", "signpath/github-action-submit-signing-request", "environment: app-release", "environment: admin-release"} {
+	for _, forbidden := range []string{"softprops/action-gh-release", "signpath/github-action-submit-signing-request", "environment: user-component-release", "environment: system-component-release"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("CI workflow must not have release authority %q", forbidden)
 		}

@@ -1,13 +1,16 @@
 # Component integration gate
 
-This is the compatibility proof for independently released components. It is
-not an installer, update, cleanup, or branch-protection check.
+This is the focused compatibility proof for independently released components.
+The ordinary Playwright suite exercises the user component against an isolated
+queue directory on every development platform. This Windows-only gate proves
+that both native system-component architectures emit descriptors accepted by
+the real user-component queue consumer.
 
 On one task-owned CrabBox Windows lease, build or place the independently
 selected artifacts, then run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 `
+just e2e-system-windows `
   -X64Dll src/interceptor/build-x64/bin/go-mapi.dll `
   -X64Harness src/interceptor/build-x64/bin/go-mapi-test-harness.exe `
   -X86Dll src/interceptor/build-x86/bin/go-mapi.dll `

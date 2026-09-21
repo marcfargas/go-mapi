@@ -23,7 +23,7 @@ function Resolve-MakeNsis([string]$Command) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $versionInput = (Get-Content (Join-Path $repoRoot "src/app/VERSION") -Raw).Trim()
-if ($Version -notmatch '^\d+\.\d+\.\d+$' -or $Version -eq '0.0.0') { throw "Version must be a stable major.minor.patch value" }
+if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$' -or $Version -eq '0.0.0') { throw "Version must be canonical SemVer" }
 if ($Version -ne $versionInput) { throw "Version $Version does not match src/app/VERSION $versionInput" }
 $appPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $AppExe))
 if (-not (Test-Path $appPath -PathType Leaf)) { throw "App executable not found: $appPath" }

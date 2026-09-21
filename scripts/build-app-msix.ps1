@@ -33,9 +33,12 @@ function Resolve-MakeAppx {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $versionInput = (Get-Content (Join-Path $repoRoot "src/app/VERSION") -Raw).Trim()
-if ($Version -notmatch '^\d+\.\d+\.\d+$' -or $Version -eq '0.0.0') { throw "Version must be a stable major.minor.patch value" }
+if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$' -or $Version -eq '0.0.0') { throw "Version must be canonical SemVer" }
 if ($Version -ne $versionInput) { throw "Version $Version does not match src/app/VERSION $versionInput" }
-$packageVersion = "$Version.0"
+# MSIX identity versions are four numeric fields. The odd/even release policy
+# carries channel intent in the SemVer suffix while the Store ordering key uses
+# its numeric core; the fourth field remains Store-reserved zero.
+$packageVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
 
 $appPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $AppExe))
 if (-not (Test-Path $appPath -PathType Leaf)) { throw "App executable not found: $appPath" }
