@@ -41,6 +41,11 @@ if ($InstallDeps) {
 }
 
 if (-not $NoBuild) {
+  $goVersion = (& go version 2>&1 | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $goVersion -notmatch '^go version go1\.25\.') {
+    throw "Windows E2E builds require Go 1.25.x; found: $goVersion"
+  }
+
   Write-Host '[run-e2e] building native x86/x64 MAPI producers…' -ForegroundColor Cyan
   foreach ($architecture in @('x86', 'x64')) {
     & (Join-Path $repoRoot 'src/interceptor/build.ps1') -Arch $architecture -Config Release -Tests -Clean -Version '3.1.0-beta.1'

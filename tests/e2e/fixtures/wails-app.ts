@@ -129,6 +129,30 @@ function killTree(pid: number): Promise<void> {
   });
 }
 
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      reject(new Error(`app process did not exit within ${timeoutMs}ms`));
+    }, timeoutMs);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    child.once('exit', onExit);
+  });
+}
+
+async function waitForPortFree(port: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isPortFree(port)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`CDP port ${port} remained in use for ${timeoutMs}ms after app teardown`);
+}
+
 async function pickAppPage(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
   // CDP exposes existing contexts; WebView2 typically has one. The Wails
   // page loads via wails:// scheme so any non-blank page is ours.
@@ -241,6 +265,12 @@ export const test = base.extend<{ app: WailsAppFixture }>({
       if (child.pid !== undefined) {
         await settleWithin(killTree(child.pid), 5_000);
       }
+      await waitForChildExit(child, 5_000).catch(() => {});
+      await waitForPortFree(cdpPort, 5_000).catch(() => {});
+      // WebView2 can release its controller shortly after the host and CDP
+      // socket disappear. Starting the next fixture during that window fails
+      // CreateCoreWebView2Controller with ERROR_BUSY (0x800700aa).
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
       await settleWithin(gmail.close(), 5_000).catch(() => {});
       await settleWithin(oauth.close(), 5_000).catch(() => {});
       await nativeMapi.cleanup().catch(() => {});

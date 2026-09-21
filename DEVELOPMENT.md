@@ -57,10 +57,10 @@ tests/protocol-fixtures/     # JSON fixtures consumed by internal/mapi integrati
 ## Prerequisites
 
 - Windows 10/11
-- Go 1.25+
+- Go 1.25.x (the qualified Wails toolchain)
 - Node 20+, npm 9+
 - MinGW + CMake 3.16+ + Ninja (for the C++ DLL)
-- Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+- Wails CLI: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`
 
 ## Clone + install dependencies
 
@@ -114,6 +114,18 @@ optimisation, while `-Release` opts into the artifact-version guard:
 # Set src/interceptor/interceptor-version.txt to the intended interceptor release version first.
 powershell -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Arch x64 -Config Release -Release
 ```
+
+## Windows E2E
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-e2e.ps1 -InstallDeps
+```
+
+This builds the real x86 and x64 system-component DLLs and native producers,
+then drives their queue output through the real Wails user component. It is
+pinned to Go 1.25.x, matching CI. Run the Playwright phase in an interactive
+Windows session: Wails cannot create its WebView2 controller from OpenSSH
+Session 0. On CrabBox, launch it through the active Session 1 CUA daemon.
 
 ## Race detector
 
