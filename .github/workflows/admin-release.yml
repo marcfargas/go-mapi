@@ -9,7 +9,7 @@ on:
         description: 'System-component version (for example 3.1.0-beta.1 or 4.1.0)'
         required: true
       sign:
-        description: 'Sign DLLs and MSI with SignPath'
+        description: 'Sign DLLs and MSI with Azure Artifact Signing'
         type: boolean
         default: true
       publish:
@@ -20,16 +20,16 @@ on:
 permissions:
   contents: write
   actions: read
+  id-token: write
 
 jobs:
   build-sign-publish:
-    # This protected environment holds the release-only metadata inputs. It is
-    # intentionally separate from ordinary build secrets so public releases
-    # cannot silently fall back to an unsigned or developer-generated target.
-    environment: system-component-release
+    # This protected environment is the sole Azure OIDC trust boundary for
+    # release signing; unsigned publication is rejected below.
+    environment: artifact-signing
     runs-on: windows-latest
     env:
-      HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
       HAS_WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN != '' }}
       ADMIN_RELEASE_ROOT_JSON: ${{ vars.ADMIN_RELEASE_ROOT_JSON }}
       ADMIN_RELEASE_TARGETS_KEY_ID: ${{ vars.ADMIN_RELEASE_TARGETS_KEY_ID }}
@@ -67,10 +67,10 @@ jobs:
         if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: |
-          if ($env:HAS_SIGNPATH -ne 'true') { throw 'Public/signing run requires SignPath credentials; unsigned publication is forbidden.' }
+          if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing run requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
 
       - name: Require protected admin metadata signing inputs
-        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        if: github.event_name == 'push' || inputs.publish
         shell: pwsh
         run: |
           $required = @(
@@ -112,40 +112,39 @@ jobs:
         shell: pwsh
         run: .\src\interceptor\verify-release.ps1
 
-      - name: Upload DLLs for signing
+      - name: Authenticate to Azure for Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
-        id: upload-dlls
-        uses: actions/upload-artifact@v4
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
-          name: admin-interceptor-dlls-unsigned
-          path: |
-            release/interceptor/go-mapi-x86.dll
-            release/interceptor/go-mapi-x64.dll
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign x86/x64 DLLs
+      - name: Sign x86/x64 DLLs with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
-          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.upload-dlls.outputs.artifact-id }}
-          output-artifact-directory: release/interceptor-signed
-          wait-for-completion: true
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: |
+            ${{ github.workspace }}\release\interceptor\go-mapi-x86.dll
+            ${{ github.workspace }}\release\interceptor\go-mapi-x64.dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
-      - name: Adopt signed DLLs and refresh artifact hashes
+      - name: Verify signed DLLs and refresh artifact hashes
         if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: |
-          foreach ($arch in @('x86','x64')) {
-            Copy-Item "release/interceptor-signed/go-mapi-$arch.dll" "release/interceptor/go-mapi-$arch.dll" -Force
-          }
           $manifestPath = 'release/interceptor/interceptor-artifacts.json'
           $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
           foreach ($artifact in $manifest.artifacts) {
             $path = Join-Path 'release/interceptor' $artifact.filename
-            if ((Get-AuthenticodeSignature $path).Status -ne 'Valid') { throw "Signed DLL verification failed: $path" }
+            $signature = Get-AuthenticodeSignature $path
+            if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Azure Artifact Signing proof is incomplete: $path" }
+            if (('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true') -and $signature.Status -ne 'Valid') { throw "Signed DLL trust verification failed: $path ($($signature.Status))" }
             $artifact.sha256 = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
           }
           [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
@@ -153,39 +152,37 @@ jobs:
       - name: Build interceptor-only WiX MSI
         shell: pwsh
         run: |
-          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
           if ($public) {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}' -RequireSignedInputs
           } else {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}'
           }
 
-      - name: Upload MSI for signing
+      - name: Sign MSI with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
-        id: upload-msi
-        uses: actions/upload-artifact@v4
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
-          name: go-mapi-interceptor-msi-unsigned
-          path: release/admin/go-mapi-interceptor.msi
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\release\admin\go-mapi-interceptor.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
-      - name: Sign MSI
-        if: github.event_name == 'push' || inputs.publish || inputs.sign
-        uses: signpath/github-action-submit-signing-request@v2
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
-          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.upload-msi.outputs.artifact-id }}
-          output-artifact-directory: release/admin-signed
-          wait-for-completion: true
-
-      - name: Adopt and verify signed MSI
+      - name: Verify signed MSI
         if: github.event_name == 'push' || inputs.publish || inputs.sign
         shell: pwsh
         run: |
-          Copy-Item release/admin-signed/go-mapi-interceptor.msi release/admin/go-mapi-interceptor.msi -Force
-          .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi -RequireSignature
+          $path = 'release/admin/go-mapi-interceptor.msi'
+          $signature = Get-AuthenticodeSignature -LiteralPath $path
+          if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Azure Artifact Signing proof is incomplete for the MSI' }
+          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true') {
+            .\src\installer\msi\verify.ps1 -MsiPath $path -RequireSignature
+          } else {
+            .\src\installer\msi\verify.ps1 -MsiPath $path
+          }
 
       - name: Verify unsigned validation MSI
         if: github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign
@@ -201,7 +198,7 @@ jobs:
           .\src\installer\msi\generate-winget.ps1 -Version $version -MsiPath release/admin/go-mapi-interceptor.msi -InstallerUrl $url -OutputDirectory release/winget
 
       - name: Generate signed admin release metadata
-        if: github.event_name == 'push' || inputs.publish || inputs.sign
+        if: github.event_name == 'push' || inputs.publish
         shell: pwsh
         run: |
           $msi = Resolve-Path release/admin/go-mapi-interceptor.msi

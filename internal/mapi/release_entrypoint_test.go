@@ -24,7 +24,7 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			t.Fatalf("read %s: %v", release.path, err)
 		}
 		content := string(workflow)
-		for _, want := range []string{release.tag, "contents: write", "softprops/action-gh-release@v2"} {
+		for _, want := range []string{release.tag, "contents: write", "softprops/action-gh-release@v2", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("authoritative workflow %s is missing %q", release.path, want)
 			}
@@ -59,7 +59,7 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 		}
 		content := string(workflow)
 		for _, forbidden := range []string{
-			"contents: write", "softprops/action-gh-release", "signpath/github-action-submit-signing-request",
+			"contents: write", "softprops/action-gh-release", "azure/artifact-signing-action",
 			"microsoft/microsoft-store-apppublisher", "wingetcreate.exe", "tags: ['app-v*']", "tags: ['admin-v*']",
 		} {
 			if strings.Contains(content, forbidden) {
@@ -183,7 +183,7 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 			t.Errorf("CI workflow is missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"softprops/action-gh-release", "signpath/github-action-submit-signing-request", "environment: user-component-release", "environment: system-component-release"} {
+	for _, forbidden := range []string{"softprops/action-gh-release", "azure/artifact-signing-action", "environment: artifact-signing", "environment: user-component-release", "environment: system-component-release"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("CI workflow must not have release authority %q", forbidden)
 		}

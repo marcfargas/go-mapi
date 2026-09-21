@@ -119,8 +119,9 @@ func TestAdminReleaseFailsClosedAndDoesNotBuildApp(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
 	for _, want := range []string{
-		"admin-v*", "SIGNPATH_API_TOKEN", "unsigned publication is forbidden", "-RequireSignedInputs",
-		"verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi -RequireSignature",
+		"admin-v*", "AZURE_ARTIFACT_SIGNING_ENDPOINT", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "unsigned publication is forbidden", "-RequireSignedInputs",
+		"environment: artifact-signing", "id-token: write",
+		"verify.ps1 -MsiPath $path -RequireSignature",
 		"ElevationRequirement: elevationRequired", "wingetcreate.exe update", "admin-release.json",
 		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
