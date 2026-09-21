@@ -102,7 +102,7 @@ func TestInstalledAdminManifestMatchesVersionGateContract(t *testing.T) {
 	customAction := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
 	for _, want := range []string{
 		"go-mapi-installed-interceptor-v1", "queue-v1", "minInclusive", "peProductVersion",
-		`x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256",
+		`x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256", "GOMAPI_COMPONENT_VERSION",
 	} {
 		if !strings.Contains(schema, want) && !strings.Contains(customAction, want) {
 			t.Errorf("installed component contract missing %q", want)

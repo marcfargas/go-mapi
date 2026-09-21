@@ -24,6 +24,28 @@ function Assert-Signed([string]$Path) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne 'Valid') { Fail "release input is not Authenticode signed: $Path ($($signature.Status))" }
 }
+function Get-MsiProductVersion([string]$ComponentVersion) {
+    # MSI accepts only Major.Minor.Build numeric versions. Keep stable versions
+    # unchanged; encode development labels and counters into the build field so
+    # successive prereleases retain deterministic Windows Installer ordering.
+    if ($ComponentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $build = [int]$Matches[3]
+    } elseif ($ComponentVersion -match '^(\d+)\.(\d+)\.(\d+)-(alpha|beta|nightly)\.(\d+)$') {
+        $major = [int]$Matches[1]
+        $minor = [int]$Matches[2]
+        $patch = [int]$Matches[3]
+        $stage = @{ alpha = 1; beta = 2; nightly = 3 }[$Matches[4]]
+        $counter = [int]$Matches[5]
+        if ($counter -gt 99) { Fail "development version counter exceeds MSI encoding limit: '$ComponentVersion'" }
+        $build = ($patch * 1000) + ($stage * 100) + $counter
+    } else {
+        Fail "version cannot be represented as an MSI product version: '$ComponentVersion'"
+    }
+    if ($major -gt 255 -or $minor -gt 255 -or $build -gt 65535) { Fail "version exceeds MSI product version limits: '$ComponentVersion'" }
+    return "$major.$minor.$build"
+}
 function Get-ProductCode([string]$InputVersion) {
     # Stable ProductCode per semantic version. UpgradeCode remains stable across
     # versions; same-version rebuilds retain Windows Installer identity.
@@ -69,10 +91,12 @@ if (-not (Test-Path $customBinary)) { Fail "missing packaged DTF custom action $
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $project = Join-Path $msiRoot 'GoMapi.AdminInstaller.wixproj'
 $productCode = Get-ProductCode $Version
+$msiProductVersion = Get-MsiProductVersion $Version
 $arguments = @(
     'build', $project,
     '--configuration', 'Release',
-    "-p:ProductVersion=$Version",
+    "-p:MsiProductVersion=$msiProductVersion",
+    "-p:ComponentVersion=$Version",
     "-p:ProductCode=$productCode",
     "-p:RequiredAppMin=$requiredAppMin",
     "-p:SourceX64=$($byArch.x64)",

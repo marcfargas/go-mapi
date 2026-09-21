@@ -2,7 +2,7 @@
   <Package
     Name="go-mapi interceptor"
     Manufacturer="go-mapi"
-    Version="$(var.ProductVersion)"
+    Version="$(var.MsiProductVersion)"
     UpgradeCode="B3C97B33-3F10-47CA-9FA7-24EE3B75E325"
     ProductCode="$(var.ProductCode)"
     Scope="perMachine"
@@ -18,6 +18,7 @@
     <Launch Condition="VersionNT64" Message="go-mapi interceptor requires 64-bit Windows." />
     <!-- Validation-only failure injection. Empty in every release invocation. -->
     <Property Id="GOMAPI_TEST_FAILURE_POINT" Secure="yes" />
+    <Property Id="GOMAPI_COMPONENT_VERSION" Value="$(var.ComponentVersion)" Secure="yes" />
     <Property Id="GOMAPI_REQUIRED_APP_MIN" Value="$(var.RequiredAppMin)" Secure="yes" />
 
     <Component Id="InterceptorX64" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" Guid="D56189EF-0DA1-4AA1-A764-D90610EC8441" Bitness="always64">
