@@ -18,7 +18,9 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(workflow)
+	// GitHub's Windows checkout may materialize workflow files with CRLF.
+	// Normalize before asserting multi-line authorization boundaries.
+	content := strings.ReplaceAll(string(workflow), "\r\n", "\n")
 	for _, required := range []string{
 		"environment: artifact-signing",
 		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
