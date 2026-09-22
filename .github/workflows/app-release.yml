@@ -62,7 +62,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing app release requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
-          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.publish }}' -ne 'true') { exit 0 }
+          if ('${{ steps.version.outputs.track }}' -ne 'stable') { exit 0 }
           foreach ($name in @('STORE_IDENTITY_NAME','STORE_PUBLISHER','STORE_PUBLISHER_DISPLAY_NAME','GOMAPI_STORE_PACKAGE_FAMILY_NAME')) {
             if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) { throw "Missing protected Store identity: $name" }
           }
@@ -75,17 +75,17 @@ jobs:
       - run: just test-user
       - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - name: Configure non-publishing validation credentials
-        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+      - name: Configure development-channel validation credentials
+        if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign)
         shell: pwsh
         run: |
           "GOMAPI_OAUTH_CLIENT_ID=ci-client" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
           "GOMAPI_OAUTH_CLIENT_SECRET=ci-secret" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
-      - name: Build public user-component artifact
-        if: github.event_name == 'push' || inputs.publish
+      - name: Build stable user-component artifact
+        if: steps.version.outputs.track == 'stable' && (github.event_name == 'push' || inputs.publish || inputs.sign)
         run: just build-user-release
-      - name: Build non-publishing validation artifact
-        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+      - name: Build development-channel user-component artifact
+        if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign)
         run: just build-user
       - name: Verify app artifact metadata before signing
         shell: pwsh
@@ -122,11 +122,11 @@ jobs:
           STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
         run: |
-          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
-          $signingValidation = '${{ inputs.sign }}' -eq 'true'
-          $identity = if ($public) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
-          $publisher = if ($public) { $env:STORE_PUBLISHER } elseif ($signingValidation) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
-          $display = if ($public) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi validation' }
+          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
+          $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          $identity = if ($stable) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
+          $publisher = if ($stable) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
+          $display = if ($stable) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
           .\scripts\build-app-msix.ps1 -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
           .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
 
@@ -147,9 +147,9 @@ jobs:
       - name: Verify signed packages and exact bytes
         shell: pwsh
         run: |
-          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
-          $signed = $public -or '${{ inputs.sign }}' -eq 'true'
-          if ($public) {
+          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
+          $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
+          if ($stable -and $signed) {
             .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
           } else {
             .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
@@ -187,6 +187,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v${{ steps.version.outputs.version }}
+          name: User component ${{ steps.version.outputs.version }}
+          body: |
+            Development-channel validation release.
+            Artifacts are signed by the configured Azure Artifact Signing profile.
+            Beta artifacts may use the Azure TEST ONLY certificate and are not a stable production release.
           prerelease: ${{ steps.version.outputs.track == 'development' }}
           make_latest: ${{ steps.version.outputs.track == 'stable' }}
           fail_on_unmatched_files: true

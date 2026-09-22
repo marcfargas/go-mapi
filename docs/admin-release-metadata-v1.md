@@ -47,14 +47,19 @@ The protected `artifact-signing` GitHub Environment supplies the concrete signin
 `ADMIN_RELEASE_ROOT_JSON`, `ADMIN_RELEASE_TARGETS_KEY_ID`,
 `ADMIN_RELEASE_METADATA_ORIGIN`, `ADMIN_RELEASE_PUBLISHER`,
 `ADMIN_RELEASE_EKUS_JSON`, `ADMIN_RELEASE_POLICY_ID`, and the secret
-`ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64`. Public, publish, and explicit
-signing runs fail before packaging when any is absent. The private-key secret
-is a base64-encoded PEM Ed25519 key, materialized only in the runner temporary
-directory for `openssl pkeyutl` and then removed. The protected GitHub run ID
-is the monotonically increasing release sequence; it is not taken from a
-source-controlled file.
+`ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64`. Stable publication fails before
+packaging when any is absent. Development-channel prereleases instead publish
+an explicitly test-only manifest and may use Azure's TEST ONLY certificate;
+that manifest is not accepted by the automatic admin updater. The private-key
+secret is a base64-encoded PEM Ed25519 key, materialized only in the runner
+temporary directory for `openssl pkeyutl` and then removed. The protected
+GitHub run ID is the monotonically increasing release sequence; it is not
+taken from a source-controlled file.
 
 Signed releases publish `admin-targets.json` (the envelope) and
 `admin-release-root.json` (the public root). `admin-release.json` remains a
 byte-identical envelope alias during the independent-channel transition; it is
-not an unsigned descriptor.
+not an unsigned descriptor. Development-channel validation releases publish a
+separate `go-mapi-admin-development-release-v1` manifest alongside the signed
+MSI so the GitHub release, immutable URL, digest, provenance, and test signer
+can be exercised without weakening the stable updater trust boundary.

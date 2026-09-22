@@ -70,7 +70,7 @@ jobs:
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing run requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
 
       - name: Require protected admin metadata signing inputs
-        if: github.event_name == 'push' || inputs.publish
+        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
           $required = @(
@@ -144,7 +144,7 @@ jobs:
             $path = Join-Path 'release/interceptor' $artifact.filename
             $signature = Get-AuthenticodeSignature $path
             if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Azure Artifact Signing proof is incomplete: $path" }
-            if (('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true') -and $signature.Status -ne 'Valid') { throw "Signed DLL trust verification failed: $path ($($signature.Status))" }
+            if ('${{ steps.version.outputs.track }}' -eq 'stable' -and $signature.Status -ne 'Valid') { throw "Signed DLL trust verification failed: $path ($($signature.Status))" }
             $artifact.sha256 = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
           }
           [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
@@ -152,12 +152,27 @@ jobs:
       - name: Build interceptor-only WiX MSI
         shell: pwsh
         run: |
-          $public = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
-          if ($public) {
+          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
+          if ($stable) {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}' -RequireSignedInputs
           } else {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}'
           }
+
+      - name: Read Windows Installer product version
+        id: msi
+        shell: pwsh
+        run: |
+          $path = (Resolve-Path 'release/admin/go-mapi-interceptor.msi').Path
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($path, 0))
+          $view = $database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $database, @("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductVersion'"))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+          if (-not $record) { throw 'MSI ProductVersion is absent' }
+          $version = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, @(1))
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid MSI ProductVersion: $version" }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
 
       - name: Sign MSI with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -178,7 +193,7 @@ jobs:
           $path = 'release/admin/go-mapi-interceptor.msi'
           $signature = Get-AuthenticodeSignature -LiteralPath $path
           if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Azure Artifact Signing proof is incomplete for the MSI' }
-          if ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true') {
+          if ('${{ steps.version.outputs.track }}' -eq 'stable') {
             .\src\installer\msi\verify.ps1 -MsiPath $path -RequireSignature
           } else {
             .\src\installer\msi\verify.ps1 -MsiPath $path
@@ -190,7 +205,7 @@ jobs:
         run: .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi
 
       - name: Generate signed winget manifest
-        if: github.event_name == 'push' || inputs.publish
+        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
           $version = '${{ steps.version.outputs.version }}'
@@ -198,7 +213,7 @@ jobs:
           .\src\installer\msi\generate-winget.ps1 -Version $version -MsiPath release/admin/go-mapi-interceptor.msi -InstallerUrl $url -OutputDirectory release/winget
 
       - name: Generate signed admin release metadata
-        if: github.event_name == 'push' || inputs.publish
+        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
           $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
@@ -285,12 +300,39 @@ jobs:
           [IO.File]::WriteAllText('release/admin/admin-release-root.json', $env:ADMIN_RELEASE_ROOT_JSON, $utf8)
           Remove-Item -LiteralPath release/admin/admin-targets-signed.json,release/admin/admin-targets.sig -Force
 
+      - name: Generate development release manifest
+        if: steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.publish || inputs.sign)
+        shell: pwsh
+        run: |
+          $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
+          $signature = Get-AuthenticodeSignature -LiteralPath $msi
+          $contract = [ordered]@{
+            schema = 'go-mapi-admin-development-release-v1'
+            component = 'interceptor'
+            version = '${{ steps.version.outputs.version }}'
+            msiVersion = '${{ steps.msi.outputs.version }}'
+            artifact = [ordered]@{
+              url = 'https://github.com/${{ github.repository }}/releases/download/admin-v${{ steps.version.outputs.version }}/go-mapi-interceptor.msi'
+              size = [Int64](Get-Item $msi).Length
+              sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+            signature = [ordered]@{
+              type = $signature.SignatureType.ToString()
+              status = $signature.Status.ToString()
+              subject = $signature.SignerCertificate.Subject
+              timestamped = $null -ne $signature.TimeStamperCertificate
+              testOnly = $true
+            }
+            provenance = [ordered]@{ repository = '${{ github.repository }}'; runId = '${{ github.run_id }}'; commit = '${{ github.sha }}' }
+          }
+          [IO.File]::WriteAllText('release/admin/admin-release.json', ($contract | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+
       - name: Generate unsigned validation release contract
         if: github.event_name == 'workflow_dispatch' && !inputs.sign && !inputs.publish
         shell: pwsh
         run: |
           $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
-          $contract = [ordered]@{ schema = 'go-mapi-admin-release-validation-v1'; component = 'interceptor'; version = '${{ steps.version.outputs.version }}'; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() }
+          $contract = [ordered]@{ schema = 'go-mapi-admin-release-validation-v1'; component = 'interceptor'; version = '${{ steps.version.outputs.version }}'; msiVersion = '${{ steps.msi.outputs.version }}'; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() }
           [IO.File]::WriteAllText('release/admin/admin-release.json', ($contract | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
 
       - name: Upload validation artifacts
@@ -309,10 +351,16 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: admin-v${{ steps.version.outputs.version }}
+          name: System component ${{ steps.version.outputs.version }} (MSI ${{ steps.msi.outputs.version }})
+          body: |
+            Development-channel validation release.
+            Artifacts are signed by the configured Azure Artifact Signing profile.
+            Beta artifacts may use the Azure TEST ONLY certificate and are not a stable production release.
           prerelease: ${{ steps.version.outputs.track == 'development' }}
           make_latest: ${{ steps.version.outputs.track == 'stable' }}
           files: |
             release/admin/go-mapi-interceptor.msi
+            release/admin/admin-release.json
             release/admin/admin-targets.json
             release/admin/admin-release-root.json
             release/winget/*.yaml
