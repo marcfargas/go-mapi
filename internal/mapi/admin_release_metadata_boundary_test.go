@@ -24,6 +24,8 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
 		"ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64",
 		"Require protected admin metadata signing inputs",
+		"steps.version.outputs.track == 'stable'",
+		"go-mapi-admin-development-release-v1",
 		"go-mapi-admin-root-v1",
 		"go-mapi-admin-targets-v1",
 		"go-mapi-admin-envelope-v1",
