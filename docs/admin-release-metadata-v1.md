@@ -56,6 +56,12 @@ temporary directory for `openssl pkeyutl` and then removed. The protected
 GitHub run ID is the monotonically increasing release sequence; it is not
 taken from a source-controlled file.
 
+A manual stable-version run with signing enabled and publication disabled is
+the configuration proof. It builds the app with the embedded root and metadata
+URL, signs the MSI with the configured Azure test profile, and emits a real
+Ed25519 targets envelope. Production certificate-chain trust and Store identity
+are required only when a stable version is actually published.
+
 Signed releases publish `admin-targets.json` (the envelope) and
 `admin-release-root.json` (the public root). `admin-release.json` remains a
 byte-identical envelope alias during the independent-channel transition; it is

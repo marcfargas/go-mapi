@@ -70,7 +70,7 @@ jobs:
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing run requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
 
       - name: Require protected admin metadata signing inputs
-        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable'
+        if: (github.event_name == 'push' || inputs.publish || inputs.sign) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
           $required = @(
@@ -144,7 +144,8 @@ jobs:
             $path = Join-Path 'release/interceptor' $artifact.filename
             $signature = Get-AuthenticodeSignature $path
             if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Azure Artifact Signing proof is incomplete: $path" }
-            if ('${{ steps.version.outputs.track }}' -eq 'stable' -and $signature.Status -ne 'Valid') { throw "Signed DLL trust verification failed: $path ($($signature.Status))" }
+            $publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
+            if ($publishingStable -and $signature.Status -ne 'Valid') { throw "Signed DLL trust verification failed: $path ($($signature.Status))" }
             $artifact.sha256 = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
           }
           [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
@@ -152,8 +153,8 @@ jobs:
       - name: Build interceptor-only WiX MSI
         shell: pwsh
         run: |
-          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
-          if ($stable) {
+          $publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
+          if ($publishingStable) {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}' -RequireSignedInputs
           } else {
             .\src\installer\msi\build.ps1 -Version '${{ steps.version.outputs.version }}'
@@ -193,7 +194,8 @@ jobs:
           $path = 'release/admin/go-mapi-interceptor.msi'
           $signature = Get-AuthenticodeSignature -LiteralPath $path
           if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Azure Artifact Signing proof is incomplete for the MSI' }
-          if ('${{ steps.version.outputs.track }}' -eq 'stable') {
+          $publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
+          if ($publishingStable) {
             .\src\installer\msi\verify.ps1 -MsiPath $path -RequireSignature
           } else {
             .\src\installer\msi\verify.ps1 -MsiPath $path
@@ -221,7 +223,9 @@ jobs:
           # configured declaration. Canonical CN and every protected EKU must
           # agree before targets are published.
           $signature = Get-AuthenticodeSignature -LiteralPath $msi
-          if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { throw 'Signed MSI has no valid leaf signer certificate' }
+          $publishing = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
+          if ($signature.SignatureType -ne 'Authenticode' -or $null -eq $signature.SignerCertificate -or $null -eq $signature.TimeStamperCertificate) { throw 'Signed MSI has no complete Authenticode and timestamp proof' }
+          if ($publishing -and $signature.Status -ne 'Valid') { throw 'Stable publication requires a trusted leaf signer certificate' }
           $actualPublisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false).Trim().ToLowerInvariant()
           $expectedPublisher = $env:ADMIN_RELEASE_PUBLISHER.Trim().ToLowerInvariant()
           if ([string]::IsNullOrWhiteSpace($actualPublisher) -or $actualPublisher -ne $expectedPublisher) { throw 'Signed MSI leaf signer CN does not match protected publisher policy' }
