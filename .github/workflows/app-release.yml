@@ -62,6 +62,12 @@ jobs:
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing app release requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
+          $publishing = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
+          if ($publishing) {
+            foreach ($name in @('GOMAPI_OAUTH_CLIENT_ID','GOMAPI_OAUTH_CLIENT_SECRET')) {
+              if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) { throw "Public app release requires the real Google OAuth credential: $name" }
+            }
+          }
           $publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
           if (-not $publishingStable) { exit 0 }
           foreach ($name in @('STORE_IDENTITY_NAME','STORE_PUBLISHER','STORE_PUBLISHER_DISPLAY_NAME','GOMAPI_STORE_PACKAGE_FAMILY_NAME')) {
@@ -77,7 +83,7 @@ jobs:
       - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - name: Configure development-channel validation credentials
-        if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
         shell: pwsh
         run: |
           "GOMAPI_OAUTH_CLIENT_ID=ci-client" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
