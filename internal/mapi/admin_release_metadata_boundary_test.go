@@ -36,7 +36,7 @@ func TestAdminReleaseWorkflowRequiresProtectedSignedMetadata(t *testing.T) {
 		"maxExclusive = $requires.maxExclusive",
 		"interceptor compatibility requires an explicit maxExclusive app version",
 		"code-signing and a distinct subscriber-identity EKU",
-		"(github.event_name == 'push' || inputs.publish || inputs.sign) && steps.version.outputs.track == 'stable'",
+		"name: Generate signed admin release metadata\n        if: (github.event_name == 'push' || inputs.publish || inputs.sign) && steps.version.outputs.track == 'stable'",
 		"Signed MSI has no complete Authenticode and timestamp proof",
 		"Stable publication requires a trusted leaf signer certificate",
 		"prerelease: ${{ steps.version.outputs.track == 'development' }}",

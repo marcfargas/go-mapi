@@ -215,7 +215,7 @@ jobs:
           .\src\installer\msi\generate-winget.ps1 -Version $version -MsiPath release/admin/go-mapi-interceptor.msi -InstallerUrl $url -OutputDirectory release/winget
 
       - name: Generate signed admin release metadata
-        if: (github.event_name == 'push' || inputs.publish) && steps.version.outputs.track == 'stable'
+        if: (github.event_name == 'push' || inputs.publish || inputs.sign) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
           $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
