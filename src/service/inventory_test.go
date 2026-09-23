@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
@@ -31,6 +32,49 @@ func TestInstallerInventoryEnumeratesBothFixedProductFamilies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(api.upgrades, []string{SystemUpgradeCode, SuiteUpgradeCode}) {
 		t.Fatalf("enumerated UpgradeCodes = %q", api.upgrades)
+	}
+}
+
+func TestInstalledProductSnapshotRequiresMSIAndCorroboratingMarker(t *testing.T) {
+	for _, sku := range []update.SKU{update.System, update.Suite} {
+		identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(sku), "4.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := ProductRegistration{SKU: sku, UpgradeCode: machineUpgradeCode(sku), ProductCode: identity.ProductCode, ProductVersion: identity.ProductVersion}
+		marker := machineProductMarker{SKU: string(sku), PackageRelease: identity.Release, ServiceVersion: "4.0.2", InterceptorVersion: "4.0.3"}
+		if sku == update.Suite {
+			marker.AppVersion = "4.0.4"
+		}
+		got, err := installedProductSnapshot(reg, marker)
+		if err != nil || got.PackageVersion != identity.Release || got.Contained["service"] != marker.ServiceVersion || got.Contained["interceptor"] != marker.InterceptorVersion || got.Contained["app"] != marker.AppVersion {
+			t.Fatalf("%s: snapshot=%+v error=%v", sku, got, err)
+		}
+		cases := []struct {
+			name   string
+			reg    ProductRegistration
+			marker machineProductMarker
+		}{
+			{"wrong sku marker", reg, machineProductMarker{SKU: "other", PackageRelease: marker.PackageRelease, ServiceVersion: marker.ServiceVersion, InterceptorVersion: marker.InterceptorVersion, AppVersion: marker.AppVersion}},
+			{"wrong product code", ProductRegistration{SKU: sku, UpgradeCode: reg.UpgradeCode, ProductCode: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA", ProductVersion: reg.ProductVersion}, marker},
+			{"wrong upgrade code", ProductRegistration{SKU: sku, UpgradeCode: "other", ProductCode: reg.ProductCode, ProductVersion: reg.ProductVersion}, marker},
+			{"wrong product version", ProductRegistration{SKU: sku, UpgradeCode: reg.UpgradeCode, ProductCode: reg.ProductCode, ProductVersion: "0.0.0"}, marker},
+			{"missing service", reg, machineProductMarker{SKU: marker.SKU, PackageRelease: marker.PackageRelease, InterceptorVersion: marker.InterceptorVersion, AppVersion: marker.AppVersion}},
+		}
+		if sku == update.Suite {
+			cases = append(cases, struct {
+				name   string
+				reg    ProductRegistration
+				marker machineProductMarker
+			}{"missing app", reg, machineProductMarker{SKU: marker.SKU, PackageRelease: marker.PackageRelease, ServiceVersion: marker.ServiceVersion, InterceptorVersion: marker.InterceptorVersion}})
+		}
+		for _, tc := range cases {
+			t.Run(string(sku)+"/"+tc.name, func(t *testing.T) {
+				if _, err := installedProductSnapshot(tc.reg, tc.marker); err == nil {
+					t.Fatal("accepted inconsistent machine product")
+				}
+			})
+		}
 	}
 }
 

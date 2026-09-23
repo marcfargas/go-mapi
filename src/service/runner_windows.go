@@ -11,25 +11,20 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 	"golang.org/x/sys/windows"
 )
 
 const runnerProcessAccess = windows.PROCESS_QUERY_LIMITED_INFORMATION | windows.SYNCHRONIZE
 
-type WindowsAuthenticodeVerifier struct{}
+type WindowsAuthenticodeVerifier struct{ Policy update.PublisherPolicy }
 
-func (WindowsAuthenticodeVerifier) VerifyAuthenticode(_ context.Context, path string) error {
-	pointer, err := windows.UTF16PtrFromString(path)
+func (verifier WindowsAuthenticodeVerifier) VerifyAuthenticode(_ context.Context, path string) error {
+	identity, err := update.InspectAuthenticode(path)
 	if err != nil {
 		return err
 	}
-	file := windows.WinTrustFileInfo{Size: uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})), FilePath: pointer}
-	data := windows.WinTrustData{Size: uint32(unsafe.Sizeof(windows.WinTrustData{})), UIChoice: windows.WTD_UI_NONE, RevocationChecks: windows.WTD_REVOKE_WHOLECHAIN, UnionChoice: windows.WTD_CHOICE_FILE, FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&file), StateAction: windows.WTD_STATEACTION_VERIFY, ProvFlags: windows.WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT, UIContext: windows.WTD_UICONTEXT_INSTALL}
-	if err := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data); err != nil {
-		return err
-	}
-	data.StateAction = windows.WTD_STATEACTION_CLOSE
-	return windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data)
+	return update.VerifyPublisherIdentity(verifier.Policy, identity)
 }
 
 type WindowsDetachedProcessSpawner struct{}
@@ -201,7 +196,7 @@ func RunProductionUpdateRunner(transactionID string) error {
 	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: SHA256FileVerifier{}, Runtime: WindowsRunnerRuntime{storage: updateStorage}, Clock: systemClock{}}).Run(context.Background(), transactionID)
 }
 
-func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedStorage) (*DetachedRunnerLauncher, error) {
+func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedStorage, policy update.PublisherPolicy) (*DetachedRunnerLauncher, error) {
 	ready, err := NewFileRunnerReadyStore(stateStorage)
 	if err != nil {
 		return nil, err
@@ -210,7 +205,7 @@ func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedS
 	if err != nil {
 		return nil, err
 	}
-	return NewDetachedRunnerLauncher(updateStorage, ready, WindowsAuthenticodeVerifier{}, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: 30 * time.Second}, executable)
+	return NewDetachedRunnerLauncher(updateStorage, ready, WindowsAuthenticodeVerifier{Policy: policy}, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: 30 * time.Second}, executable)
 }
 
 type systemClock struct{}

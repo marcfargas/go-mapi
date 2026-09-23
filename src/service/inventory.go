@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
@@ -26,6 +27,42 @@ type ProductRegistration struct {
 	UpgradeCode    string
 	ProductCode    string
 	ProductVersion string
+}
+
+// machineProductMarker corroborates MSI registration; registry values alone
+// can never select the installed SKU or authorize an update.
+type machineProductMarker struct {
+	SKU, PackageRelease, ServiceVersion, InterceptorVersion, AppVersion string
+}
+
+func installedProductSnapshot(reg ProductRegistration, marker machineProductMarker) (ProductSnapshot, error) {
+	if marker.SKU != string(reg.SKU) || marker.ServiceVersion == "" || marker.InterceptorVersion == "" {
+		return ProductSnapshot{}, errors.New("installed machine marker does not match MSI registration")
+	}
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(reg.SKU), marker.PackageRelease)
+	if err != nil || reg.UpgradeCode != machineUpgradeCode(reg.SKU) || normalizeProductCode(reg.ProductCode) != identity.ProductCode || reg.ProductVersion != identity.ProductVersion {
+		return ProductSnapshot{}, errors.New("installed machine identity does not match MSI registration")
+	}
+	contained := map[string]string{"service": marker.ServiceVersion, "interceptor": marker.InterceptorVersion}
+	if reg.SKU == update.Suite {
+		if marker.AppVersion == "" {
+			return ProductSnapshot{}, errors.New("suite machine app version is missing")
+		}
+		contained["app"] = marker.AppVersion
+	} else if marker.AppVersion != "" {
+		return ProductSnapshot{}, errors.New("system-only machine has a suite app marker")
+	}
+	return ProductSnapshot{SKU: reg.SKU, PackageVersion: identity.Release, ProductVersion: identity.ProductVersion, ProductCode: identity.ProductCode, Contained: contained}, nil
+}
+
+func machineUpgradeCode(sku update.SKU) string {
+	if sku == update.System {
+		return SystemUpgradeCode
+	}
+	if sku == update.Suite {
+		return SuiteUpgradeCode
+	}
+	return ""
 }
 
 // InstallerAPI is the narrow native Windows Installer seam. Its Windows
