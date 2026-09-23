@@ -54,7 +54,14 @@ type InstallerProcess interface {
 // the absolute System32 msiexec path and its fixed silent argument vector.
 type RunnerRuntime interface {
 	SelfIdentity() (ProcessIdentity, error)
-	StartInstaller(string) (InstallerProcess, error)
+	StartInstaller(string, string) (InstallerProcess, error)
+}
+
+func fixedInstallerArguments(msiPath, logPath, transactionID string) ([]string, error) {
+	if msiPath == "" || logPath == "" || !transactionIDPattern.MatchString(transactionID) {
+		return nil, errors.New("invalid fixed installer invocation")
+	}
+	return []string{"/i", msiPath, "/qn", "/norestart", "/L*V", logPath, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=" + transactionID}, nil
 }
 
 type UpdateRunner struct {
@@ -102,7 +109,7 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	installer, err := runner.Runtime.StartInstaller(artifact)
+	installer, err := runner.Runtime.StartInstaller(artifact, transactionID)
 	if err != nil {
 		return fmt.Errorf("start fixed Windows Installer command: %w", err)
 	}

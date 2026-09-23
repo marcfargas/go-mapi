@@ -57,7 +57,9 @@ func (WindowsDetachedProcessSpawner) SpawnDetached(path, transactionID string) (
 	return processIdentity(process.Process, process.ProcessId)
 }
 
-type WindowsRunnerRuntime struct{}
+type WindowsRunnerRuntime struct {
+	storage *ProtectedStorage
+}
 
 func (WindowsRunnerRuntime) SelfIdentity() (ProcessIdentity, error) {
 	pid := uint32(os.Getpid())
@@ -69,9 +71,16 @@ func (WindowsRunnerRuntime) SelfIdentity() (ProcessIdentity, error) {
 	return processIdentity(handle, pid)
 }
 
-func (WindowsRunnerRuntime) StartInstaller(msi string) (InstallerProcess, error) {
-	if !filepath.IsAbs(msi) {
-		return nil, errors.New("installer path must be absolute")
+func (runtime WindowsRunnerRuntime) StartInstaller(msi, transactionID string) (InstallerProcess, error) {
+	if !filepath.IsAbs(msi) || !transactionIDPattern.MatchString(transactionID) || runtime.storage == nil || runtime.storage.access != privateStorage {
+		return nil, errors.New("invalid protected installer invocation")
+	}
+	if _, err := runtime.storage.ensureDirectory("logs", transactionID); err != nil {
+		return nil, fmt.Errorf("prepare protected installer log: %w", err)
+	}
+	logPath, err := runtime.storage.child("logs", transactionID, "msiexec.log")
+	if err != nil {
+		return nil, err
 	}
 	system32, err := windows.GetSystemDirectory()
 	if err != nil {
@@ -84,7 +93,11 @@ func (WindowsRunnerRuntime) StartInstaller(msi string) (InstallerProcess, error)
 	}
 	// This is the complete privileged argument surface. Neither release
 	// metadata nor a caller can add properties, URLs, transforms, or paths.
-	command := quoteWindowsArgument(msiexec) + " /i " + quoteWindowsArgument(msi) + " /qn /norestart MSIRMSHUTDOWN=0"
+	arguments, err := fixedInstallerArguments(msi, logPath, transactionID)
+	if err != nil {
+		return nil, err
+	}
+	command := quoteWindowsArgument(msiexec) + " " + arguments[0] + " " + quoteWindowsArgument(arguments[1]) + " " + arguments[2] + " " + arguments[3] + " " + arguments[4] + " " + quoteWindowsArgument(arguments[5]) + " " + arguments[6] + " " + arguments[7] + " " + arguments[8]
 	commandLine, err := windows.UTF16PtrFromString(command)
 	if err != nil {
 		return nil, err
@@ -185,7 +198,7 @@ func RunProductionUpdateRunner(transactionID string) error {
 	pending, _ := NewFileStateStore(stateStorage)
 	ready, _ := NewFileRunnerReadyStore(stateStorage)
 	artifacts, _ := NewProtectedArtifactResolver(updateStorage)
-	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: SHA256FileVerifier{}, Runtime: WindowsRunnerRuntime{}, Clock: systemClock{}}).Run(context.Background(), transactionID)
+	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: SHA256FileVerifier{}, Runtime: WindowsRunnerRuntime{storage: updateStorage}, Clock: systemClock{}}).Run(context.Background(), transactionID)
 }
 
 func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedStorage) (*DetachedRunnerLauncher, error) {

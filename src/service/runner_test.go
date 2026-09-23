@@ -81,6 +81,20 @@ func TestUpdateRunnerFailureBoundariesLeaveNoFalseReadyOrExit(t *testing.T) {
 	}
 }
 
+func TestFixedInstallerArgumentsExposeNoCallerSelectedProperties(t *testing.T) {
+	args, err := fixedInstallerArguments(`/protected/update.msi`, `/protected/msiexec.log`, "tx-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/i", `/protected/update.msi`, "/qn", "/norestart", "/L*V", `/protected/msiexec.log`, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=tx-42"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("installer arguments = %q, want %q", args, want)
+	}
+	if _, err := fixedInstallerArguments("msi", "log", `..\\outside`); err == nil {
+		t.Fatal("accepted unsafe transaction property")
+	}
+}
+
 type orderedPendingStore struct {
 	pending *PendingV1
 	order   []string
@@ -157,8 +171,8 @@ type fakeRunnerRuntime struct {
 }
 
 func (runtime *fakeRunnerRuntime) SelfIdentity() (ProcessIdentity, error) { return runtime.self, nil }
-func (runtime *fakeRunnerRuntime) StartInstaller(path string) (InstallerProcess, error) {
-	if !strings.HasSuffix(path, ".msi") {
+func (runtime *fakeRunnerRuntime) StartInstaller(path, transactionID string) (InstallerProcess, error) {
+	if !strings.HasSuffix(path, ".msi") || !transactionIDPattern.MatchString(transactionID) {
 		return nil, errors.New("not MSI")
 	}
 	*runtime.order = append(*runtime.order, "start-installer")
