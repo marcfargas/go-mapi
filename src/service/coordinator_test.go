@@ -129,6 +129,20 @@ func TestCoordinatorPersistsPreparedStateBeforeBoundedHandoff(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDoesNotOverwriteFastRunnerExitAfterReady(t *testing.T) {
+	deps := defaultDependencies(t)
+	exit := &ExitEvidence{Code: 0, ObservedAt: coordinatorNow.Add(time.Second)}
+	deps.Launcher.(*fakeLauncher).exit = exit
+	coordinator := mustCoordinator(t, update.System, deps)
+	if outcome, err := coordinator.CheckAndStart(context.Background()); err != nil || outcome != OutcomeHandedOff {
+		t.Fatalf("CheckAndStart() = %q, %v", outcome, err)
+	}
+	stored := deps.Pending.(*memoryPendingStore).pending
+	if stored == nil || !reflect.DeepEqual(stored.Exit, exit) {
+		t.Fatalf("fast runner exit was overwritten: %#v", stored)
+	}
+}
+
 func TestCoordinatorRejectsCrossSKUReleaseBeforeStaging(t *testing.T) {
 	deps := defaultDependencies(t)
 	deps.ReleaseSource = &fakeReleaseSource{release: authorizedRelease(t, update.Suite, "4.0.1")}
@@ -315,6 +329,7 @@ type fakeLauncher struct {
 	receipt HandoffReceipt
 	request HandoffRequest
 	pending *memoryPendingStore
+	exit    *ExitEvidence
 }
 
 func (f *fakeLauncher) Launch(_ context.Context, request HandoffRequest) (HandoffReceipt, error) {
@@ -325,6 +340,7 @@ func (f *fakeLauncher) Launch(_ context.Context, request HandoffRequest) (Handof
 		pending.Runner = &f.receipt.Runner
 		pending.Installer = &f.receipt.Installer
 		pending.Phase = PhaseInstallerRunning
+		pending.Exit = f.exit
 		_ = f.pending.Save(context.Background(), pending)
 	}
 	return f.receipt, nil

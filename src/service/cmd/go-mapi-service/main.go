@@ -8,13 +8,21 @@ import (
 )
 
 func main() {
-	if _, err := service.ParseExecutableMode(os.Args[1:]); err != nil {
+	invocation, err := service.ParseExecutableMode(os.Args[1:])
+	if err != nil {
 		os.Exit(2)
 	}
-	// Platform adapters are deliberately wired one milestone at a time. Until
-	// the protected state and network adapters land, this is a cancellable idle
-	// schedule rather than an updater with partial privileges.
-	err := service.RunResidentService(service.ScheduleFunc(func(ctx context.Context) {
+	if invocation.Mode == service.ModeUpdateRunner {
+		if err := service.RunProductionUpdateRunner(invocation.TransactionID); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+	// Resident discovery/reconciliation composition is wired with the machine
+	// products. Until then, keep SCM behavior cancellable rather than running a
+	// partially composed privileged update check. The detached runner above is
+	// complete and intentionally remains an unregistered one-shot mode.
+	err = service.RunResidentService(service.ScheduleFunc(func(ctx context.Context) {
 		<-ctx.Done()
 	}))
 	if err != nil {
