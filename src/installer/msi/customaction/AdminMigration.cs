@@ -22,6 +22,42 @@ namespace GoMapi.AdminCustomActions
         private const string JournalSchema = "go-mapi-admin-migration-journal-v1";
         private const string ActiveDllPath = @"%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll";
 
+        // MSI's rollback of ServiceInstall recreates the service, but does not
+        // replay MsiServiceConfig or WiX Util's failure-action custom action.
+        // This rollback action is scheduled before RemoveExistingProducts so it
+        // runs after the old product's service has been recreated.
+        [CustomAction]
+        public static ActionResult RollbackServiceConfiguration(Session session)
+        {
+            return Guard(session, "rollback-service-configuration", () =>
+            {
+                RunServiceControl("config go-mapi start= delayed-auto");
+                RunServiceControl("sidtype go-mapi unrestricted");
+                RunServiceControl("failure go-mapi reset= 86400 actions= restart/60000/restart/60000");
+            });
+        }
+
+        private static void RunServiceControl(string arguments)
+        {
+            using (var process = new Process())
+            {
+                process.StartInfo = new ProcessStartInfo("sc.exe", arguments)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                if (!process.Start())
+                    throw new InvalidOperationException("Could not start service control: " + arguments);
+                if (!process.WaitForExit(30000))
+                {
+                    process.Kill();
+                    throw new TimeoutException("Service control timed out: " + arguments);
+                }
+                if (process.ExitCode != 0)
+                    throw new InvalidOperationException("Service control failed (" + process.ExitCode + "): " + arguments);
+            }
+        }
+
         [CustomAction]
         public static ActionResult PrepareAdminMigration(Session session)
         {

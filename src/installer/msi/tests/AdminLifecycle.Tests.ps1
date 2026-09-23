@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$MsiPath)
+param([Parameter(Mandatory)][string]$MsiPath, [string]$OlderMsiPath)
 
 $ErrorActionPreference = 'Stop'
 $msi = (Resolve-Path $MsiPath).Path
@@ -79,6 +79,12 @@ function Assert-Installed {
     if ($service.PathName -ne $expectedPath) { throw "resident service ImagePath is invalid: $($service.PathName)" }
     $serviceRegistry = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\go-mapi'
     if ($serviceRegistry.DelayedAutoStart -ne 1) { throw 'resident service is not delayed-auto-start' }
+    $sidType = (& sc.exe qsidtype go-mapi | Out-String)
+    if ($sidType -notmatch 'SERVICE_SID_TYPE:\s+UNRESTRICTED') { throw "resident service SID type is invalid: $sidType" }
+    $failure = (& sc.exe qfailure go-mapi | Out-String)
+    if (@([regex]::Matches($failure, 'RESTART --')).Count -ne 2 -or $failure -match '(?m)^\s*REBOOT\s+--') {
+        throw "resident service recovery policy is invalid: $failure"
+    }
     if (-not (Test-Path (Join-Path $env:ProgramFiles 'go-mapi\service\go-mapi-service.exe'))) { throw 'resident service executable is missing' }
     if (Get-ScheduledTask -TaskName $ownedTask -ErrorAction SilentlyContinue) { throw 'legacy updater task survived installation' }
     if (-not (Get-ScheduledTask -TaskName $unrelatedTask -ErrorAction SilentlyContinue)) { throw 'bounded cleanup removed an unrelated task' }
@@ -110,5 +116,24 @@ foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32
 if (Test-Path $manifestPath) { throw 'partial installed manifest remains after rollback' }
 
 & schtasks.exe /Delete /TN $unrelatedTask /F 2>$null | Out-Null
+
+if ($OlderMsiPath) {
+    $older = (Resolve-Path $OlderMsiPath).Path
+    & schtasks.exe /Create /TN $unrelatedTask /TR 'cmd.exe /c exit 0' /SC ONCE /ST 23:59 /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'could not seed unrelated task before upgrade rollback' }
+    Invoke-Msi @('/i', $older, '/qn', '/norestart') 'upgrade-rollback-base' | Out-Null
+    Assert-Installed
+    $installer = New-Object -ComObject WindowsInstaller.Installer
+    $upgradeCode = '{B3C97B33-3F10-47CA-9FA7-24EE3B75E325}'
+    $before = @($installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($upgradeCode)))
+    if ($before.Count -ne 1) { throw 'older package did not register exactly one related product' }
+    Invoke-Msi @('/i', $msi, '/qn', '/norestart', 'GOMAPI_TEST_FAILURE_POINT=after-cleanup') 'upgrade-rollback-after-cleanup' @(1603) | Out-Null
+    $after = @($installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($upgradeCode)))
+    if ($after.Count -ne 1 -or $after[0] -ne $before[0]) { throw 'failed upgrade did not restore the older product identity' }
+    Assert-Installed
+    Invoke-Msi @('/x', $older, '/qn', '/norestart') 'upgrade-rollback-uninstall' | Out-Null
+    if (Get-Service -Name 'go-mapi' -ErrorAction SilentlyContinue) { throw 'resident service remains after rollback-test uninstall' }
+    & schtasks.exe /Delete /TN $unrelatedTask /F 2>$null | Out-Null
+}
 
 Write-Host "Admin MSI lifecycle validation passed. Durable logs: $logRoot"

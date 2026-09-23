@@ -23,12 +23,14 @@
 
     <CustomActionRef Id="PrepareAdminMigration" />
     <CustomActionRef Id="RollbackAdminMigration" />
+    <CustomActionRef Id="RollbackServiceConfiguration" />
     <CustomActionRef Id="ApplyAdminMigration" />
     <CustomActionRef Id="VerifyAdminRegistration" />
     <CustomActionRef Id="PrepareAdminUninstall" />
     <CustomActionRef Id="RollbackAdminUninstall" />
     <CustomActionRef Id="FinalizeAdminUninstall" />
     <InstallExecuteSequence>
+      <Custom Action="RollbackServiceConfiguration" Before="RemoveExistingProducts" Condition="NOT Installed AND WIX_UPGRADE_DETECTED" />
       <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />

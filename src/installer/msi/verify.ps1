@@ -62,7 +62,7 @@ if (-not ($registry -match '%ProgramW6432%\\go-mapi\\interceptor\\%PROCESSOR_ARC
 if ($registry -match '(?i)UserChoice|HKCU') { Fail 'MSI attempts per-user Default Apps mutation' }
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
-foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackAdminUninstall','FinalizeAdminUninstall')) {
+foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackAdminUninstall','FinalizeAdminUninstall')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
 }
 foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_X64','Wix4ExecServiceConfig_X64')) {
@@ -70,7 +70,12 @@ foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_
 }
 
 $sequence = @(Query 'SELECT `Action`,`Condition`,`Sequence` FROM `InstallExecuteSequence`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)" })
-foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','ApplyAdminMigration','VerifyAdminRegistration')) {
+foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration')) {
     if (-not ($sequence -match "^$required\|")) { Fail "custom action $required is not sequenced" }
+}
+$rollbackSequence = @($sequence | Where-Object { $_ -match '^RollbackServiceConfiguration\|' })[0] -split '\|'
+$removeSequence = @($sequence | Where-Object { $_ -match '^RemoveExistingProducts\|' })[0] -split '\|'
+if ($rollbackSequence[1] -ne 'NOT Installed AND WIX_UPGRADE_DETECTED' -or [int]$rollbackSequence[2] -ge [int]$removeSequence[2]) {
+    Fail 'service configuration rollback must be scheduled before old-product removal on major upgrade only'
 }
 Write-Host 'Verified immutable system identity, interceptor/service payload, one delayed resident service, bounded recovery, migration actions, and Default Apps boundary.'
