@@ -33,19 +33,29 @@ drafts on your behalf. That's the only sign-in step.
 
 ## Install
 
-go-mapi v4 is split into two independently serviced packages:
+The **system component** provides machine-wide Windows MAPI integration and
+requires administrator consent for its initial installation. The **user
+component** is the tray app and Gmail client; each Windows user keeps their own
+settings, queue, and Gmail sign-in.
 
-- The **user component** is the per-user tray application and Gmail client.
-- The **system component** is the machine-wide Windows MAPI integration. Its
-  installation requires administrator consent.
+| Install method | What it installs | Update behavior |
+| --- | --- | --- |
+| System-component MSI | System component and one resident updater service | When enabled, the service silently updates only the system component. Use this with a separate user-level user component. |
+| Suite MSI | System component, all-users user component, and the same one resident updater service | When enabled, the service silently updates both components together from the suite release track. |
+| User-level user-component package | User component for one Windows user; no updater service | The app automatically checks for user-component updates and offers an explicit Store, package-manager, or installer update. It also checks system-component compatibility and, unless the system service manages automatic system updates, reports available system-component updates. |
 
-During the v4 release-candidate period, install both packages from the selected
-test distribution. The final stable download locations will be published here
-only after the signed Store/WinGet release path has passed end-to-end
-verification.
+The two MSIs are alternative machine-wide installs, not packages to install
+side by side. A change between them requires an explicit administrator-approved
+migration. A suite install needs no separate user-level package; existing
+user-level installations are left alone.
 
-After installing both components, start go-mapi and sign in with your Gmail or
-Google Workspace account when prompted.
+During the v4 release-candidate period, use the selected test distribution.
+The service-managed update path and signed publication are still being
+validated; final stable download locations will be published here after that
+end-to-end verification.
+
+After installing the needed components, start go-mapi and sign in with your
+Gmail or Google Workspace account when prompted.
 
 go-mapi runs in the Windows notification area (the icons next to your
 clock). Click its icon to open the window or change settings.
@@ -68,11 +78,16 @@ in your inbox. Switch between modes in the go-mapi window.
 
 ## Updates
 
-go-mapi tells you when either component has a compatible update. You choose
-when to install it — updates are never installed without your say-so. The user
-component can download a verified system-component installer and asks for
-administrator consent only when Windows is ready to install it. Update checks
-contact `go-mapi.app` and report only
+For the managed v4 release, when enabled, the resident service installs
+compatible updates silently and without a signed-in user, but only for the
+installed MSI's release track:
+system-only or suite. The separate user-level package checks automatically but
+does not install its own updates in the background; you choose when to replace
+it. Its system-component update prompt is omitted when the service is managing
+those updates, while compatibility checks remain. Initial system installation
+and explicit repair can still require administrator consent.
+
+Update checks contact `go-mapi.app` and report only
 the app version, distribution channel, operating system, and coarse
 country/area aggregates. They do not use an install identifier, cookies, or
 your email/account data.
