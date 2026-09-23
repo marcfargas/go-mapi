@@ -53,6 +53,8 @@ func TestAdminMsiCleanupAndRollbackAreMandatory(t *testing.T) {
 		"go-mapi-admin-migration-journal-v1", "RollbackProviders", "CaptureProvider(RegistryView.Registry64,",
 		"CaptureProvider(RegistryView.Registry32,", "OwnedDllBackup", "IsOwnedLegacyDllPath", "RestoreProvider", "AtomicWriteJson",
 		"after-cleanup", "after-registration", "IsSafeProvider", "SafeDeleteDirectory",
+		"HadInstalledManifest", "ManifestBackupSha256", "rollback-installed-component-v1.json",
+		"EnsureProtectedJournalDirectory", "ProtectJournalFile", "FileSystemRights.FullControl",
 	} {
 		if !strings.Contains(customAction, want) {
 			t.Errorf("custom-action transaction missing %q", want)
@@ -166,19 +168,19 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 		entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", filename)
 		for _, want := range []string{
 			`<Upgrade Id="$(var.ForeignUpgradeCode)">`,
-			`Minimum="0.0.0" IncludeMinimum="yes" Maximum="255.255.65535" IncludeMaximum="yes"`,
+			`Minimum="0.0.0" IncludeMinimum="yes"`,
 			`Property="GOMAPI_FOREIGN_PRODUCT"`,
 			`<Property Id="GOMAPI_MIGRATE_SKU" Secure="yes" />`,
 			`Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;`,
 			`<FindRelatedProducts Before="LaunchConditions" />`,
 			`Schedule="afterInstallInitialize"`,
-			`NOT Installed AND (WIX_UPGRADE_DETECTED OR GOMAPI_FOREIGN_PRODUCT)`,
+			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE"`,
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("%s missing migration contract %q", filename, want)
 			}
 		}
-		for _, forbidden := range []string{`GOMAPI_MIGRATE_SKU" Value=`, `OnlyDetect="yes"`, `RemoveFeatures=`} {
+		for _, forbidden := range []string{`GOMAPI_MIGRATE_SKU" Value=`, `OnlyDetect="yes"`, `RemoveFeatures=`, `Maximum=`} {
 			if strings.Contains(entry, forbidden) {
 				t.Errorf("%s weakens foreign-product removal with %q", filename, forbidden)
 			}
@@ -187,7 +189,7 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 	if !strings.Contains(build, `-p:ForeignUpgradeCode=$($foreignContract.upgradeCode)`) {
 		t.Error("machine build does not bind the foreign UpgradeCode from the validated package contract")
 	}
-	for _, want := range []string{"GOMAPI_FOREIGN_PRODUCT", "GOMAPI_MIGRATE_SKU", "SecureCustomProperties", "LaunchCondition", "FindRelatedProducts", "RemoveExistingProducts", "255.255.65535"} {
+	for _, want := range []string{"GOMAPI_FOREIGN_PRODUCT", "GOMAPI_MIGRATE_SKU", "SecureCustomProperties", "LaunchCondition", "FindRelatedProducts", "RemoveExistingProducts"} {
 		if !strings.Contains(verify, want) {
 			t.Errorf("compiled MSI verifier missing migration check %q", want)
 		}

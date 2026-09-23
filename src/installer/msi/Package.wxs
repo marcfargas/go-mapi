@@ -11,7 +11,7 @@
       DowngradeErrorMessage="A newer go-mapi system component is already installed."
       AllowSameVersionUpgrades="yes" />
     <Upgrade Id="$(var.ForeignUpgradeCode)">
-      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" Maximum="255.255.65535" IncludeMaximum="yes"
+      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes"
         Property="GOMAPI_FOREIGN_PRODUCT" />
     </Upgrade>
     <Launch Condition="VersionNT64" Message="go-mapi system component requires 64-bit Windows." />
@@ -38,7 +38,7 @@
     <CustomActionRef Id="FinalizeAdminUninstall" />
     <InstallExecuteSequence>
       <FindRelatedProducts Before="LaunchConditions" />
-      <Custom Action="RollbackServiceConfiguration" Before="RemoveExistingProducts" Condition="NOT Installed AND (WIX_UPGRADE_DETECTED OR GOMAPI_FOREIGN_PRODUCT)" />
+      <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
       <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />

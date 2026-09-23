@@ -72,8 +72,8 @@ $foreignUpgradeRows = @(Query 'SELECT `UpgradeCode`,`VersionMin`,`VersionMax`,`L
 if ($foreignUpgradeRows.Count -ne 1) { Fail 'MSI must have exactly one foreign-product Upgrade row' }
 $foreignUpgrade = $foreignUpgradeRows[0]
 if ((Field $foreignUpgrade 1).Trim('{}') -ne $foreignUpgradeCode -or
-    (Field $foreignUpgrade 2) -ne '0.0.0' -or (Field $foreignUpgrade 3) -ne '255.255.65535' -or
-    (Field $foreignUpgrade 4) -ne '' -or [int](Field $foreignUpgrade 5) -ne 768 -or
+    (Field $foreignUpgrade 2) -ne '0.0.0' -or (Field $foreignUpgrade 3) -ne '' -or
+    (Field $foreignUpgrade 4) -ne '' -or [int](Field $foreignUpgrade 5) -ne 256 -or
     (Field $foreignUpgrade 6) -ne '') {
     Fail 'foreign-product Upgrade row must cover all versions and remove every feature transactionally'
 }
@@ -119,6 +119,7 @@ foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','Rollba
 }
 $rollbackSequence = @($sequence | Where-Object { $_ -match '^RollbackServiceConfiguration\|' })[0] -split '\|'
 $removeSequence = @($sequence | Where-Object { $_ -match '^RemoveExistingProducts\|' })[0] -split '\|'
+$deleteServicesSequence = @($sequence | Where-Object { $_ -match '^DeleteServices\|' })[0] -split '\|'
 $findSequence = @($sequence | Where-Object { $_ -match '^FindRelatedProducts\|' })[0] -split '\|'
 $launchSequence = @($sequence | Where-Object { $_ -match '^LaunchConditions\|' })[0] -split '\|'
 $initializeSequence = @($sequence | Where-Object { $_ -match '^InstallInitialize\|' })[0] -split '\|'
@@ -128,7 +129,16 @@ if (-not $findSequence -or -not $launchSequence -or -not $initializeSequence -or
     [int]$initializeSequence[2] -ge [int]$removeSequence[2]) {
     Fail 'foreign-product detection and rejection must precede early transactional removal'
 }
-if ($rollbackSequence[1] -ne 'NOT Installed AND (WIX_UPGRADE_DETECTED OR GOMAPI_FOREIGN_PRODUCT)' -or [int]$rollbackSequence[2] -ge [int]$removeSequence[2]) {
-    Fail 'service configuration rollback must be scheduled before old-product removal on same- or cross-SKU upgrade'
+$betweenInitializeAndRemoval = @($sequence | Where-Object {
+    $parts = $_ -split '\|'
+    [int]$parts[2] -gt [int]$initializeSequence[2] -and [int]$parts[2] -lt [int]$removeSequence[2]
+})
+if ($betweenInitializeAndRemoval.Count -ne 0) {
+    Fail "early RemoveExistingProducts must follow InstallInitialize with no scripted action between: $($betweenInitializeAndRemoval -join ';')"
+}
+if ($rollbackSequence[1] -ne 'REMOVE~="ALL" AND UPGRADINGPRODUCTCODE' -or
+    [int]$rollbackSequence[2] -ge [int]$deleteServicesSequence[2] -or
+    [int]$rollbackSequence[2] -le [int]$removeSequence[2]) {
+    Fail 'old-product service configuration rollback must precede DeleteServices without splitting early removal'
 }
 Write-Host "Verified immutable $SKU identity, mutually exclusive machine Upgrade rows, ordered migration gate, interceptor/service payload, one delayed resident service, bounded recovery, migration actions, and Default Apps boundary."

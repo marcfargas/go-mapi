@@ -6,6 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Win32;
 using Newtonsoft.Json;
 using WixToolset.Dtf.WindowsInstaller;
@@ -24,8 +26,8 @@ namespace GoMapi.AdminCustomActions
 
         // MSI's rollback of ServiceInstall recreates the service, but does not
         // replay MsiServiceConfig or WiX Util's failure-action custom action.
-        // This rollback action is scheduled before RemoveExistingProducts so it
-        // runs after the old product's service has been recreated.
+        // The *old* product schedules this rollback before DeleteServices for
+        // upgrade-driven removal, so it runs after its own service restoration.
         [CustomAction]
         public static ActionResult RollbackServiceConfiguration(Session session)
         {
@@ -64,7 +66,26 @@ namespace GoMapi.AdminCustomActions
             return Guard(session, "prepare", () =>
             {
                 var paths = Paths.Create();
-                Directory.CreateDirectory(paths.JournalDirectory);
+                EnsureProtectedJournalDirectory(paths.JournalDirectory);
+                var installedManifest = Path.Combine(paths.InstallRoot, "installed-component-v1.json");
+                var manifestBackup = Path.Combine(paths.JournalDirectory, "backup", "rollback-installed-component-v1.json");
+                var hadInstalledManifest = File.Exists(installedManifest);
+                var manifestBackupSha256 = "";
+                if (hadInstalledManifest)
+                {
+                    var info = new FileInfo(installedManifest);
+                    if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024)
+                        throw new InvalidDataException("Installed component manifest is not a bounded regular file");
+                    var backupDirectory = Path.GetDirectoryName(manifestBackup);
+                    EnsureProtectedJournalDirectory(backupDirectory);
+                    DeleteFileIfExists(manifestBackup);
+                    File.Copy(installedManifest, manifestBackup, true);
+                    manifestBackupSha256 = Sha256(installedManifest);
+                    if (Sha256(manifestBackup) != manifestBackupSha256)
+                        throw new InvalidDataException("Installed component manifest backup hash mismatch");
+                }
+                else
+                    DeleteFileIfExists(manifestBackup);
 
                 var previous = LoadJournal(paths.JournalPath);
                 var keepOriginal = previous != null
@@ -115,6 +136,8 @@ namespace GoMapi.AdminCustomActions
                     ["RequiredAppMin"] = session["GOMAPI_REQUIRED_APP_MIN"],
                     ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
                     ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
+                    ["HadInstalledManifest"] = hadInstalledManifest ? "1" : "0",
+                    ["ManifestBackupSha256"] = manifestBackupSha256,
                 }.ToString();
                 session["RollbackAdminMigration"] = data;
                 session["ApplyAdminMigration"] = data;
@@ -215,7 +238,19 @@ namespace GoMapi.AdminCustomActions
                 RemoveOwnedClient(RegistryView.Registry32);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry64, true);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry32, true);
-                DeleteFileIfExists(Path.Combine(data["InstallRoot"], "installed-component-v1.json"));
+                var installedManifest = Path.Combine(data["InstallRoot"], "installed-component-v1.json");
+                var manifestBackup = Path.Combine(Path.GetDirectoryName(journalPath), "backup", "rollback-installed-component-v1.json");
+                if (data["HadInstalledManifest"] == "1")
+                {
+                    var info = new FileInfo(manifestBackup);
+                    if (!info.Exists || (info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024 ||
+                        Sha256(manifestBackup) != data["ManifestBackupSha256"])
+                        throw new InvalidDataException("Rollback component manifest backup is absent or invalid");
+                    Directory.CreateDirectory(data["InstallRoot"]);
+                    File.Copy(manifestBackup, installedManifest, true);
+                }
+                else
+                    DeleteFileIfExists(installedManifest);
                 journal.State = "rolled-back";
                 SaveJournal(journalPath, journal);
             });
@@ -625,6 +660,36 @@ namespace GoMapi.AdminCustomActions
         private static void SaveJournal(string path, MigrationJournal journal)
         {
             AtomicWriteJson(path, journal);
+            ProtectJournalFile(path);
+        }
+
+        private static void EnsureProtectedJournalDirectory(string path)
+        {
+            Directory.CreateDirectory(path);
+            var info = new DirectoryInfo(path);
+            var parent = info.Parent;
+            if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 ||
+                (parent != null && (parent.Attributes & System.IO.FileAttributes.ReparsePoint) != 0))
+                throw new InvalidDataException("Installer journal directory is a reparse point");
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
+                    FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None, AccessControlType.Allow));
+            Directory.SetAccessControl(path, security);
+        }
+
+        private static void ProtectJournalFile(string path)
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
+                    FileSystemRights.FullControl, AccessControlType.Allow));
+            File.SetAccessControl(path, security);
         }
 
         private static void AtomicWriteJson(string path, object value)

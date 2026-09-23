@@ -37,6 +37,32 @@ function AssertMachine([string]$SKU, [string]$Sentinel) {
     }
     $marker = Get-ItemProperty 'HKLM:\SOFTWARE\go-mapi\MachineProduct'
     if ($marker.SKU -ne $SKU) { throw "Machine health marker is $($marker.SKU), expected $SKU" }
+    $interceptor = Join-Path $env:ProgramFiles 'go-mapi\interceptor'
+    $manifestPath = Join-Path $interceptor 'installed-component-v1.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Interceptor manifest missing after $SKU transaction" }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.schema -ne 'go-mapi-installed-interceptor-v1' -or @($manifest.artifacts).Count -ne 2 -or
+        -not (Test-Path -LiteralPath (Join-Path $interceptor 'AMD64\go-mapi.dll')) -or
+        -not (Test-Path -LiteralPath (Join-Path $interceptor 'x86\go-mapi.dll'))) {
+        throw "Interceptor payload unhealthy after $SKU transaction"
+    }
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
+        try {
+            $mail = $base.OpenSubKey('SOFTWARE\Clients\Mail', $false)
+            $client = $base.OpenSubKey('SOFTWARE\Clients\Mail\go-mapi', $false)
+            try {
+                $provider = if ($mail) { $mail.GetValue($null) } else { $null }
+                $dllPath = if ($client) { $client.GetValue('DLLPath', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
+                if ($provider -ne 'go-mapi' -or $dllPath -ne '%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll') {
+                    throw "$view MAPI registration unhealthy after $SKU transaction"
+                }
+            } finally {
+                if ($mail) { $mail.Dispose() }
+                if ($client) { $client.Dispose() }
+            }
+        } finally { $base.Dispose() }
+    }
     $appPath = Join-Path $env:ProgramFiles 'go-mapi\user\go-mapi.exe'
     $shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'go-mapi\go-mapi.lnk'
     $startup = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'go-mapi-user-machine-v4' -ErrorAction SilentlyContinue
