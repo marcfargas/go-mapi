@@ -53,7 +53,12 @@ func NewMachineHTTPClient() (*http.Client, error) {
 	if err := winHTTP.Load(); err != nil {
 		return nil, ErrMachineHTTPUnavailable
 	}
-	return &http.Client{Transport: machineWinHTTPTransport{}}, nil
+	return &http.Client{
+		Transport: machineWinHTTPTransport{},
+		// Authenticated release policy installs its own bounded, same-origin
+		// redirect hook. Other callers must opt in explicitly.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}, nil
 }
 
 type machineWinHTTPTransport struct{}

@@ -23,6 +23,10 @@ func TestMachineHTTPRequestBoundaryRejectsUserAndInteractiveInputs(t *testing.T)
 		{"embedded credential", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test", User: url.UserPassword("user", "secret")}}},
 		{"write method", &http.Request{Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: "example.test"}}},
 		{"request body", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test"}, Body: io.NopCloser(bytes.NewReader([]byte("credentials")))}},
+		{"authorization header", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test"}, Header: http.Header{"Authorization": []string{"Bearer secret"}}}},
+		{"proxy authorization header", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test"}, Header: http.Header{"Proxy-Authorization": []string{"Basic secret"}}}},
+		{"cookie header", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test"}, Header: http.Header{"Cookie": []string{"secret=value"}}}},
+		{"fragment", &http.Request{Method: http.MethodGet, URL: &url.URL{Scheme: "https", Host: "example.test", Fragment: "secret"}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := validateMachineHTTPRequest(test.request); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
