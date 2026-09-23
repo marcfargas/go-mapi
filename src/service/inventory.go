@@ -15,9 +15,10 @@ const (
 )
 
 var (
-	ErrNoMachineProduct        = errors.New("no go-mapi machine product is installed")
-	ErrMultipleMachineProducts = errors.New("multiple go-mapi machine products are installed")
-	ErrDuplicateMachineProduct = errors.New("duplicate go-mapi machine product registration")
+	ErrNoMachineProduct            = errors.New("no go-mapi machine product is installed")
+	ErrMultipleMachineProducts     = errors.New("multiple go-mapi machine products are installed")
+	ErrDuplicateMachineProduct     = errors.New("duplicate go-mapi machine product registration")
+	ErrWindowsInstallerUnavailable = errors.New("Windows Installer inventory is unavailable")
 )
 
 type ProductRegistration struct {
