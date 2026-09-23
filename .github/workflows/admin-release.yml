@@ -5,8 +5,14 @@ on:
     tags: ['admin-v*']
   workflow_dispatch:
     inputs:
+      sku:
+        description: 'Validation target; admin preserves the legacy explicit-repair release path'
+        type: choice
+        options: [admin, system, suite]
+        default: admin
+        required: true
       version:
-        description: 'System-component version (for example 3.1.0-beta.1 or 4.1.0)'
+        description: 'Component version for admin, package release for system/suite'
         required: true
       sign:
         description: 'Sign DLLs and MSI with Azure Artifact Signing'
@@ -24,6 +30,7 @@ permissions:
 
 jobs:
   build-sign-publish:
+    if: github.event_name == 'push' || inputs.sku == 'admin'
     # This protected environment is the sole Azure OIDC trust boundary for
     # release signing; unsigned publication is rejected below.
     environment: artifact-signing
@@ -385,3 +392,240 @@ jobs:
       # Microsoft Store publication belongs to the independently built user
       # package. admin-release.json is the coordination input; this workflow
       # never embeds or rebuilds the Wails artifact.
+
+  validate-machine-package:
+    # This is deliberately non-publishing until the service embeds the
+    # go-mapi-machine-root-v1 trust root and the signed targets endpoint exists.
+    # The existing admin-v* repair channel remains available in the meantime.
+    if: github.event_name == 'workflow_dispatch' && inputs.sku != 'admin'
+    environment: artifact-signing
+    runs-on: windows-latest
+    env:
+      HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
+      GOMAPI_OAUTH_CLIENT_ID: ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
+      GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
+      GOMAPI_ADMIN_RELEASE_ROOT_B64: ${{ secrets.ADMIN_RELEASE_ROOT_B64 }}
+      GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+
+      - name: Resolve exact machine package from this checkout
+        id: machine
+        shell: pwsh
+        run: |
+          if ('${{ inputs.publish }}' -eq 'true') { throw 'Machine publication is disabled until signed service root/targets integration is complete' }
+          $sku = '${{ inputs.sku }}'
+          $release = '${{ inputs.version }}'
+          $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $identity.sku -ne $sku -or $identity.tag -ne "$sku-v$release") { throw 'Invalid machine package identity' }
+          if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne '${{ github.sha }}') { throw 'Checkout does not match the triggering commit' }
+          if ((git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Machine release checkout is dirty before build' }
+          $versions = [ordered]@{
+            service = (Get-Content src/service/VERSION -Raw).Trim()
+            interceptor = (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim()
+            app = (Get-Content src/app/VERSION -Raw).Trim()
+          }
+          foreach ($name in $(if ($sku -eq 'suite') { @('service','interceptor','app') } else { @('service','interceptor') })) {
+            if ($versions[$name] -notmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|nightly)\.[1-9][0-9]*)?$') {
+              throw "Tagged checkout lacks a canonical $name source version"
+            }
+          }
+          "sku=$sku" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
+          "release=$release" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
+          "asset=$($identity.assetName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
+          "manifest=$($identity.manifestName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
+
+      - name: Require Azure signing for machine validation
+        if: inputs.sign
+        shell: pwsh
+        run: |
+          if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Machine signing requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden' }
+
+      - name: Install dual-bitness interceptor toolchain
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          $env:SCOOP_INSTALL_AS_ADMIN = '1'
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1"
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build and test contained interceptor and service
+        shell: pwsh
+        run: |
+          go test ./internal/mapi/... ./src/service/...
+          if ($LASTEXITCODE -ne 0) { throw 'machine trust/service checks failed' }
+          .\src\interceptor\verify-release.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'interceptor release verification failed' }
+          New-Item -ItemType Directory -Force release/machine-input | Out-Null
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'amd64'
+          $env:CGO_ENABLED = '0'
+          go build -trimpath -o release/machine-input/go-mapi-service.exe ./src/service/cmd/go-mapi-service
+          if ($LASTEXITCODE -ne 0) { throw 'service PE build failed' }
+          Copy-Item release/interceptor/go-mapi-x86.dll release/machine-input/go-mapi-x86.dll
+          Copy-Item release/interceptor/go-mapi-x64.dll release/machine-input/go-mapi-x64.dll
+
+      - name: Build explicit machine-distributed user app for suite only
+        if: inputs.sku == 'suite'
+        shell: pwsh
+        run: |
+          foreach ($name in @('GOMAPI_OAUTH_CLIENT_ID','GOMAPI_OAUTH_CLIENT_SECRET','GOMAPI_ADMIN_RELEASE_ROOT_B64','GOMAPI_ADMIN_RELEASE_METADATA_URL')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Suite validation needs protected input $name" }
+          }
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
+          npm run -w @marcfargas/go-mapi-app-frontend build
+          if ($LASTEXITCODE -ne 0) { throw 'suite frontend build failed' }
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+          if ($LASTEXITCODE -ne 0) { throw 'Wails installation failed' }
+          $env:PATH += ';' + (go env GOPATH) + '\bin'
+          .\scripts\build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
+          if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
+          Copy-Item src/app/build/bin/go-mapi-machine.exe release/machine-input/go-mapi-machine.exe
+
+      - name: Capture unsigned PE hashes from this checkout
+        shell: pwsh
+        run: |
+          $names = @('go-mapi-service.exe','go-mapi-x86.dll','go-mapi-x64.dll')
+          if ('${{ inputs.sku }}' -eq 'suite') { $names += 'go-mapi-machine.exe' }
+          $hashes = [ordered]@{}
+          foreach ($name in $names) {
+            $path = Join-Path release/machine-input $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing contained PE $name" }
+            $hashes[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          [IO.File]::WriteAllText('release/machine-input/unsigned-hashes.json', ($hashes | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+
+      - name: Authenticate to Azure for machine PE and MSI signing
+        if: inputs.sign
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign service and both interceptor PEs
+        if: inputs.sign
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: |
+            ${{ github.workspace }}\release\machine-input\go-mapi-service.exe
+            ${{ github.workspace }}\release\machine-input\go-mapi-x86.dll
+            ${{ github.workspace }}\release\machine-input\go-mapi-x64.dll
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign suite user PE
+        if: inputs.sign && inputs.sku == 'suite'
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\release\machine-input\go-mapi-machine.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Bind signed PE input manifest to exact SKU and source versions
+        shell: pwsh
+        run: |
+          $sku = '${{ steps.machine.outputs.sku }}'
+          $parts = @(
+            @{ component='service'; version=(Get-Content src/service/VERSION -Raw).Trim(); artifacts=@(@{ architecture='x64'; filename='go-mapi-service.exe' }) },
+            @{ component='interceptor'; version=(Get-Content src/interceptor/interceptor-version.txt -Raw).Trim(); artifacts=@(@{ architecture='x86'; filename='go-mapi-x86.dll' },@{ architecture='x64'; filename='go-mapi-x64.dll' }) }
+          )
+          if ($sku -eq 'suite') {
+            $parts += @{ component='app'; version=(Get-Content src/app/VERSION -Raw).Trim(); distribution='machine'; artifacts=@(@{ architecture='x64'; filename='go-mapi-machine.exe' }) }
+          }
+          foreach ($part in $parts) {
+            foreach ($artifact in $part.artifacts) {
+              $path = Join-Path release/machine-input $artifact.filename
+              if ('${{ inputs.sign }}' -eq 'true') {
+                $signature = Get-AuthenticodeSignature -LiteralPath $path
+                if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Incomplete Azure signing proof: $path" }
+              }
+              $artifact.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          $inputManifest = [ordered]@{ schema='go-mapi-machine-signed-input-v1'; sku=$sku; packageRelease='${{ steps.machine.outputs.release }}'; commit='${{ github.sha }}'; components=$parts }
+          [IO.File]::WriteAllText('release/machine-input/signed-input.json', ($inputManifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          .\src\installer\msi\build.ps1 -SKU $sku -SignedInputManifest release/machine-input/signed-input.json -RequireSignedInputs:$('true' -eq '${{ inputs.sign }}')
+          if ($LASTEXITCODE -ne 0) { throw 'machine MSI build failed' }
+
+      - name: Verify compiled machine MSI
+        shell: pwsh
+        run: |
+          $path = Join-Path release/machine '${{ steps.machine.outputs.asset }}'
+          .\src\installer\msi\verify.ps1 -MsiPath $path -SKU '${{ steps.machine.outputs.sku }}' -PackageRelease '${{ steps.machine.outputs.release }}'
+          if ($LASTEXITCODE -ne 0) { throw 'machine MSI table verification failed' }
+
+      - name: Sign machine MSI
+        if: inputs.sign
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\release\machine\${{ steps.machine.outputs.asset }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify signed MSI and write validation provenance
+        shell: pwsh
+        run: |
+          $sku = '${{ steps.machine.outputs.sku }}'
+          $release = '${{ steps.machine.outputs.release }}'
+          $path = Join-Path release/machine '${{ steps.machine.outputs.asset }}'
+          if ('${{ inputs.sign }}' -eq 'true') {
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Incomplete Azure MSI signing proof' }
+            .\src\installer\msi\verify.ps1 -MsiPath $path -SKU $sku -PackageRelease $release -RequireSignature
+          }
+          $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Machine package identity failed' }
+          $manifest = Get-Content release/machine-input/signed-input.json -Raw | ConvertFrom-Json
+          $unsigned = Get-Content release/machine-input/unsigned-hashes.json -Raw | ConvertFrom-Json
+          $peHashes = @()
+          foreach ($part in $manifest.components) {
+            foreach ($artifact in $part.artifacts) {
+              $peHashes += [ordered]@{ component=$part.component; architecture=$artifact.architecture; filename=$artifact.filename; unsignedSha256=$unsigned.($artifact.filename); signedSha256=$artifact.sha256 }
+            }
+          }
+          $contract = (Get-Content components.json -Raw | ConvertFrom-Json).machinePackages.$sku
+          $provenance = [ordered]@{
+            schema='go-mapi-machine-validation-provenance-v1'; publishable=$false
+            repository='${{ github.repository }}'; commit='${{ github.sha }}'
+            workflow='${{ github.workflow }}'; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'
+            sku=$sku; packageRelease=$release; tag=$identity.tag; assetName=$identity.assetName
+            productCode=$identity.productCode; productVersion=$identity.productVersion; upgradeCode=$contract.upgradeCode
+            contained=@($manifest.components | ForEach-Object { [ordered]@{ component=$_.component; version=$_.version } })
+            peHashes=$peHashes
+            msi=[ordered]@{ size=(Get-Item $path).Length; sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant(); signed=('${{ inputs.sign }}' -eq 'true') }
+            toolchain=[ordered]@{ go='1.25'; dotnet='8.0.x'; azureSigningAction='c7ab2a863ab5f9a846ddb8265964877ef296ee82' }
+          }
+          $validation = Join-Path release/machine "$sku-$release.validation.json"
+          [IO.File]::WriteAllText($validation, ($provenance | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+
+      - name: Upload non-publishable machine validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-${{ steps.machine.outputs.sku }}-${{ steps.machine.outputs.release }}-validation
+          path: |
+            release/machine/${{ steps.machine.outputs.asset }}
+            release/machine/*.validation.json
+            release/machine-input/signed-input.json

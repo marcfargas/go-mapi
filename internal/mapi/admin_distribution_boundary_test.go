@@ -261,6 +261,7 @@ func TestInstalledAdminManifestMatchesVersionGateContract(t *testing.T) {
 func TestAdminReleaseFailsClosedAndDoesNotBuildApp(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
+	legacyWorkflow := strings.Split(workflow, "\n  validate-machine-package:")[0]
 	for _, want := range []string{
 		"admin-v*", "AZURE_ARTIFACT_SIGNING_ENDPOINT", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "unsigned publication is forbidden", "-RequireSignedInputs",
 		"environment: artifact-signing", "id-token: write",
@@ -279,8 +280,46 @@ func TestAdminReleaseFailsClosedAndDoesNotBuildApp(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{"build-wails", "npm run build:app", "src/app/build", "go-mapi.exe"} {
-		if strings.Contains(workflow, forbidden) {
+		if strings.Contains(legacyWorkflow, forbidden) {
 			t.Errorf("admin release builds or embeds user app via %q", forbidden)
+		}
+	}
+}
+
+func TestMachineValidationKeepsLegacyPublicationAndFailsClosed(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
+	parts := strings.Split(workflow, "\n  validate-machine-package:")
+	if len(parts) != 2 {
+		t.Fatal("expected one separate non-publishing machine validation job")
+	}
+	legacy, machine := parts[0], parts[1]
+	for _, want := range []string{
+		"tags: ['admin-v*']", "if: github.event_name == 'push' || inputs.sku == 'admin'",
+		"ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64", "Publish GitHub admin release",
+	} {
+		if !strings.Contains(legacy, want) {
+			t.Errorf("legacy explicit-repair release lost %q", want)
+		}
+	}
+	for _, want := range []string{
+		"inputs.sku != 'admin'", "inputs.publish", "Machine publication is disabled",
+		"go run ./internal/mapi/cmd/machine-package", "go-mapi-machine-signed-input-v1",
+		"src/service/VERSION", "src/interceptor/interceptor-version.txt",
+		"src/app/VERSION", "inputs.sku == 'suite'", "-MachineDistribution",
+		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
+		"-RequireSignedInputs", "verify.ps1 -MsiPath $path -SKU $sku",
+		"go-mapi-machine-validation-provenance-v1", "publishable=$false",
+		"unsignedSha256", "signedSha256", "productCode=$identity.productCode",
+		"productVersion=$identity.productVersion", "upgradeCode=$contract.upgradeCode",
+	} {
+		if !strings.Contains(machine, want) {
+			t.Errorf("machine validation path is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"softprops/action-gh-release", "wingetcreate.exe", "ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64"} {
+		if strings.Contains(machine, forbidden) {
+			t.Errorf("non-publishing machine validation must not contain %q", forbidden)
 		}
 	}
 }
