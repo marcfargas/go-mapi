@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version,
-    [string]$ArtifactDirectory,
+    [ValidateSet('system')][string]$SKU = 'system',
+    [Parameter(Mandatory)][string]$SignedInputManifest,
     [string]$OutputDirectory,
     [switch]$RequireSignedInputs
 )
@@ -9,11 +9,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $msiRoot = $PSScriptRoot
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $msiRoot '..\..\..'))
-if (-not $Version) { $Version = (Get-Content (Join-Path $repoRoot 'src\interceptor\interceptor-version.txt') -Raw).Trim() }
-if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $repoRoot 'release\interceptor' }
-if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'release\admin' }
-
-function Fail([string]$Message) { throw "Admin MSI build failed: $Message" }
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'release\machine' }
+function Fail([string]$Message) { throw "Machine MSI build failed: $Message" }
 function Get-PeMachine([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
     if ($bytes.Length -lt 256 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) { Fail "$Path is not a PE file" }
@@ -24,63 +21,49 @@ function Assert-Signed([string]$Path) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($signature.Status -ne 'Valid') { Fail "release input is not Authenticode signed: $Path ($($signature.Status))" }
 }
-function Get-MsiProductVersion([string]$ComponentVersion) {
-    # MSI accepts only Major.Minor.Build numeric versions. Keep stable versions
-    # unchanged; encode development labels and counters into the build field so
-    # successive prereleases retain deterministic Windows Installer ordering.
-    if ($ComponentVersion -match '^(\d+)\.(\d+)\.(\d+)$') {
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        $build = [int]$Matches[3]
-    } elseif ($ComponentVersion -match '^(\d+)\.(\d+)\.(\d+)-(alpha|beta|nightly)\.(\d+)$') {
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        $patch = [int]$Matches[3]
-        $stage = @{ alpha = 1; beta = 2; nightly = 3 }[$Matches[4]]
-        $counter = [int]$Matches[5]
-        if ($counter -gt 99) { Fail "development version counter exceeds MSI encoding limit: '$ComponentVersion'" }
-        $build = ($patch * 1000) + ($stage * 100) + $counter
-    } else {
-        Fail "version cannot be represented as an MSI product version: '$ComponentVersion'"
+function Get-ExactProperty($Object, [string[]]$Names, [string]$Label) {
+    $actual = @($Object.PSObject.Properties.Name | Sort-Object)
+    $expected = @($Names | Sort-Object)
+    if (($actual -join ',') -ne ($expected -join ',')) { Fail "$Label fields are '$($actual -join ',')', expected '$($expected -join ',')'" }
+}
+
+$manifestPath = [IO.Path]::GetFullPath($SignedInputManifest)
+if (-not (Test-Path -LiteralPath $manifestPath)) { Fail "missing signed-input manifest $manifestPath" }
+$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+Get-ExactProperty $manifest @('schema','sku','packageRelease','commit','components') 'manifest'
+if ($manifest.schema -ne 'go-mapi-machine-signed-input-v1' -or $manifest.sku -ne $SKU -or $SKU -ne 'system') { Fail 'manifest schema or SKU does not match the explicit system build' }
+if ($manifest.commit -notmatch '^[0-9a-f]{40}$') { Fail 'manifest commit must be a full lowercase Git commit SHA' }
+
+$identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU ([string]$manifest.packageRelease) 2>&1
+if ($LASTEXITCODE -ne 0) { Fail "production package identity rejected the release: $identityJSON" }
+$identity = $identityJSON | ConvertFrom-Json
+$componentMap = @{}
+$manifestRoot = Split-Path -Parent $manifestPath
+foreach ($component in @($manifest.components)) {
+    Get-ExactProperty $component @('component','version','artifacts') "component $($component.component)"
+    if ($component.component -notin @('service','interceptor') -or $componentMap.ContainsKey($component.component)) { Fail 'manifest must contain exactly one service and interceptor component' }
+    if ($component.version -notmatch '^\d+\.\d+\.\d+(?:-(?:alpha|beta|nightly)\.\d+)?$') { Fail "invalid contained version for $($component.component)" }
+    $artifacts = @{}
+    foreach ($artifact in @($component.artifacts)) {
+        Get-ExactProperty $artifact @('architecture','filename','sha256') "$($component.component) artifact"
+        if ($artifact.filename -ne [IO.Path]::GetFileName([string]$artifact.filename) -or $artifact.sha256 -notmatch '^[0-9a-f]{64}$') { Fail 'artifact filename or SHA-256 is invalid' }
+        $path = Join-Path $manifestRoot $artifact.filename
+        if (-not (Test-Path -LiteralPath $path)) { Fail "missing artifact $path" }
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $artifact.sha256) { Fail "artifact hash mismatch: $path" }
+        $expectedMachine = if ($artifact.architecture -eq 'x86') { 0x014c } elseif ($artifact.architecture -eq 'x64') { 0x8664 } else { Fail 'unsupported artifact architecture' }
+        if ((Get-PeMachine $path) -ne $expectedMachine) { Fail "artifact PE machine mismatch: $path" }
+        if ($RequireSignedInputs) { Assert-Signed $path }
+        if ($artifacts.ContainsKey($artifact.architecture)) { Fail 'duplicate artifact architecture' }
+        $artifacts[$artifact.architecture] = $path
     }
-    if ($major -gt 255 -or $minor -gt 255 -or $build -gt 65535) { Fail "version exceeds MSI product version limits: '$ComponentVersion'" }
-    return "$major.$minor.$build"
+    $componentMap[$component.component] = @{ Version = [string]$component.version; Artifacts = $artifacts }
 }
-function Get-ProductCode([string]$InputVersion) {
-    # Stable ProductCode per semantic version. UpgradeCode remains stable across
-    # versions; same-version rebuilds retain Windows Installer identity.
-    $seed = [Text.Encoding]::UTF8.GetBytes("go-mapi-admin-msi:$InputVersion")
-    $hash = [Security.Cryptography.SHA256]::Create().ComputeHash($seed)
-    $bytes = [byte[]]$hash[0..15]
-    $bytes[7] = ($bytes[7] -band 0x0f) -bor 0x50
-    $bytes[8] = ($bytes[8] -band 0x3f) -bor 0x80
-    return ([Guid]::new($bytes)).ToString('D').ToUpperInvariant()
-}
+if ($componentMap.Count -ne 2 -or $componentMap.interceptor.Artifacts.Count -ne 2 -or -not $componentMap.interceptor.Artifacts.x86 -or -not $componentMap.interceptor.Artifacts.x64 -or $componentMap.service.Artifacts.Count -ne 1 -or -not $componentMap.service.Artifacts.x64) { Fail 'system input requires x86/x64 interceptor DLLs and one x64 service executable' }
 
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$' -or $Version -eq '0.0.0-dev') { Fail "invalid release version '$Version'" }
-$componentContract = (Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json).components.interceptor
-$requiredAppMin = [string]$componentContract.requires.minInclusive
-if ($componentContract.requires.component -ne 'app' -or $requiredAppMin -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { Fail 'components.json has no valid interceptor -> app minimum requirement' }
-$manifestPath = Join-Path $ArtifactDirectory 'interceptor-artifacts.json'
-if (-not (Test-Path $manifestPath)) { Fail "missing $manifestPath" }
-$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.component -ne 'interceptor' -or $manifest.version -ne $Version -or $manifest.queueProtocol -ne 'queue-v1') { Fail 'interceptor artifact manifest does not match requested component/version/protocol' }
-
-$byArch = @{}
-foreach ($artifact in @($manifest.artifacts)) {
-    if ($artifact.architecture -notin @('x86','x64') -or $byArch.ContainsKey($artifact.architecture)) { Fail 'artifact manifest must contain exactly one x86 and x64 entry' }
-    $path = Join-Path $ArtifactDirectory $artifact.filename
-    if (-not (Test-Path $path)) { Fail "missing artifact $path" }
-    $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($hash -ne $artifact.sha256) { Fail "$($artifact.architecture) artifact hash mismatch" }
-    $expectedMachine = if ($artifact.architecture -eq 'x86') { 0x014c } else { 0x8664 }
-    if ((Get-PeMachine $path) -ne $expectedMachine) { Fail "$($artifact.architecture) PE machine mismatch" }
-    $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($path).ProductVersion
-    if ($productVersion -ne $Version) { Fail "$($artifact.architecture) PE ProductVersion '$productVersion' does not equal '$Version'" }
-    if ($RequireSignedInputs) { Assert-Signed $path }
-    $byArch[$artifact.architecture] = $path
-}
-if ($byArch.Count -ne 2) { Fail 'artifact manifest must contain exactly x86 and x64' }
+$components = Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json
+$contract = $components.machinePackages.system
+if ($contract.upgradeCode -ne 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' -or ($contract.includedComponents -join ',') -ne 'service,interceptor') { Fail 'components.json system package contract is invalid' }
+$requiredAppMin = [string]$components.components.interceptor.requires.minInclusive
 
 $customProject = Join-Path $msiRoot 'customaction\GoMapi.AdminCustomActions.csproj'
 dotnet build $customProject --configuration Release
@@ -90,23 +73,16 @@ if (-not (Test-Path $customBinary)) { Fail "missing packaged DTF custom action $
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $project = Join-Path $msiRoot 'GoMapi.AdminInstaller.wixproj'
-$productCode = Get-ProductCode $Version
-$msiProductVersion = Get-MsiProductVersion $Version
-$arguments = @(
-    'build', $project,
-    '--configuration', 'Release',
-    "-p:MsiProductVersion=$msiProductVersion",
-    "-p:ComponentVersion=$Version",
-    "-p:ProductCode=$productCode",
-    "-p:RequiredAppMin=$requiredAppMin",
-    "-p:SourceX64=$($byArch.x64)",
-    "-p:SourceX86=$($byArch.x86)",
-    "-p:CustomActionBinary=$customBinary",
-    "-p:OutputPath=$OutputDirectory"
-)
+$arguments = @('build', $project, '--configuration', 'Release',
+    "-p:MsiProductVersion=$($identity.productVersion)", "-p:PackageRelease=$($identity.release)",
+    "-p:ProductCode=$($identity.productCode)", "-p:UpgradeCode=$($contract.upgradeCode)",
+    "-p:ServiceVersion=$($componentMap.service.Version)", "-p:InterceptorVersion=$($componentMap.interceptor.Version)",
+    "-p:RequiredAppMin=$requiredAppMin", "-p:SourceService=$($componentMap.service.Artifacts.x64)",
+    "-p:SourceX64=$($componentMap.interceptor.Artifacts.x64)", "-p:SourceX86=$($componentMap.interceptor.Artifacts.x86)",
+    "-p:CustomActionBinary=$customBinary", "-p:OutputName=$([IO.Path]::GetFileNameWithoutExtension($identity.assetName))",
+    "-p:OutputPath=$OutputDirectory")
 dotnet @arguments
 if ($LASTEXITCODE -ne 0) { Fail 'WiX MSI build failed' }
-
-$msi = Get-ChildItem $OutputDirectory -Filter 'go-mapi-interceptor.msi' -Recurse | Select-Object -First 1
-if (-not $msi) { Fail 'WiX build did not produce go-mapi-interceptor.msi' }
-Write-Host "Built admin MSI: $($msi.FullName)"
+$msi = Get-ChildItem $OutputDirectory -Filter $identity.assetName -Recurse | Select-Object -First 1
+if (-not $msi) { Fail "WiX build did not produce immutable asset $($identity.assetName)" }
+Write-Host "Built system MSI: $($msi.FullName)"

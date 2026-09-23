@@ -26,6 +26,9 @@ check-service:
 build-service:
     go build ./src/service/...
 
+build-service-windows output="release/service/go-mapi-service.exe":
+    pwsh -NoProfile -Command "$env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'; New-Item -ItemType Directory -Force (Split-Path '{{output}}') | Out-Null; go build -trimpath -o '{{output}}' ./src/service/cmd/go-mapi-service"
+
 e2e-user: build-frontend
     npm run -w @marcfargas/go-mapi-e2e test
 
@@ -68,7 +71,7 @@ verify-user-distribution *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-app-distribution.ps1 {{args}}
 
 package-system *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU system {{args}}
 
 verify-system-package *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 {{args}}

@@ -50,12 +50,6 @@
       "ownership": "exact legacy product directory"
     },
     {
-      "id": "legacy-update-staging",
-      "kind": "directory",
-      "path": "%ProgramData%\\go-mapi\\updates",
-      "ownership": "exact legacy update staging directory"
-    },
-    {
       "id": "legacy-uninstall-state",
       "kind": "directory",
       "path": "%ProgramData%\\go-mapi\\uninst",

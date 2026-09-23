@@ -8,6 +8,8 @@ $manifestPath = Join-Path $productRoot 'installed-component-v1.json'
 $appDataSentinel = Join-Path $env:APPDATA 'go-mapi\admin-msi-must-preserve.txt'
 $previousProvider = 'go-mapi-validation-previous-client'
 $logRoot = Join-Path $env:ProgramData 'go-mapi\validation-logs'
+$ownedTask = 'go-mapi Auto Update'
+$unrelatedTask = 'go-mapi validation unrelated task'
 
 function Invoke-Msi([string[]]$Arguments, [string]$Name, [int[]]$Expected = @(0)) {
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
@@ -48,8 +50,10 @@ function Seed-LegacyState {
     New-Item -ItemType File -Path (Join-Path $env:ProgramFiles 'go-mapi\go-mapi.exe.old.123') -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path ${env:ProgramFiles(x86)} 'go-mapi') -Force | Out-Null
     New-Item -ItemType File -Path (Join-Path ${env:ProgramFiles(x86)} 'go-mapi\go-mapi.dll') -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $env:ProgramData 'go-mapi\updates') -Force | Out-Null
-    New-Item -ItemType File -Path (Join-Path $env:ProgramData 'go-mapi\updates\legacy.bin') -Force | Out-Null
+    & schtasks.exe /Create /TN $ownedTask /TR 'cmd.exe /c exit 0' /SC ONCE /ST 23:59 /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'could not seed exact legacy update task' }
+    & schtasks.exe /Create /TN $unrelatedTask /TR 'cmd.exe /c exit 0' /SC ONCE /ST 23:59 /F | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'could not seed unrelated task' }
     New-Item -ItemType Directory -Path (Split-Path $appDataSentinel) -Force | Out-Null
     Set-Content -LiteralPath $appDataSentinel -Value 'preserve me'
 }
@@ -69,6 +73,15 @@ function Assert-Installed {
     $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
     if ($manifest.schema -ne 'go-mapi-installed-interceptor-v1' -or $manifest.artifacts.Count -ne 2) { throw 'installed manifest has invalid shape' }
     if (-not (Test-Path $appDataSentinel)) { throw 'admin MSI removed per-user Wails data' }
+    $service = Get-CimInstance Win32_Service -Filter "Name='go-mapi'"
+    if (-not $service -or $service.StartMode -ne 'Auto' -or $service.StartName -ne 'LocalSystem') { throw 'resident service identity/start mode is invalid' }
+    $expectedPath = '"' + (Join-Path $env:ProgramFiles 'go-mapi\service\go-mapi-service.exe') + '" service'
+    if ($service.PathName -ne $expectedPath) { throw "resident service ImagePath is invalid: $($service.PathName)" }
+    $serviceRegistry = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\go-mapi'
+    if ($serviceRegistry.DelayedAutoStart -ne 1) { throw 'resident service is not delayed-auto-start' }
+    if (-not (Test-Path (Join-Path $env:ProgramFiles 'go-mapi\service\go-mapi-service.exe'))) { throw 'resident service executable is missing' }
+    if (& schtasks.exe /Query /TN $ownedTask 2>$null) { throw 'legacy updater task survived installation' }
+    if (-not (& schtasks.exe /Query /TN $unrelatedTask 2>$null)) { throw 'bounded cleanup removed an unrelated task' }
 }
 
 Seed-LegacyState
@@ -84,6 +97,7 @@ foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32
 }
 if (Test-Path $manifestPath) { throw 'installed manifest remains after uninstall' }
 if (-not (Test-Path $appDataSentinel)) { throw 'uninstall removed per-user Wails data' }
+if (Get-Service -Name 'go-mapi' -ErrorAction SilentlyContinue) { throw 'resident service remains after uninstall' }
 
 # Failure after destructive cleanup must roll back to the captured provider and leave no v4 manifest.
 Seed-LegacyState
@@ -92,5 +106,7 @@ foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32
     if ((Get-RegistryValue $view 'SOFTWARE\Clients\Mail' '') -ne $previousProvider) { throw "$view rollback did not restore previous provider" }
 }
 if (Test-Path $manifestPath) { throw 'partial installed manifest remains after rollback' }
+
+& schtasks.exe /Delete /TN $unrelatedTask /F 2>$null | Out-Null
 
 Write-Host "Admin MSI lifecycle validation passed. Durable logs: $logRoot"

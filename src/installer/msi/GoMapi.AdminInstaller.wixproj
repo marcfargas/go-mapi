@@ -2,14 +2,18 @@
   <PropertyGroup>
     <OutputType>Package</OutputType>
     <InstallerPlatform>x64</InstallerPlatform>
-    <OutputName>go-mapi-interceptor</OutputName>
+    <OutputName>$(OutputName)</OutputName>
     <DefineConstants>
       MsiProductVersion=$(MsiProductVersion);
-      ComponentVersion=$(ComponentVersion);
       ProductCode=$(ProductCode);
+      UpgradeCode=$(UpgradeCode);
+      PackageRelease=$(PackageRelease);
+      ServiceVersion=$(ServiceVersion);
+      InterceptorVersion=$(InterceptorVersion);
       RequiredAppMin=$(RequiredAppMin);
       SourceX64=$(SourceX64);
       SourceX86=$(SourceX86);
+      SourceService=$(SourceService);
       CustomActionBinary=$(CustomActionBinary)
     </DefineConstants>
   </PropertyGroup>

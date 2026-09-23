@@ -1,0 +1,61 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="InterceptorComponents">
+      <Component Id="InterceptorX64" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" Guid="D56189EF-0DA1-4AA1-A764-D90610EC8441" Bitness="always64">
+        <File Id="InterceptorDllX64" Source="$(var.SourceX64)" Name="go-mapi.dll" KeyPath="yes" />
+        <RemoveFolder Id="RemoveX64Folder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" On="uninstall" />
+      </Component>
+      <Component Id="InterceptorX86" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\x86" Guid="541217D4-4C8D-4D4C-83E5-9CD4CDCF7694" Bitness="always64">
+        <File Id="InterceptorDllX86" Source="$(var.SourceX86)" Name="go-mapi.dll" KeyPath="yes" />
+        <RemoveFolder Id="RemoveX86Folder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\x86" On="uninstall" />
+      </Component>
+      <Component Id="MapiRegistrationShared" Directory="ProgramFiles64Folder" Guid="1247251F-F476-4520-81A5-25985450B9F8" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail" Value="go-mapi" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail\go-mapi" Value="go-mapi" Type="string" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Clients\Mail\go-mapi" Name="DLLPath" Value="%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll" Type="expandable" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="ResidentServiceComponents">
+      <Component Id="ResidentService" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\service" Guid="1E335EC1-0CCC-54A2-ACC2-96EB8FB2E134" Bitness="always64">
+        <File Id="ResidentServiceExe" Source="$(var.SourceService)" Name="go-mapi-service.exe" KeyPath="yes" />
+        <ServiceInstall Id="ResidentServiceInstall" Name="go-mapi" DisplayName="go-mapi system service" Description="Maintains the installed go-mapi machine component." Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service" Vital="yes">
+          <ServiceConfig DelayedAutoStart="yes" ServiceSid="unrestricted" OnInstall="yes" OnReinstall="yes" />
+          <ServiceConfigFailureActions ResetPeriod="86400" OnInstall="yes" OnReinstall="yes">
+            <Failure Action="restartService" Delay="60000" />
+            <Failure Action="restartService" Delay="300000" />
+            <Failure Action="none" Delay="0" />
+          </ServiceConfigFailureActions>
+        </ServiceInstall>
+        <ServiceControl Id="ResidentServiceControl" Name="go-mapi" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        <RemoveFolder Id="RemoveServiceFolder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\service" On="uninstall" />
+      </Component>
+      <Component Id="MachineStateRoots" Directory="CommonAppDataFolder" Subdirectory="go-mapi" Guid="813604F6-3EE7-581F-86B6-0F3FC1CF0519" Bitness="always64">
+        <CreateFolder Subdirectory="service"><PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" /></CreateFolder>
+        <CreateFolder Subdirectory="updates"><PermissionEx Sddl="O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" /></CreateFolder>
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="StateRoots" Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+  <Fragment>
+    <ComponentGroup Id="SystemHealthComponents">
+      <Component Id="SystemHealthRegistration" Directory="ProgramFiles64Folder" Guid="5A07A413-53B3-58DF-BC3F-1C405A6B083F" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="SKU" Value="system" Type="string" KeyPath="yes" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="PackageRelease" Value="$(var.PackageRelease)" Type="string" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="ServiceVersion" Value="$(var.ServiceVersion)" Type="string" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="InterceptorVersion" Value="$(var.InterceptorVersion)" Type="string" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+  <Fragment>
+    <Binary Id="AdminCustomActions" SourceFile="$(var.CustomActionBinary)" />
+    <CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />
+    <CustomAction Id="RollbackAdminMigration" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminMigration" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="ApplyAdminMigration" BinaryRef="AdminCustomActions" DllEntry="ApplyAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="VerifyAdminRegistration" BinaryRef="AdminCustomActions" DllEntry="VerifyAdminRegistration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="PrepareAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminUninstall" Execute="immediate" Return="check" />
+    <CustomAction Id="RollbackAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminUninstall" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
+    <CustomAction Id="FinalizeAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="FinalizeAdminUninstall" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+  </Fragment>
+</Wix>
