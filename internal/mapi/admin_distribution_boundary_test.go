@@ -132,7 +132,7 @@ func TestSuiteMsiUsesSharedMachineResourcesAndMachineApp(t *testing.T) {
 			t.Errorf("suite entry missing %q", want)
 		}
 	}
-	for _, want := range []string{`go-mapi.exe`, `CommonProgramsFolder`, `go-mapi-user-machine-v4`, `--startup --machine-install`, `Name="AppVersion"`} {
+	for _, want := range []string{`go-mapi.exe`, `CommonAppDataFolder`, `Start Menu\Programs\go-mapi`, `go-mapi-user-machine-v4`, `--startup --machine-install`, `Name="AppVersion"`} {
 		if !strings.Contains(user, want) {
 			t.Errorf("suite user payload missing %q", want)
 		}
