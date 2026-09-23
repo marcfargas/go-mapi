@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	EnvelopeSchema       = "go-mapi-admin-envelope-v1"
-	LegacyRootSchema     = "go-mapi-admin-root-v1"
-	LegacyTargetsSchema  = "go-mapi-admin-targets-v1"
-	MachineRootSchema    = "go-mapi-machine-root-v1"
-	MachineTargetsSchema = "go-mapi-machine-targets-v1"
+	EnvelopeSchema        = "go-mapi-admin-envelope-v1"
+	LegacyRootSchema      = "go-mapi-admin-root-v1"
+	LegacyTargetsSchema   = "go-mapi-admin-targets-v1"
+	MachineRootSchema     = "go-mapi-machine-root-v1"
+	MachineTargetsSchema  = "go-mapi-machine-targets-v1"
+	MachineArtifactOrigin = "https://github.com/marcfargas/go-mapi/releases/download/"
 )
 
 // SKU closes release authorization over the three supported namespaces.
@@ -92,6 +93,7 @@ type PublisherPolicy struct {
 type Payload struct {
 	Schema        string               `json:"schema"`
 	SKU           SKU                  `json:"sku,omitempty"`
+	ProductCode   string               `json:"productCode,omitempty"`
 	UpgradeCode   string               `json:"upgradeCode,omitempty"`
 	Component     string               `json:"component,omitempty"`
 	Version       string               `json:"version"`
@@ -185,6 +187,9 @@ func newPolicy(sku SKU, root Root) (Policy, error) {
 	}
 	if root.Schema != wantSchema || root.Version < 1 || !validOrigin(root.AllowedOrigin) {
 		return Policy{}, errors.New("invalid trusted release root")
+	}
+	if sku != LegacyAdmin && root.AllowedOrigin != MachineArtifactOrigin {
+		return Policy{}, errors.New("machine release root has an unauthorized artifact origin")
 	}
 	if err := validRole(root.Root); err != nil {
 		return Policy{}, fmt.Errorf("invalid root role: %w", err)
@@ -312,7 +317,7 @@ func (p Policy) validatePayload(payload Payload, installed map[string]string, no
 
 	switch p.sku {
 	case LegacyAdmin:
-		if payload.Schema != LegacyTargetsSchema || payload.SKU != "" || payload.UpgradeCode != "" || payload.Component != "interceptor" || len(payload.Contained) != 0 || len(payload.Compatibility) != 0 {
+		if payload.Schema != LegacyTargetsSchema || payload.SKU != "" || payload.ProductCode != "" || payload.UpgradeCode != "" || payload.Component != "interceptor" || len(payload.Contained) != 0 || len(payload.Compatibility) != 0 {
 			return errors.New("invalid legacy admin release identity")
 		}
 		if err := validateRequirements([]Requirement{payload.Requires}, installed); err != nil {
@@ -326,7 +331,7 @@ func (p Policy) validatePayload(payload Payload, installed map[string]string, no
 			return errors.New("wrong machine release SKU")
 		}
 		identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(p.sku), payload.Version)
-		if err != nil || payload.Sequence != identity.Sequence || payload.UpgradeCode != upgradeCode(p.sku) {
+		if err != nil || payload.Sequence != identity.Sequence || payload.ProductCode != identity.ProductCode || payload.UpgradeCode != upgradeCode(p.sku) {
 			return errors.New("invalid machine release identity")
 		}
 		if !p.isImmutableArtifactURL(payload.Artifact.URL, identity.Tag, identity.AssetName) {

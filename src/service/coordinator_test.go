@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
@@ -489,7 +490,11 @@ func authorizedRelease(t *testing.T, sku update.SKU, version string) update.Rele
 		contained = append(contained, update.ContainedComponent{Component: "app", Version: version})
 		compatibility = append(compatibility, update.Requirement{Component: "app", MinInclusive: "4.0.0", MaxExclusive: "5.0.0"})
 	}
-	payload := update.Payload{Schema: update.MachineTargetsSchema, SKU: sku, UpgradeCode: upgrade, Version: version, QueueProtocol: "queue-v1", Sequence: 4<<24 | 1, IssuedAt: coordinatorNow.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: coordinatorNow.Add(time.Hour).Format(time.RFC3339), Contained: contained, Compatibility: compatibility, Artifact: update.Artifact{URL: "https://github.com/marcfargas/go-mapi/releases/download/" + string(sku) + "-v" + version + "/go-mapi-" + string(sku) + "-" + version + "-x64.msi", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}, Publisher: update.PublisherPolicy{Publisher: "Example", EKUs: []string{"1.3.6.1.5.5.7.3.3", "1.2.3.4"}, PolicyID: "release"}}
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(sku), version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := update.Payload{Schema: update.MachineTargetsSchema, SKU: sku, ProductCode: identity.ProductCode, UpgradeCode: upgrade, Version: version, QueueProtocol: "queue-v1", Sequence: 4<<24 | 1, IssuedAt: coordinatorNow.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: coordinatorNow.Add(time.Hour).Format(time.RFC3339), Contained: contained, Compatibility: compatibility, Artifact: update.Artifact{URL: "https://github.com/marcfargas/go-mapi/releases/download/" + string(sku) + "-v" + version + "/go-mapi-" + string(sku) + "-" + version + "-x64.msi", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}, Publisher: update.PublisherPolicy{Publisher: "Example", EKUs: []string{"1.3.6.1.5.5.7.3.3", "1.2.3.4"}, PolicyID: "release"}}
 	signed, _ := json.Marshal(payload)
 	envelope, _ := json.Marshal(update.Envelope{Schema: update.EnvelopeSchema, Signed: base64.RawURLEncoding.EncodeToString(signed), Signatures: []update.Signature{{KeyID: "targets", Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(key, signed))}}})
 	installed := map[string]string{"service": "4.0.0", "interceptor": "4.0.0", "app": "4.0.0"}

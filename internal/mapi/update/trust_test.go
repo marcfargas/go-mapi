@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi"
 )
 
 var trustTestNow = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
@@ -163,13 +165,21 @@ func trustTestMachinePayload(sku SKU, release string) Payload {
 		compatibility = append(compatibility, Requirement{Component: "app", MinInclusive: "4.0.0", MaxExclusive: "5.0.0"})
 	}
 	return Payload{
-		Schema: MachineTargetsSchema, SKU: sku, UpgradeCode: upgradeCode, Version: release, QueueProtocol: "queue-v1", Sequence: 4<<24 | 1,
+		Schema: MachineTargetsSchema, SKU: sku, ProductCode: mustMachineProductCode(sku, release), UpgradeCode: upgradeCode, Version: release, QueueProtocol: "queue-v1", Sequence: 4<<24 | 1,
 		IssuedAt: trustTestNow.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: trustTestNow.Add(time.Hour).Format(time.RFC3339),
 		Contained:     contained,
 		Compatibility: compatibility,
 		Artifact:      Artifact{URL: "https://github.com/marcfargas/go-mapi/releases/download/" + string(sku) + "-v" + release + "/go-mapi-" + string(sku) + "-" + release + "-x64.msi", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])},
 		Publisher:     PublisherPolicy{Publisher: "Example Publisher", EKUs: []string{"1.3.6.1.5.5.7.3.3", "1.2.3.4"}, PolicyID: "release"},
 	}
+}
+
+func mustMachineProductCode(sku SKU, release string) string {
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(sku), release)
+	if err != nil {
+		panic(err)
+	}
+	return identity.ProductCode
 }
 
 func trustTestEnvelope(t *testing.T, payload Payload, key ed25519.PrivateKey) []byte {
