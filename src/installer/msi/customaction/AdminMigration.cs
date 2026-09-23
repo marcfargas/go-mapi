@@ -78,6 +78,7 @@ namespace GoMapi.AdminCustomActions
                     ["Version"] = session["GOMAPI_COMPONENT_VERSION"],
                     ["RequiredAppMin"] = session["GOMAPI_REQUIRED_APP_MIN"],
                     ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
+                    ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
                 }.ToString();
                 session["RollbackAdminMigration"] = data;
                 session["ApplyAdminMigration"] = data;
@@ -93,8 +94,13 @@ namespace GoMapi.AdminCustomActions
                 var journalPath = session.CustomActionData["JournalPath"];
                 var journal = RequireJournal(journalPath);
                 MaybeFail(session.CustomActionData, "before-cleanup");
+                var existingProduct = session.CustomActionData["ExistingProduct"] == "1";
                 foreach (var resource in LoadInventory().Resources)
                 {
+                    // Maintenance must not delete MSI-owned files or registration while
+                    // the installed service is running. Retire the exact legacy task.
+                    if (existingProduct && resource.Kind != "scheduled-task")
+                        continue;
                     CleanupResource(resource, session);
                     var operation = journal.Operations.Single(item => item.Id == resource.Id);
                     operation.Status = "removed-or-absent";

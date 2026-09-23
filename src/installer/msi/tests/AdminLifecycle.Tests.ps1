@@ -80,14 +80,16 @@ function Assert-Installed {
     $serviceRegistry = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\go-mapi'
     if ($serviceRegistry.DelayedAutoStart -ne 1) { throw 'resident service is not delayed-auto-start' }
     if (-not (Test-Path (Join-Path $env:ProgramFiles 'go-mapi\service\go-mapi-service.exe'))) { throw 'resident service executable is missing' }
-    if (& schtasks.exe /Query /TN $ownedTask 2>$null) { throw 'legacy updater task survived installation' }
-    if (-not (& schtasks.exe /Query /TN $unrelatedTask 2>$null)) { throw 'bounded cleanup removed an unrelated task' }
+    if (Get-ScheduledTask -TaskName $ownedTask -ErrorAction SilentlyContinue) { throw 'legacy updater task survived installation' }
+    if (-not (Get-ScheduledTask -TaskName $unrelatedTask -ErrorAction SilentlyContinue)) { throw 'bounded cleanup removed an unrelated task' }
 }
 
 Seed-LegacyState
 Invoke-Msi @('/i', $msi, '/qn', '/norestart') 'install' | Out-Null
 Assert-Installed
 
+& schtasks.exe /Create /TN $ownedTask /TR 'cmd.exe /c exit 0' /SC ONCE /ST 23:59 /F | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'could not seed legacy update task before repair' }
 Invoke-Msi @('/fa', $msi, '/qn', '/norestart') 'repair' | Out-Null
 Assert-Installed
 
