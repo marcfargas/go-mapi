@@ -17,6 +17,15 @@ check-user:
     go vet ./internal/mapi/... ./src/app/...
     npm run -w @marcfargas/go-mapi-app-frontend check
 
+test-service:
+    go test ./src/service/...
+
+check-service:
+    go vet ./src/service/...
+
+build-service:
+    go build ./src/service/...
+
 e2e-user: build-frontend
     npm run -w @marcfargas/go-mapi-e2e test
 
