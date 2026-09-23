@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
@@ -236,10 +237,70 @@ func TestProtectedArtifactStoreStreamsToFixedReleasePath(t *testing.T) {
 	}
 }
 
+func TestProtectedArtifactStoreRejectsBadDownloadWithoutReplacingArtifact(t *testing.T) {
+	release := authorizedRelease(t, update.System, "4.0.1")
+	good := []byte("verified installer")
+	for _, test := range []struct {
+		name     string
+		download ArtifactDownload
+		wantErr  error
+	}{
+		{"short", func(_ context.Context, _ update.Release, destination io.Writer) error {
+			_, err := destination.Write(good[:len(good)-1])
+			return err
+		}, nil},
+		{"overlong", func(_ context.Context, _ update.Release, destination io.Writer) error {
+			_, err := destination.Write(append(append([]byte(nil), good...), '!'))
+			return err
+		}, nil},
+		{"wrong hash", func(_ context.Context, _ update.Release, destination io.Writer) error {
+			_, err := destination.Write(bytes.Repeat([]byte("x"), len(good)))
+			return err
+		}, nil},
+		{"download error", func(_ context.Context, _ update.Release, destination io.Writer) error {
+			_, _ = destination.Write(good)
+			return io.ErrUnexpectedEOF
+		}, io.ErrUnexpectedEOF},
+		{"ignored overlong write", func(_ context.Context, _ update.Release, destination io.Writer) error {
+			_, _ = destination.Write(good)
+			_, _ = destination.Write([]byte("extra"))
+			return nil
+		}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
+			initial, err := NewProtectedArtifactStore(storage, func(_ context.Context, _ update.Release, destination io.Writer) error {
+				_, err := destination.Write(good)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := initial.Stage(context.Background(), release); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewProtectedArtifactStore(storage, test.download)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Stage(context.Background(), release); err == nil || test.wantErr != nil && !errors.Is(err, test.wantErr) {
+				t.Fatalf("Stage error = %v, want failure matching %v", err, test.wantErr)
+			}
+			components, err := StagingComponents(release)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body, err := storage.Read(components, release.Payload().Artifact.Size); err != nil || !bytes.Equal(body, good) {
+				t.Fatalf("failed stage replaced prior artifact: %q, %v", body, err)
+			}
+		})
+	}
+}
+
 func TestProtectedArtifactResolverDerivesPathAndReverifiesHash(t *testing.T) {
 	storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
 	pending := validPending(time.Now().UTC())
-	identity, err := machineIdentity(pending.SKU, pending.Candidate.PackageVersion)
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

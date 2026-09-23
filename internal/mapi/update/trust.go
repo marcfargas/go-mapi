@@ -149,11 +149,24 @@ func (r Release) VerifyReader(reader io.Reader) error {
 	if reader == nil {
 		return errors.New("artifact reader is nil")
 	}
-	contents, err := io.ReadAll(io.LimitReader(reader, r.payload.Artifact.Size+1))
+	if r.payload.Artifact.Size < 1 {
+		return errors.New("artifact size does not match signed metadata")
+	}
+	hash := sha256.New()
+	_, err := io.CopyN(hash, reader, r.payload.Artifact.Size)
 	if err != nil {
 		return fmt.Errorf("read artifact for verification: %w", err)
 	}
-	return r.VerifyBytes(contents)
+	var extra [1]byte
+	if _, err := io.ReadFull(reader, extra[:]); err == nil {
+		return errors.New("artifact size does not match signed metadata")
+	} else if !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read artifact for verification: %w", err)
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != r.payload.Artifact.SHA256 {
+		return errors.New("artifact hash does not match signed metadata")
+	}
+	return nil
 }
 
 type ReplayState struct {

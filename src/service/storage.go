@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
@@ -144,7 +145,20 @@ func (storage *ProtectedStorage) ensureDirectory(components ...string) (string, 
 // closes it, atomically replaces the destination, then reopens and re-hashes
 // the installed bytes. expectedSize may be -1; expectedHash may be empty.
 func (storage *ProtectedStorage) WriteAtomic(ctx context.Context, components []string, source io.Reader, maxBytes, expectedSize int64, expectedHash string) (string, error) {
-	if len(components) == 0 || source == nil || maxBytes <= 0 || expectedSize > maxBytes || expectedSize < -1 {
+	if source == nil {
+		return "", errors.New("invalid bounded write")
+	}
+	return storage.writeAtomic(ctx, components, maxBytes, expectedSize, expectedHash, func(destination io.Writer) error {
+		_, err := copyContext(ctx, destination, io.LimitReader(source, maxBytes+1))
+		return err
+	})
+}
+
+// writeAtomic accepts a producer only after it has created a protected,
+// create-new temporary file. The writer enforces the signed bound even if a
+// producer ignores a short write or its own size checks.
+func (storage *ProtectedStorage) writeAtomic(ctx context.Context, components []string, maxBytes, expectedSize int64, expectedHash string, produce func(io.Writer) error) (string, error) {
+	if len(components) == 0 || produce == nil || maxBytes <= 0 || expectedSize > maxBytes || expectedSize < -1 {
 		return "", errors.New("invalid bounded write")
 	}
 	if expectedHash != "" {
@@ -186,11 +200,15 @@ func (storage *ProtectedStorage) WriteAtomic(ctx context.Context, components []s
 	}()
 
 	hash := sha256.New()
-	written, copyErr := copyContext(ctx, io.MultiWriter(file, hash), io.LimitReader(source, maxBytes+1))
-	if copyErr == nil && written > maxBytes {
-		copyErr = errors.New("protected write exceeds signed bound")
+	writer := &boundedContextWriter{ctx: ctx, destination: io.MultiWriter(file, hash), remaining: maxBytes}
+	copyErr := produce(writer)
+	if copyErr == nil {
+		copyErr = writer.failure
 	}
-	if copyErr == nil && expectedSize >= 0 && written != expectedSize {
+	if copyErr == nil {
+		copyErr = ctx.Err()
+	}
+	if copyErr == nil && expectedSize >= 0 && writer.written != expectedSize {
 		copyErr = errors.New("protected write size mismatch")
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
@@ -217,10 +235,41 @@ func (storage *ProtectedStorage) WriteAtomic(ctx context.Context, components []s
 	if err := storage.platform.syncDirectory(directory); err != nil {
 		return "", fmt.Errorf("sync protected directory: %w", err)
 	}
-	if err := storage.verify(destination, written, digest); err != nil {
+	if err := storage.verify(destination, writer.written, digest); err != nil {
 		return "", err
 	}
 	return digest, nil
+}
+
+type boundedContextWriter struct {
+	ctx         context.Context
+	destination io.Writer
+	remaining   int64
+	written     int64
+	failure     error
+}
+
+func (writer *boundedContextWriter) Write(data []byte) (int, error) {
+	if writer.failure != nil {
+		return 0, writer.failure
+	}
+	if err := writer.ctx.Err(); err != nil {
+		writer.failure = err
+		return 0, err
+	}
+	if int64(len(data)) > writer.remaining {
+		writer.failure = errors.New("protected write exceeds signed bound")
+		return 0, writer.failure
+	}
+	n, err := writer.destination.Write(data)
+	writer.remaining -= int64(n)
+	writer.written += int64(n)
+	if err != nil {
+		writer.failure = err
+	} else if n != len(data) {
+		writer.failure = io.ErrShortWrite
+	}
+	return n, writer.failure
 }
 
 func (storage *ProtectedStorage) verify(path string, size int64, digest string) error {
@@ -581,21 +630,11 @@ func StagingComponents(release update.Release) ([]string, error) {
 		return nil, errors.New("invalid staged release identity")
 	}
 	payload := release.Payload()
-	identity, err := machineIdentity(sku, payload.Version)
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(sku), payload.Version)
 	if err != nil || !strings.HasSuffix(payload.Artifact.URL, "/"+identity.AssetName) {
 		return nil, errors.New("invalid staged release asset")
 	}
 	return []string{string(sku), fmt.Sprintf("%d", release.Sequence()), identity.AssetName}, nil
-}
-
-type stagedMachineIdentity struct{ AssetName string }
-
-func machineIdentity(sku update.SKU, version string) (stagedMachineIdentity, error) {
-	name := "go-mapi-" + string(sku) + "-" + version + "-x64.msi"
-	if !storageNamePattern.MatchString(name) {
-		return stagedMachineIdentity{}, errors.New("invalid machine asset name")
-	}
-	return stagedMachineIdentity{AssetName: name}, nil
 }
 
 type ArtifactDownload func(context.Context, update.Release, io.Writer) error
@@ -623,7 +662,7 @@ func (resolver *ProtectedArtifactResolver) Resolve(_ context.Context, pending Pe
 	if err := pending.Validate(); err != nil {
 		return "", err
 	}
-	identity, err := machineIdentity(pending.SKU, pending.Candidate.PackageVersion)
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
 	if err != nil {
 		return "", err
 	}
@@ -664,21 +703,14 @@ func (store *ProtectedArtifactStore) Stage(ctx context.Context, release update.R
 		return StagedArtifact{}, err
 	}
 	payload := release.Payload()
-	reader, writer := io.Pipe()
-	downloadDone := make(chan error, 1)
-	go func() {
-		err := store.download(ctx, release, writer)
-		_ = writer.CloseWithError(err)
-		downloadDone <- err
-	}()
-	digest, writeErr := store.storage.WriteAtomic(ctx, components, reader, payload.Artifact.Size, payload.Artifact.Size, payload.Artifact.SHA256)
-	_ = reader.CloseWithError(writeErr)
-	downloadErr := <-downloadDone
-	if downloadErr != nil {
-		return StagedArtifact{}, fmt.Errorf("download authenticated artifact: %w", downloadErr)
-	}
-	if writeErr != nil {
-		return StagedArtifact{}, writeErr
+	digest, err := store.storage.writeAtomic(ctx, components, payload.Artifact.Size, payload.Artifact.Size, payload.Artifact.SHA256, func(destination io.Writer) error {
+		if err := store.download(ctx, release, destination); err != nil {
+			return fmt.Errorf("download authenticated artifact: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return StagedArtifact{}, err
 	}
 	return StagedArtifact{Handle: strings.Join(components, "/"), SHA256: digest}, nil
 }

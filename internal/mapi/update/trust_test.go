@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -98,6 +99,51 @@ func TestPolicyRejectsExpiredDowngradedAndSubstitutedReleases(t *testing.T) {
 		t.Fatalf("re-open/re-hash rejected authorized bytes: %v", err)
 	}
 }
+
+func TestVerifyReaderStreamsExactArtifactAndRejectsLengthOrReadFailures(t *testing.T) {
+	_, key, policy := trustTestPolicy(t, System)
+	payload := trustTestMachinePayload(System, "4.0.1")
+	release, err := policy.Authorize(trustTestEnvelope(t, payload, key), map[string]string{"service": "4.0.0", "interceptor": "4.0.0"}, trustTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified := "verified machine installer"
+	readFailure := errors.New("storage read failed")
+	for _, test := range []struct {
+		name      string
+		reader    io.Reader
+		wantText  string
+		wantCause error
+	}{
+		{name: "exact", reader: strings.NewReader(verified)},
+		{name: "nil", wantText: "nil"},
+		{name: "short", reader: strings.NewReader(verified[:len(verified)-1]), wantCause: io.EOF},
+		{name: "overlong", reader: strings.NewReader(verified + "x"), wantText: "size"},
+		{name: "wrong hash", reader: strings.NewReader(strings.Repeat("x", len(verified))), wantText: "hash"},
+		{name: "read failure", reader: io.MultiReader(strings.NewReader(verified[:5]), failingReader{readFailure}), wantCause: readFailure},
+		{name: "trailing read failure", reader: io.MultiReader(strings.NewReader(verified), failingReader{readFailure}), wantCause: readFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := release.VerifyReader(test.reader)
+			if test.wantText == "" && test.wantCause == nil && err != nil {
+				t.Fatalf("exact artifact rejected: %v", err)
+			}
+			if (test.wantText != "" || test.wantCause != nil) && err == nil {
+				t.Fatal("invalid artifact accepted")
+			}
+			if test.wantText != "" && !strings.Contains(err.Error(), test.wantText) {
+				t.Fatalf("error %q does not contain %q", err, test.wantText)
+			}
+			if test.wantCause != nil && !errors.Is(err, test.wantCause) {
+				t.Fatalf("read failure %v not preserved: %v", test.wantCause, err)
+			}
+		})
+	}
+}
+
+type failingReader struct{ err error }
+
+func (reader failingReader) Read([]byte) (int, error) { return 0, reader.err }
 
 func TestDownloadRejectsCrossOriginRedirectAndRehashesResponse(t *testing.T) {
 	_, key, policy := trustTestPolicy(t, System)
