@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -123,7 +124,7 @@ func verifyAdminAuthenticodePolicy(policy adminReleasePublisherPolicy, identity 
 		return errors.New("admin MSI publisher does not match signed policy")
 	}
 	for _, required := range policy.EKUs {
-		if !containsString(identity.EKUs, required) {
+		if !slices.Contains(identity.EKUs, required) {
 			return fmt.Errorf("admin MSI is missing required signer EKU %q", required)
 		}
 	}

@@ -42,6 +42,21 @@ func adminTestPayload() adminReleasePayload {
 	return adminReleasePayload{Schema: "go-mapi-admin-targets-v1", Component: "interceptor", Version: "4.0.1", QueueProtocol: "queue-v1", Requires: adminReleaseRequires{Component: "app", MinInclusive: "4.0.0", MaxExclusive: "5.0.0"}, Sequence: 7, IssuedAt: "2026-08-31T10:00:00Z", ExpiresAt: "2026-09-01T10:00:00Z", Artifact: adminReleaseArtifact{URL: "https://example.test/releases/admin-v4.0.1/go-mapi-interceptor.msi", Size: 42, SHA256: strings.Repeat("a", 64)}, Publisher: adminReleasePublisherPolicy{Publisher: "Example Publisher", EKUs: []string{"1.3.6.1.5.5.7.3.3", "1.2.3.4"}, PolicyID: "release"}}
 }
 
+func adminTestAuthorizedRelease(t *testing.T, sequence uint64, issuedOffset time.Duration) authorizedAdminRelease {
+	t.Helper()
+	rootPub, _ := adminTestKey(t)
+	targetPub, targetKey := adminTestKey(t)
+	root := adminTestRoot(t, 1, rootPub, targetPub)
+	payload := adminTestPayload()
+	payload.Sequence = sequence
+	payload.IssuedAt = time.Date(2026, 8, 31, 10, 0, 0, 0, time.UTC).Add(issuedOffset).Format(time.RFC3339)
+	release, err := verifyAdminRelease(root, adminTestEnvelope(t, payload, "targets", targetKey), "4.0.0", time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return release
+}
+
 func TestVerifyAdminReleaseAcceptsSignedCompatiblePayload(t *testing.T) {
 	rootPub, rootKey := adminTestKey(t)
 	targetPub, targetKey := adminTestKey(t)
@@ -131,7 +146,7 @@ func TestVerifyAdminReleaseRootUpdateRequiresOldAndNewThreshold(t *testing.T) {
 }
 
 func TestAdminReleaseSequenceRejectsDowngradeAndChangedReplay(t *testing.T) {
-	candidate := authorizedAdminRelease{Payload: adminReleasePayload{Sequence: 7}, Digest: strings.Repeat("a", 64)}
+	candidate := adminTestAuthorizedRelease(t, 7, 0)
 	if _, err := acceptAdminReleaseSequence(adminReleaseReplayState{Sequence: 8, Digest: strings.Repeat("b", 64)}, candidate); err == nil {
 		t.Fatal("accepted downgrade")
 	}

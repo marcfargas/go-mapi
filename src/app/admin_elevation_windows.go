@@ -4,9 +4,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -161,12 +159,12 @@ func handoffAuthorizedAdminMSI(_ context.Context, candidate authorizedAdminMSICa
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(msi)
+	file, err := os.Open(msi)
 	if err != nil {
 		return fmt.Errorf("reopen staged admin MSI: %w", err)
 	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != candidate.Release.Payload.Artifact.SHA256 {
+	defer file.Close()
+	if err := candidate.Release.trusted.VerifyReader(file); err != nil {
 		return errors.New("staged admin MSI changed before elevation")
 	}
 	msiexec, err := trustedMSIExecPath()

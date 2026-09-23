@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,8 +89,7 @@ func stageAuthorizedAdminMSI(_ context.Context, release authorizedAdminRelease, 
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", nil, err
 	}
-	sum := sha256.Sum256(contents)
-	if hex.EncodeToString(sum[:]) != release.Payload.Artifact.SHA256 {
+	if err := release.trusted.VerifyBytes(contents); err != nil {
 		return "", nil, fmt.Errorf("staging hash mismatch")
 	}
 	path := filepath.Join(dir, release.Payload.Artifact.SHA256+".msi")
@@ -107,8 +104,7 @@ func stageAdminMSIAt(_ context.Context, root string, release authorizedAdminRele
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", nil, err
 	}
-	sum := sha256.Sum256(contents)
-	if hex.EncodeToString(sum[:]) != release.Payload.Artifact.SHA256 {
+	if err := release.trusted.VerifyBytes(contents); err != nil {
 		return "", nil, fmt.Errorf("staging hash mismatch")
 	}
 	path := filepath.Join(dir, release.Payload.Artifact.SHA256+".msi")

@@ -23,7 +23,7 @@ func (f adminReleaseRoundTripper) RoundTrip(request *http.Request) (*http.Respon
 
 func TestAdminReleaseReplayStorePersistsAndRejectsReplay(t *testing.T) {
 	store := adminReleaseReplayStore{Path: filepath.Join(t.TempDir(), "state", "highest.json")}
-	first := authorizedAdminRelease{Payload: adminReleasePayload{Sequence: 7}, Digest: strings.Repeat("a", 64)}
+	first := adminTestAuthorizedRelease(t, 7, 0)
 	if err := store.Accept(first); err != nil {
 		t.Fatal(err)
 	}
@@ -31,10 +31,10 @@ func TestAdminReleaseReplayStorePersistsAndRejectsReplay(t *testing.T) {
 	if err != nil || state != (adminReleaseReplayState{Sequence: 7, Digest: first.Digest}) {
 		t.Fatalf("persisted replay state = %#v, %v", state, err)
 	}
-	if err := store.Accept(authorizedAdminRelease{Payload: adminReleasePayload{Sequence: 6}, Digest: strings.Repeat("b", 64)}); err == nil {
+	if err := store.Accept(adminTestAuthorizedRelease(t, 6, 0)); err == nil {
 		t.Fatal("accepted stale sequence")
 	}
-	if err := store.Accept(authorizedAdminRelease{Payload: adminReleasePayload{Sequence: 7}, Digest: strings.Repeat("b", 64)}); err == nil {
+	if err := store.Accept(adminTestAuthorizedRelease(t, 7, time.Minute)); err == nil {
 		t.Fatal("accepted changed payload at the same sequence")
 	}
 	if err := store.Accept(first); err != nil {
@@ -63,8 +63,8 @@ func TestAdminReleaseReplayStoreRejectsCorruptState(t *testing.T) {
 func TestAdminReleaseReplayStoreSerializesConcurrentAccepts(t *testing.T) {
 	store := adminReleaseReplayStore{Path: filepath.Join(t.TempDir(), "state", "highest.json")}
 	candidates := []authorizedAdminRelease{
-		{Payload: adminReleasePayload{Sequence: 7}, Digest: strings.Repeat("a", 64)},
-		{Payload: adminReleasePayload{Sequence: 8}, Digest: strings.Repeat("b", 64)},
+		adminTestAuthorizedRelease(t, 7, 0),
+		adminTestAuthorizedRelease(t, 8, 0),
 	}
 	var wg sync.WaitGroup
 	for i := 0; i < 40; i++ {
@@ -119,28 +119,41 @@ func TestDownloadAuthorizedAdminReleaseChecksSizeAndHash(t *testing.T) {
 	})}
 
 	rootPub, _ := adminTestKey(t)
-	targetPub, _ := adminTestKey(t)
+	targetPub, targetKey := adminTestKey(t)
 	root := adminTestRoot(t, 1, rootPub, targetPub)
 	root.AllowedOrigin = "https://example.test/releases/"
-	release := authorizedAdminRelease{Payload: adminTestPayload()}
-	release.Payload.Artifact.URL = "https://example.test/releases/admin-v4.0.1/go-mapi-interceptor.msi"
-	release.Payload.Artifact.Size = int64(len(body))
-	release.Payload.Artifact.SHA256 = hex.EncodeToString(digest[:])
-	release.Payload.IssuedAt = "2026-08-31T10:00:00Z"
-	release.Payload.ExpiresAt = "2026-09-01T10:00:00Z"
+	payload := adminTestPayload()
+	payload.Artifact.URL = "https://example.test/releases/admin-v4.0.1/go-mapi-interceptor.msi"
+	payload.Artifact.Size = int64(len(body))
+	payload.Artifact.SHA256 = hex.EncodeToString(digest[:])
+	payload.IssuedAt = "2026-08-31T10:00:00Z"
+	payload.ExpiresAt = "2026-09-01T10:00:00Z"
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	release, err := verifyAdminRelease(root, adminTestEnvelope(t, payload, "targets", targetKey), "4.0.0", now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := downloadAuthorizedAdminRelease(context.Background(), client, root, release, now)
 	if err != nil || string(got) != string(body) {
 		t.Fatalf("download = %q, %v", got, err)
 	}
 
-	release.Payload.Artifact.SHA256 = strings.Repeat("0", 64)
-	if _, err := downloadAuthorizedAdminRelease(context.Background(), client, root, release, now); err == nil {
+	badHashPayload := payload
+	badHashPayload.Artifact.SHA256 = strings.Repeat("0", 64)
+	badHashRelease, err := verifyAdminRelease(root, adminTestEnvelope(t, badHashPayload, "targets", targetKey), "4.0.0", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := downloadAuthorizedAdminRelease(context.Background(), client, root, badHashRelease, now); err == nil {
 		t.Fatal("accepted hash mismatch")
 	}
-	release.Payload.Artifact.SHA256 = hex.EncodeToString(digest[:])
-	release.Payload.Artifact.Size++
-	if _, err := downloadAuthorizedAdminRelease(context.Background(), client, root, release, now); err == nil {
+	badSizePayload := payload
+	badSizePayload.Artifact.Size++
+	badSizeRelease, err := verifyAdminRelease(root, adminTestEnvelope(t, badSizePayload, "targets", targetKey), "4.0.0", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := downloadAuthorizedAdminRelease(context.Background(), client, root, badSizeRelease, now); err == nil {
 		t.Fatal("accepted size mismatch")
 	}
 }
