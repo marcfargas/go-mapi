@@ -1,7 +1,10 @@
 package update
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,11 +17,25 @@ const maxRedirects = 3
 // Download fetches only the immutable URL already authorized into release.
 // Every redirect and the final response remain inside the same trusted origin.
 func (p Policy) Download(ctx context.Context, client *http.Client, release Release, now time.Time) ([]byte, error) {
+	var contents bytes.Buffer
+	if err := p.DownloadTo(ctx, client, release, now, &contents); err != nil {
+		return nil, err
+	}
+	return contents.Bytes(), nil
+}
+
+// DownloadTo streams an authorized artifact into destination while enforcing
+// its signed size and digest. Storage adapters use this form so an MSI is never
+// buffered in the resident service process.
+func (p Policy) DownloadTo(ctx context.Context, client *http.Client, release Release, now time.Time, destination io.Writer) error {
 	if release.ns != p.sku {
-		return nil, errors.New("release policy namespace mismatch")
+		return errors.New("release policy namespace mismatch")
 	}
 	if err := p.validatePayload(release.payload, compatibilityVersions(release.payload), now); err != nil {
-		return nil, fmt.Errorf("revalidate authorized release: %w", err)
+		return fmt.Errorf("revalidate authorized release: %w", err)
+	}
+	if destination == nil {
+		return errors.New("artifact destination is nil")
 	}
 	if client == nil {
 		client = http.DefaultClient
@@ -36,27 +53,31 @@ func (p Policy) Download(ctx context.Context, client *http.Client, release Relea
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, release.payload.Artifact.URL, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	response, err := copyClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("download authorized artifact: %w", err)
+		return fmt.Errorf("download authorized artifact: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK || !p.isAllowedURL(response.Request.URL) {
-		return nil, errors.New("unauthorized artifact response")
+		return errors.New("unauthorized artifact response")
 	}
 	if response.ContentLength >= 0 && response.ContentLength != release.payload.Artifact.Size {
-		return nil, errors.New("artifact content length does not match metadata")
+		return errors.New("artifact content length does not match metadata")
 	}
-	contents, err := io.ReadAll(io.LimitReader(response.Body, release.payload.Artifact.Size+1))
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(destination, hash), io.LimitReader(response.Body, release.payload.Artifact.Size+1))
 	if err != nil {
-		return nil, fmt.Errorf("read authorized artifact: %w", err)
+		return fmt.Errorf("read authorized artifact: %w", err)
 	}
-	if err := release.VerifyBytes(contents); err != nil {
-		return nil, err
+	if written != release.payload.Artifact.Size {
+		return errors.New("artifact size does not match signed metadata")
 	}
-	return contents, nil
+	if hex.EncodeToString(hash.Sum(nil)) != release.payload.Artifact.SHA256 {
+		return errors.New("artifact hash does not match signed metadata")
+	}
+	return nil
 }
 
 // Revalidation only needs versions already signed into an authorized payload;
