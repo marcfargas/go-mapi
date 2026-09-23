@@ -66,17 +66,32 @@ func TestAdminMsiCleanupAndRollbackAreMandatory(t *testing.T) {
 func TestSystemMsiOwnsExactlyOneResidentService(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	wxs := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	wixproj := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "GoMapi.AdminInstaller.wixproj")
 	for _, want := range []string{
 		`Name="go-mapi" DisplayName="go-mapi system service"`, `Type="ownProcess"`, `Start="auto"`,
 		`Account="LocalSystem"`, `Arguments="service"`, `DelayedAutoStart="yes"`, `ServiceSid="unrestricted"`,
 		`Start="install" Stop="both" Remove="uninstall" Wait="yes"`,
-		`Action="restartService" Delay="60000"`, `Action="restartService" Delay="300000"`, `Action="none" Delay="0"`,
+		`xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"`,
+		`util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="none"`,
+		`ResetPeriodInDays="1" RestartServiceDelayInSeconds="60"`,
 	} {
-		if !strings.Contains(wxs, want) { t.Errorf("resident service authoring missing %q", want) }
+		if !strings.Contains(wxs, want) {
+			t.Errorf("resident service authoring missing %q", want)
+		}
 	}
-	if strings.Count(wxs, "<ServiceInstall ") != 1 { t.Errorf("ServiceInstall count = %d, want 1", strings.Count(wxs, "<ServiceInstall ")) }
+	if !strings.Contains(wixproj, `<PackageReference Include="WixToolset.Util.wixext" Version="4.0.5" />`) {
+		t.Error("system MSI project must pin the WiX Util extension alongside the WiX SDK")
+	}
+	if strings.Contains(wxs, "ServiceConfigFailureActions") {
+		t.Error("system MSI must not author the broken native MsiServiceConfigFailureActions table")
+	}
+	if strings.Count(wxs, "<ServiceInstall ") != 1 {
+		t.Errorf("ServiceInstall count = %d, want 1", strings.Count(wxs, "<ServiceInstall "))
+	}
 	for _, guid := range []string{"D56189EF-0DA1-4AA1-A764-D90610EC8441", "541217D4-4C8D-4D4C-83E5-9CD4CDCF7694", "1247251F-F476-4520-81A5-25985450B9F8"} {
-		if !strings.Contains(wxs, guid) { t.Errorf("shared component GUID changed: %s", guid) }
+		if !strings.Contains(wxs, guid) {
+			t.Errorf("shared component GUID changed: %s", guid)
+		}
 	}
 }
 
@@ -85,10 +100,17 @@ func TestSystemMsiBuildUsesTypedInputsAndProductionIdentity(t *testing.T) {
 	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")
 	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
 	for _, want := range []string{"go-mapi-machine-signed-input-v1", "cmd/machine-package", "packageRelease", "commit", "service", "interceptor", "Get-FileHash", "Get-PeMachine", "RequireSignedInputs", "identity.assetName"} {
-		if !strings.Contains(build, want) { t.Errorf("typed system build missing %q", want) }
+		if !strings.Contains(build, want) {
+			t.Errorf("typed system build missing %q", want)
+		}
 	}
-	for _, want := range []string{"ServiceInstall", "ServiceControl", "MsiServiceConfig", "MsiServiceConfigFailureActions", "production system identity"} {
-		if !strings.Contains(verify, want) { t.Errorf("compiled-table verifier missing %q", want) }
+	for _, want := range []string{"ServiceInstall", "ServiceControl", "MsiServiceConfig", "Wix4ServiceConfig", "Wix4SchedServiceConfig_X64", "production system identity"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled-table verifier missing %q", want)
+		}
+	}
+	if !strings.Contains(verify, `Assert-TableAbsent 'MsiServiceConfigFailureActions'`) {
+		t.Error("compiled-table verifier must reject the broken native failure-action table")
 	}
 }
 

@@ -1,4 +1,5 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Fragment>
     <ComponentGroup Id="InterceptorComponents">
       <Component Id="InterceptorX64" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\interceptor\AMD64" Guid="D56189EF-0DA1-4AA1-A764-D90610EC8441" Bitness="always64">
@@ -22,11 +23,8 @@
         <File Id="ResidentServiceExe" Source="$(var.SourceService)" Name="go-mapi-service.exe" KeyPath="yes" />
         <ServiceInstall Id="ResidentServiceInstall" Name="go-mapi" DisplayName="go-mapi system service" Description="Maintains the installed go-mapi machine component." Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="service" Vital="yes">
           <ServiceConfig DelayedAutoStart="yes" ServiceSid="unrestricted" OnInstall="yes" OnReinstall="yes" />
-          <ServiceConfigFailureActions ResetPeriod="86400" OnInstall="yes" OnReinstall="yes">
-            <Failure Action="restartService" Delay="60000" />
-            <Failure Action="restartService" Delay="300000" />
-            <Failure Action="none" Delay="0" />
-          </ServiceConfigFailureActions>
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="none"
+                              ResetPeriodInDays="1" RestartServiceDelayInSeconds="60" />
         </ServiceInstall>
         <ServiceControl Id="ResidentServiceControl" Name="go-mapi" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
         <RemoveFolder Id="RemoveServiceFolder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\service" On="uninstall" />

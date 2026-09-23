@@ -30,6 +30,13 @@ function Query([string]$Sql) {
 }
 function Field($Record, [int]$Index) { $Record.GetType().InvokeMember('StringData', 'GetProperty', $null, $Record, @($Index)) }
 function LongFileName([string]$Value) { return @($Value -split '\|')[-1] }
+function Assert-TableAbsent([string]$Name) {
+    if ($script:tables -contains $Name) { Fail "compiled MSI contains forbidden table $Name" }
+}
+
+$tables = @(Query 'SELECT `Name` FROM `_Tables`' | ForEach-Object { Field $_ 1 })
+if ($tables -notcontains 'Wix4ServiceConfig') { Fail 'compiled MSI is missing WiX Util service recovery configuration' }
+Assert-TableAbsent 'MsiServiceConfigFailureActions'
 
 $files = @(Query 'SELECT `FileName`,`Component_` FROM `File`' | ForEach-Object { "$(LongFileName (Field $_ 1))|$(Field $_ 2)" })
 if (@($files | Where-Object { $_ -match '^go-mapi\.dll\|' }).Count -ne 2) { Fail 'MSI must contain exactly two interceptor DLL files' }
@@ -46,8 +53,8 @@ $controls = @(Query 'SELECT `Name`,`Event`,`Wait`,`Component_` FROM `ServiceCont
 if ($controls.Count -ne 1 -or $controls[0] -ne 'go-mapi|163|1|ResidentService') { Fail "unexpected ServiceControl contract: $($controls -join ';')" }
 $serviceConfig = @(Query 'SELECT `Name`,`Event`,`ConfigType`,`Argument`,`Component_` FROM `MsiServiceConfig`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)" })
 if ($serviceConfig.Count -ne 2 -or $serviceConfig -notcontains 'go-mapi|5|3|1|ResidentService' -or $serviceConfig -notcontains 'go-mapi|5|5|1|ResidentService') { Fail "service is not delayed-auto-start with an unrestricted SID: $($serviceConfig -join ';')" }
-$failureActions = @(Query 'SELECT `Name`,`Event`,`ResetPeriod`,`Actions`,`DelayActions`,`Component_` FROM `MsiServiceConfigFailureActions`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)|$(Field $_ 6)" })
-if ($failureActions.Count -ne 1 -or $failureActions[0] -ne 'go-mapi|5|86400|1[~]1[~]0|60000[~]300000[~]0|ResidentService') { Fail "service failure actions are not bounded restart/restart/none: $($failureActions -join ';')" }
+$failureActions = @(Query 'SELECT `ServiceName`,`Component_`,`NewService`,`FirstFailureActionType`,`SecondFailureActionType`,`ThirdFailureActionType`,`ResetPeriodInDays`,`RestartServiceDelayInSeconds`,`ProgramCommandLine`,`RebootMessage` FROM `Wix4ServiceConfig`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)|$(Field $_ 6)|$(Field $_ 7)|$(Field $_ 8)|$(Field $_ 9)|$(Field $_ 10)" })
+if ($failureActions.Count -ne 1 -or $failureActions[0] -ne 'go-mapi|ResidentService|1|restart|restart|none|1|60||') { Fail "service failure actions are not bounded restart/restart/none with no reboot: $($failureActions -join ';')" }
 
 $registry = @(Query 'SELECT `Root`,`Key`,`Name`,`Value`,`Component_` FROM `Registry`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)" })
 if (@($registry | Where-Object { $_ -match 'MapiRegistrationShared' }).Count -lt 3) { Fail 'missing shared active-MAPI registry rows' }
@@ -57,6 +64,9 @@ if ($registry -match '(?i)UserChoice|HKCU') { Fail 'MSI attempts per-user Defaul
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
 foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackAdminUninstall','FinalizeAdminUninstall')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
+}
+foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_X64','Wix4ExecServiceConfig_X64')) {
+    if (-not ($actions -match "^$required\|")) { Fail "missing WiX Util service recovery action $required" }
 }
 
 $sequence = @(Query 'SELECT `Action`,`Condition`,`Sequence` FROM `InstallExecuteSequence`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)" })
