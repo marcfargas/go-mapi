@@ -326,6 +326,11 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		}
 		return OutcomeRepairRequired, nil
 	}
+	// A scheduled 1618 retry is consumed only by CheckAndStart. Reconciliation
+	// must not slide its durable deadline on every service poll.
+	if pending.Phase == PhaseRolledBack && pending.Result == ResultRetryScheduled && pending.NextAttemptAt != nil {
+		return OutcomeBackoff, nil
+	}
 	for _, identity := range []*ProcessIdentity{pending.Runner, pending.Installer} {
 		if identity == nil {
 			continue

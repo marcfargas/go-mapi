@@ -199,6 +199,26 @@ func TestReconcileBoundsInstallerBusyRetries(t *testing.T) {
 	}
 }
 
+func TestReconcilePreservesInstallerBusyRetryDeadline(t *testing.T) {
+	deps := defaultDependencies(t)
+	pending := pendingForReconcile(t, exitEvidence(1618))
+	pending.Phase = PhaseRolledBack
+	pending.Result = ResultRetryScheduled
+	deadline := coordinatorNow.Add(15 * time.Minute)
+	pending.NextAttemptAt = &deadline
+	deps.Pending = &memoryPendingStore{pending: &pending}
+	coordinator := mustCoordinator(t, update.System, deps)
+
+	outcome, err := coordinator.Reconcile(context.Background())
+	if err != nil || outcome != OutcomeBackoff {
+		t.Fatalf("Reconcile() = %q, %v", outcome, err)
+	}
+	stored := deps.Pending.(*memoryPendingStore).pending
+	if stored == nil || stored.NextAttemptAt == nil || !stored.NextAttemptAt.Equal(deadline) {
+		t.Fatalf("retry deadline slid from %v to %#v", deadline, stored)
+	}
+}
+
 func defaultDependencies(t *testing.T) Dependencies {
 	t.Helper()
 	release := authorizedRelease(t, update.System, "4.0.1")
