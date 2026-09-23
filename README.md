@@ -38,6 +38,11 @@ requires administrator consent for its initial installation. The **user
 component** is the tray app and Gmail client; each Windows user keeps their own
 settings, queue, and Gmail sign-in.
 
+The matrix below describes the intended v4 release behavior. The MSI install
+paths and user-level update checks work in the current release candidate;
+service-managed downloads/installs and conditional suppression of the app's
+system-update notice are still being implemented.
+
 | Install method | What it installs | Update behavior |
 | --- | --- | --- |
 | System-component MSI | System component and one resident updater service | When enabled, the service silently updates only the system component. Use this with a separate user-level user component. |
