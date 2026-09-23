@@ -75,3 +75,6 @@ unregister-dev-aumid name="go-mapi (dev)":
 
 release-track version:
     go run ./internal/mapi/cmd/release-track -- {{version}}
+
+machine-package sku version:
+    go run ./internal/mapi/cmd/machine-package -- {{sku}} {{version}}
