@@ -10,6 +10,7 @@
       HealthComponentGuid=299FDB55-B38D-5C25-8334-D45FA3CC3DDB;
       ProductCode=$(ProductCode);
       UpgradeCode=$(UpgradeCode);
+      ForeignUpgradeCode=$(ForeignUpgradeCode);
       PackageRelease=$(PackageRelease);
       ServiceVersion=$(ServiceVersion);
       InterceptorVersion=$(InterceptorVersion);

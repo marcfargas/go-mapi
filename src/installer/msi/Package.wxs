@@ -10,8 +10,15 @@
     <MajorUpgrade Schedule="afterInstallInitialize"
       DowngradeErrorMessage="A newer go-mapi system component is already installed."
       AllowSameVersionUpgrades="yes" />
+    <Upgrade Id="$(var.ForeignUpgradeCode)">
+      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" Maximum="255.255.65535" IncludeMaximum="yes"
+        Property="GOMAPI_FOREIGN_PRODUCT" />
+    </Upgrade>
     <Launch Condition="VersionNT64" Message="go-mapi system component requires 64-bit Windows." />
+    <Launch Condition="Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;"
+      Message="Another go-mapi machine package is installed. An administrator must explicitly authorize SKU migration." />
     <Property Id="GOMAPI_TEST_FAILURE_POINT" Secure="yes" />
+    <Property Id="GOMAPI_MIGRATE_SKU" Secure="yes" />
     <Property Id="GOMAPI_COMPONENT_VERSION" Value="$(var.InterceptorVersion)" Secure="yes" />
     <Property Id="GOMAPI_REQUIRED_APP_MIN" Value="$(var.RequiredAppMin)" Secure="yes" />
 
@@ -30,7 +37,8 @@
     <CustomActionRef Id="RollbackAdminUninstall" />
     <CustomActionRef Id="FinalizeAdminUninstall" />
     <InstallExecuteSequence>
-      <Custom Action="RollbackServiceConfiguration" Before="RemoveExistingProducts" Condition="NOT Installed AND WIX_UPGRADE_DETECTED" />
+      <FindRelatedProducts Before="LaunchConditions" />
+      <Custom Action="RollbackServiceConfiguration" Before="RemoveExistingProducts" Condition="NOT Installed AND (WIX_UPGRADE_DETECTED OR GOMAPI_FOREIGN_PRODUCT)" />
       <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
       <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />

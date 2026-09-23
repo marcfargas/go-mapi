@@ -157,6 +157,48 @@ func TestSuiteMsiUsesSharedMachineResourcesAndMachineApp(t *testing.T) {
 	}
 }
 
+func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
+		entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", filename)
+		for _, want := range []string{
+			`<Upgrade Id="$(var.ForeignUpgradeCode)">`,
+			`Minimum="0.0.0" IncludeMinimum="yes" Maximum="255.255.65535" IncludeMaximum="yes"`,
+			`Property="GOMAPI_FOREIGN_PRODUCT"`,
+			`<Property Id="GOMAPI_MIGRATE_SKU" Secure="yes" />`,
+			`Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;`,
+			`<FindRelatedProducts Before="LaunchConditions" />`,
+			`Schedule="afterInstallInitialize"`,
+			`NOT Installed AND (WIX_UPGRADE_DETECTED OR GOMAPI_FOREIGN_PRODUCT)`,
+		} {
+			if !strings.Contains(entry, want) {
+				t.Errorf("%s missing migration contract %q", filename, want)
+			}
+		}
+		for _, forbidden := range []string{`GOMAPI_MIGRATE_SKU" Value=`, `OnlyDetect="yes"`, `RemoveFeatures=`} {
+			if strings.Contains(entry, forbidden) {
+				t.Errorf("%s weakens foreign-product removal with %q", filename, forbidden)
+			}
+		}
+	}
+	if !strings.Contains(build, `-p:ForeignUpgradeCode=$($foreignContract.upgradeCode)`) {
+		t.Error("machine build does not bind the foreign UpgradeCode from the validated package contract")
+	}
+	for _, want := range []string{"GOMAPI_FOREIGN_PRODUCT", "GOMAPI_MIGRATE_SKU", "SecureCustomProperties", "LaunchCondition", "FindRelatedProducts", "RemoveExistingProducts", "255.255.65535"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled MSI verifier missing migration check %q", want)
+		}
+	}
+	for _, guid := range []string{"D56189EF-0DA1-4AA1-A764-D90610EC8441", "541217D4-4C8D-4D4C-83E5-9CD4CDCF7694", "1247251F-F476-4520-81A5-25985450B9F8", "1E335EC1-0CCC-54A2-ACC2-96EB8FB2E134"} {
+		if !strings.Contains(shared, guid) {
+			t.Errorf("cross-SKU shared component identity drifted: %s", guid)
+		}
+	}
+}
+
 func TestAdminLegacyInventoryIsExplicitAndOwned(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	data := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "legacy-inventory.json")

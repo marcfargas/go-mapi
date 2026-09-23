@@ -67,8 +67,12 @@ if ($SKU -eq 'suite' -and ($componentMap.Count -ne 3 -or $componentMap.app.Artif
 $components = Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json
 $contract = $components.machinePackages.$SKU
 $expectedUpgradeCode = if ($SKU -eq 'system') { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' } else { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' }
+$foreignSKU = if ($SKU -eq 'system') { 'suite' } else { 'system' }
+$foreignContract = $components.machinePackages.$foreignSKU
+$expectedForeignUpgradeCode = if ($SKU -eq 'system') { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' } else { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' }
 $expectedComponents = if ($SKU -eq 'system') { 'service,interceptor' } else { 'service,interceptor,app' }
 if ($contract.upgradeCode -ne $expectedUpgradeCode -or ($contract.includedComponents -join ',') -ne $expectedComponents) { Fail "components.json $SKU package contract is invalid" }
+if ($foreignContract.upgradeCode -ne $expectedForeignUpgradeCode) { Fail "components.json $foreignSKU package contract is invalid" }
 $requiredAppMin = [string]$components.components.interceptor.requires.minInclusive
 
 $customProject = Join-Path $msiRoot 'customaction\GoMapi.AdminCustomActions.csproj'
@@ -82,6 +86,7 @@ $project = Join-Path $msiRoot $(if ($SKU -eq 'system') { 'GoMapi.AdminInstaller.
 $arguments = @('build', $project, '--configuration', 'Release',
     "-p:MsiProductVersion=$($identity.productVersion)", "-p:PackageRelease=$($identity.release)",
     "-p:ProductCode=$($identity.productCode)", "-p:UpgradeCode=$($contract.upgradeCode)",
+    "-p:ForeignUpgradeCode=$($foreignContract.upgradeCode)",
     "-p:ServiceVersion=$($componentMap.service.Version)", "-p:InterceptorVersion=$($componentMap.interceptor.Version)",
     "-p:RequiredAppMin=$requiredAppMin", "-p:SourceService=$($componentMap.service.Artifacts.x64)",
     "-p:SourceX64=$($componentMap.interceptor.Artifacts.x64)", "-p:SourceX86=$($componentMap.interceptor.Artifacts.x86)",
