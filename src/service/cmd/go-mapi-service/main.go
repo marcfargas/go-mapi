@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 
 	service "github.com/marcfargas/go-mapi/service"
@@ -18,13 +17,11 @@ func main() {
 		}
 		return
 	}
-	// Resident discovery/reconciliation composition is wired with the machine
-	// products. Until then, keep SCM behavior cancellable rather than running a
-	// partially composed privileged update check. The detached runner above is
-	// complete and intentionally remains an unregistered one-shot mode.
-	err = service.RunResidentService(service.ScheduleFunc(func(ctx context.Context) {
-		<-ctx.Done()
-	}))
+	schedule, err := service.NewProductionResidentSchedule()
+	if err != nil {
+		os.Exit(1)
+	}
+	err = service.RunResidentService(schedule)
 	if err != nil {
 		os.Exit(1)
 	}
