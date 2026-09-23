@@ -240,14 +240,7 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	release, err := coordinator.deps.ReleaseSource.Discover(ctx, DiscoveryRequest{SKU: coordinator.config.SKU, Installed: installed, Replay: previousReplay})
 	if err != nil {
 		if errors.Is(err, ErrOffline) {
-			status.ConsecutiveFailures++
-			status.NextCheckAt = now.Add(coordinator.deps.Backoff.Delay(status.ConsecutiveFailures))
-			status.LastCode = StatusOffline
-			if saveErr := coordinator.deps.Status.Save(ctx, status); saveErr != nil {
-				return "", fmt.Errorf("persist offline backoff: %w", saveErr)
-			}
-			coordinator.deps.Events.Record(ctx, Event{Code: EventOffline})
-			return OutcomeBackoff, nil
+			return coordinator.backoffOffline(ctx, status, now)
 		}
 		return "", fmt.Errorf("discover authorized release: %w", err)
 	}
@@ -265,6 +258,9 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 
 	artifact, err := coordinator.deps.Artifacts.Stage(ctx, release)
 	if err != nil {
+		if errors.Is(err, ErrOffline) {
+			return coordinator.backoffOffline(ctx, status, now)
+		}
 		return "", fmt.Errorf("stage authenticated artifact: %w", err)
 	}
 	if artifact.Handle == "" || artifact.SHA256 != release.Payload().Artifact.SHA256 {
@@ -302,6 +298,17 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	_ = coordinator.deps.Status.Save(context.WithoutCancel(ctx), ServiceStatus{LastCode: StatusReady})
 	coordinator.deps.Events.Record(context.WithoutCancel(ctx), Event{Code: EventHandedOff, TransactionID: pending.TransactionID})
 	return OutcomeHandedOff, nil
+}
+
+func (coordinator *Coordinator) backoffOffline(ctx context.Context, status ServiceStatus, now time.Time) (Outcome, error) {
+	status.ConsecutiveFailures++
+	status.NextCheckAt = now.Add(coordinator.deps.Backoff.Delay(status.ConsecutiveFailures))
+	status.LastCode = StatusOffline
+	if err := coordinator.deps.Status.Save(ctx, status); err != nil {
+		return "", fmt.Errorf("persist offline backoff: %w", err)
+	}
+	coordinator.deps.Events.Record(ctx, Event{Code: EventOffline})
+	return OutcomeBackoff, nil
 }
 
 func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) {

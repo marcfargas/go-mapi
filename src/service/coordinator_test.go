@@ -91,6 +91,24 @@ func TestCoordinatorBacksOffOfflineWithoutPromptLoop(t *testing.T) {
 	}
 }
 
+func TestCoordinatorBacksOffWhenArtifactDownloadIsOffline(t *testing.T) {
+	deps := defaultDependencies(t)
+	deps.Artifacts = &fakeArtifactStore{err: ErrMachineProxyAuthentication}
+	coordinator := mustCoordinator(t, update.System, deps)
+
+	outcome, err := coordinator.CheckAndStart(context.Background())
+	if err != nil || outcome != OutcomeBackoff {
+		t.Fatalf("CheckAndStart() = %q, %v; want backoff", outcome, err)
+	}
+	status := deps.Status.(*memoryStatusStore).status
+	if status.ConsecutiveFailures != 1 || status.NextCheckAt.IsZero() || status.LastCode != StatusOffline {
+		t.Fatalf("offline artifact status = %#v", status)
+	}
+	if deps.Launcher.(*fakeLauncher).calls != 0 {
+		t.Fatal("offline artifact reached installer handoff")
+	}
+}
+
 func TestCoordinatorPersistsPreparedStateBeforeBoundedHandoff(t *testing.T) {
 	deps := defaultDependencies(t)
 	coordinator := mustCoordinator(t, update.System, deps)
@@ -264,6 +282,7 @@ type fakeArtifactStore struct {
 	calls   int
 	entered chan struct{}
 	release chan struct{}
+	err     error
 }
 
 func (f *fakeArtifactStore) Stage(ctx context.Context, release update.Release) (StagedArtifact, error) {
@@ -274,6 +293,9 @@ func (f *fakeArtifactStore) Stage(ctx context.Context, release update.Release) (
 	}
 	if err := ctx.Err(); err != nil {
 		return StagedArtifact{}, err
+	}
+	if f.err != nil {
+		return StagedArtifact{}, f.err
 	}
 	return StagedArtifact{Handle: "protected-artifact", SHA256: release.Payload().Artifact.SHA256}, nil
 }
