@@ -1,0 +1,42 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="go-mapi suite" Manufacturer="go-mapi"
+    Version="$(var.MsiProductVersion)" UpgradeCode="$(var.UpgradeCode)"
+    ProductCode="$(var.ProductCode)" Scope="perMachine"
+    InstallerVersion="500" Compressed="yes">
+    <SummaryInformation Description="go-mapi machine system and all-users app" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade Schedule="afterInstallInitialize"
+      DowngradeErrorMessage="A newer go-mapi suite is already installed."
+      AllowSameVersionUpgrades="yes" />
+    <Launch Condition="VersionNT64" Message="go-mapi suite requires 64-bit Windows." />
+    <Property Id="GOMAPI_TEST_FAILURE_POINT" Secure="yes" />
+    <Property Id="GOMAPI_COMPONENT_VERSION" Value="$(var.InterceptorVersion)" Secure="yes" />
+    <Property Id="GOMAPI_REQUIRED_APP_MIN" Value="$(var.RequiredAppMin)" Secure="yes" />
+
+    <Feature Id="SuiteProduct" Title="go-mapi suite" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="InterceptorComponents" />
+      <ComponentGroupRef Id="ResidentServiceComponents" />
+      <ComponentGroupRef Id="SystemHealthComponents" />
+      <ComponentGroupRef Id="SuiteUserComponents" />
+    </Feature>
+
+    <CustomActionRef Id="PrepareAdminMigration" />
+    <CustomActionRef Id="RollbackAdminMigration" />
+    <CustomActionRef Id="RollbackServiceConfiguration" />
+    <CustomActionRef Id="ApplyAdminMigration" />
+    <CustomActionRef Id="VerifyAdminRegistration" />
+    <CustomActionRef Id="PrepareAdminUninstall" />
+    <CustomActionRef Id="RollbackAdminUninstall" />
+    <CustomActionRef Id="FinalizeAdminUninstall" />
+    <InstallExecuteSequence>
+      <Custom Action="RollbackServiceConfiguration" Before="RemoveExistingProducts" Condition="NOT Installed AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+      <Custom Action="PrepareAdminUninstall" Before="RollbackAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="RollbackAdminUninstall" Before="FinalizeAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="FinalizeAdminUninstall" After="RemoveRegistryValues" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

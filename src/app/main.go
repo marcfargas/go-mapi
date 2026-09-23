@@ -34,7 +34,7 @@ func main() {
 			os.Exit(1)
 		}
 		settings := loadSettings()
-		if settings.Issue != nil || !settings.Settings.AutostartEnabled {
+		if !allowMachineStartup(settings) {
 			// A user opt-out (or unreadable settings) must be honored before
 			// single-instance signalling, queue access, or Wails startup.
 			return

@@ -76,8 +76,14 @@ verify-user-distribution *args:
 package-system *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU system {{args}}
 
+package-suite *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU suite {{args}}
+
 verify-system-package *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU system {{args}}
+
+verify-suite-package *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite {{args}}
 
 e2e-system-windows *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 {{args}}

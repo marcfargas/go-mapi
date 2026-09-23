@@ -246,6 +246,14 @@ try {
     }
     $artifactPath = Join-Path $appDir 'build\bin\go-mapi.exe'
     if (-not (Test-Path -LiteralPath $artifactPath)) { throw "Wails did not produce $artifactPath" }
+    $artifactName = [string]$app.artifact
+    if ($MachineDistribution) {
+        $machinePath = Join-Path $appDir 'build\bin\go-mapi-machine.exe'
+        if (Test-Path -LiteralPath $machinePath) { throw "Remove the previous machine build artifact before rebuilding: $machinePath" }
+        Move-Item -LiteralPath $artifactPath -Destination $machinePath
+        $artifactPath = $machinePath
+        $artifactName = 'go-mapi-machine.exe'
+    }
     $artifactManifest = [ordered]@{
         component = 'app'
         version = $AppVersion
@@ -255,11 +263,12 @@ try {
             minInclusive = [string]$app.requires.minInclusive
         }
         artifact = [ordered]@{
-            filename = [string]$app.artifact
+            filename = $artifactName
             sha256 = Get-SHA256Hex $artifactPath
             peProductVersion = $AppVersion
         }
     }
+    if ($MachineDistribution) { $artifactManifest['distribution'] = 'machine' }
     if (-not [string]::IsNullOrWhiteSpace($RequiredInterceptorMax)) {
         $artifactManifest.requires['maxExclusive'] = $RequiredInterceptorMax
     }

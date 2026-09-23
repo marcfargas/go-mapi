@@ -12,3 +12,7 @@ func hasMachineStartupArgument(args []string) bool {
 	}
 	return false
 }
+
+func allowMachineStartup(settings SettingsLoadResult) bool {
+	return settings.Issue == nil && settings.Settings.AutostartEnabled
+}

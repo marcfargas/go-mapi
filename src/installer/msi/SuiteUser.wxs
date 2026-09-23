@@ -1,0 +1,21 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <ComponentGroup Id="SuiteUserComponents">
+      <Component Id="SuiteUserExe" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\user" Guid="13F7FCC7-EF0F-549F-AE50-E8FC0B44ABFF" Bitness="always64">
+        <File Id="SuiteUserExeFile" Source="$(var.SourceApp)" Name="go-mapi.exe" KeyPath="yes" />
+        <RemoveFolder Id="RemoveSuiteUserFolder" Directory="ProgramFiles64Folder" Subdirectory="go-mapi\user" On="uninstall" />
+      </Component>
+      <Component Id="SuiteStartMenu" Directory="CommonProgramsFolder" Subdirectory="go-mapi" Guid="C0E1A07C-8BE1-5F2C-BC84-7F476481FDE5" Bitness="always64">
+        <Shortcut Id="SuiteAppShortcut" Name="go-mapi" Target="[#SuiteUserExeFile]" WorkingDirectory="ProgramFiles64Folder" />
+        <RemoveFolder Id="RemoveSuiteStartMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="StartMenu" Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+      <Component Id="SuiteStartup" Directory="ProgramFiles64Folder" Guid="9B1B828A-8A0C-5A74-A990-21B6CD3ABA58" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="go-mapi-user-machine-v4" Value="&quot;[ProgramFiles64Folder]go-mapi\user\go-mapi.exe&quot; --startup --machine-install" Type="string" KeyPath="yes" />
+      </Component>
+      <Component Id="SuiteAppHealthRegistration" Directory="ProgramFiles64Folder" Guid="19D3E5A5-28F8-5DAF-B4B4-47D0129D5A7E" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="AppVersion" Value="$(var.AppVersion)" Type="string" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

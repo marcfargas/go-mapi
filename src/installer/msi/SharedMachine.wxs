@@ -38,8 +38,8 @@
   </Fragment>
   <Fragment>
     <ComponentGroup Id="SystemHealthComponents">
-      <Component Id="SystemHealthRegistration" Directory="ProgramFiles64Folder" Guid="5A07A413-53B3-58DF-BC3F-1C405A6B083F" Bitness="always64">
-        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="SKU" Value="system" Type="string" KeyPath="yes" />
+      <Component Id="SystemHealthRegistration" Directory="ProgramFiles64Folder" Guid="$(var.HealthComponentGuid)" Bitness="always64">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="SKU" Value="$(var.SKU)" Type="string" KeyPath="yes" />
         <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="PackageRelease" Value="$(var.PackageRelease)" Type="string" />
         <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="ServiceVersion" Value="$(var.ServiceVersion)" Type="string" />
         <RegistryValue Root="HKLM" Key="SOFTWARE\go-mapi\MachineProduct" Name="InterceptorVersion" Value="$(var.InterceptorVersion)" Type="string" />

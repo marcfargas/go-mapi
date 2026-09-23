@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$MsiPath,
-    [ValidateSet('system')][string]$SKU = 'system',
+    [ValidateSet('system','suite')][string]$SKU = 'system',
     [Parameter(Mandatory)][string]$PackageRelease,
     [switch]$RequireSignature
 )
@@ -13,7 +13,7 @@ if ($RequireSignature -and (Get-AuthenticodeSignature $MsiPath).Status -ne 'Vali
 $identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU $PackageRelease 2>&1
 if ($LASTEXITCODE -ne 0) { Fail "production package identity rejected the release: $identityJSON" }
 $identity = $identityJSON | ConvertFrom-Json
-if ([IO.Path]::GetFileName($MsiPath) -ne $identity.assetName) { Fail "MSI filename is not the immutable system asset name $($identity.assetName)" }
+if ([IO.Path]::GetFileName($MsiPath) -ne $identity.assetName) { Fail "MSI filename is not the immutable $SKU asset name $($identity.assetName)" }
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $database = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @((Resolve-Path $MsiPath).Path, 0))
@@ -41,11 +41,14 @@ Assert-TableAbsent 'MsiServiceConfigFailureActions'
 $files = @(Query 'SELECT `FileName`,`Component_` FROM `File`' | ForEach-Object { "$(LongFileName (Field $_ 1))|$(Field $_ 2)" })
 if (@($files | Where-Object { $_ -match '^go-mapi\.dll\|' }).Count -ne 2) { Fail 'MSI must contain exactly two interceptor DLL files' }
 if (@($files | Where-Object { $_ -match '^go-mapi-service\.exe\|ResidentService$' }).Count -ne 1) { Fail 'MSI must contain exactly one resident service executable' }
-if ($files -match '(?i)wails|webview') { Fail 'system MSI contains forbidden user-app payload' }
+$userApps = @($files | Where-Object { $_ -match '^go-mapi\.exe\|SuiteUserExe$' })
+if ($SKU -eq 'system' -and ($userApps.Count -ne 0 -or $files -match '(?i)wails|webview')) { Fail 'system MSI contains forbidden user-app payload' }
+if ($SKU -eq 'suite' -and $userApps.Count -ne 1) { Fail 'suite MSI must contain exactly one all-users app executable' }
 
 $properties = @{}
 Query 'SELECT `Property`,`Value` FROM `Property`' | ForEach-Object { $properties[(Field $_ 1)] = (Field $_ 2) }
-if ($properties.ProductCode.Trim('{}') -ne $identity.productCode -or $properties.ProductVersion -ne $identity.productVersion -or $properties.UpgradeCode.Trim('{}') -ne 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325') { Fail 'compiled MSI identity does not match the production system identity' }
+$expectedUpgradeCode = if ($SKU -eq 'system') { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' } else { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' }
+if ($properties.ProductCode.Trim('{}') -ne $identity.productCode -or $properties.ProductVersion -ne $identity.productVersion -or $properties.UpgradeCode.Trim('{}') -ne $expectedUpgradeCode) { Fail "compiled MSI identity does not match the production $SKU identity" }
 
 $services = @(Query 'SELECT `Name`,`DisplayName`,`ServiceType`,`StartType`,`ErrorControl`,`StartName`,`Arguments`,`Component_` FROM `ServiceInstall`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)|$(Field $_ 6)|$(Field $_ 7)|$(Field $_ 8)" })
 if ($services.Count -ne 1 -or $services[0] -ne 'go-mapi|go-mapi system service|16|2|32769|LocalSystem|service|ResidentService') { Fail "unexpected resident service contract: $($services -join ';')" }
@@ -60,6 +63,16 @@ $registry = @(Query 'SELECT `Root`,`Key`,`Name`,`Value`,`Component_` FROM `Regis
 if (@($registry | Where-Object { $_ -match 'MapiRegistrationShared' }).Count -lt 3) { Fail 'missing shared active-MAPI registry rows' }
 if (-not ($registry -match '%ProgramW6432%\\go-mapi\\interceptor\\%PROCESSOR_ARCHITECTURE%\\go-mapi\.dll')) { Fail 'missing caller-architecture-aware DLLPath' }
 if ($registry -match '(?i)UserChoice|HKCU') { Fail 'MSI attempts per-user Default Apps mutation' }
+if ($SKU -eq 'suite') {
+    if (@($registry | Where-Object { $_ -match '^2\|SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\|go-mapi-user-machine-v4\|.*--startup --machine-install\|SuiteStartup$' }).Count -ne 1) { Fail 'suite lacks its fixed HKLM Run startup entry' }
+    if (@($registry | Where-Object { $_ -match '^2\|SOFTWARE\\go-mapi\\MachineProduct\|SKU\|suite\|SystemHealthRegistration$' }).Count -ne 1) { Fail 'suite health marker is not suite-specific' }
+    if (@($registry | Where-Object { $_ -match '^2\|SOFTWARE\\go-mapi\\MachineProduct\|AppVersion\|' }).Count -ne 1) { Fail 'suite lacks its contained app version' }
+    $shortcuts = @(Query 'SELECT `Shortcut`,`Directory_`,`Name`,`Target` FROM `Shortcut`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
+    if ($shortcuts.Count -ne 1 -or $shortcuts[0] -notmatch '^SuiteAppShortcut\|.*\|go-mapi\|\[#SuiteUserExeFile\]$') { Fail "suite must have one Common Start-menu shortcut: $($shortcuts -join ';')" }
+} else {
+    if ($registry -match 'SuiteStartup|SuiteAppHealthRegistration|\|suite\|SystemHealthRegistration$') { Fail 'system MSI contains suite registry entries' }
+    Assert-TableAbsent 'Shortcut'
+}
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
 foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackAdminUninstall','FinalizeAdminUninstall')) {
@@ -78,4 +91,4 @@ $removeSequence = @($sequence | Where-Object { $_ -match '^RemoveExistingProduct
 if ($rollbackSequence[1] -ne 'NOT Installed AND WIX_UPGRADE_DETECTED' -or [int]$rollbackSequence[2] -ge [int]$removeSequence[2]) {
     Fail 'service configuration rollback must be scheduled before old-product removal on major upgrade only'
 }
-Write-Host 'Verified immutable system identity, interceptor/service payload, one delayed resident service, bounded recovery, migration actions, and Default Apps boundary.'
+Write-Host "Verified immutable $SKU identity, interceptor/service payload, one delayed resident service, bounded recovery, migration actions, and Default Apps boundary."

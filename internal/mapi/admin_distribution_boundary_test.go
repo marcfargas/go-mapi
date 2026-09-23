@@ -104,13 +104,56 @@ func TestSystemMsiBuildUsesTypedInputsAndProductionIdentity(t *testing.T) {
 			t.Errorf("typed system build missing %q", want)
 		}
 	}
-	for _, want := range []string{"ServiceInstall", "ServiceControl", "MsiServiceConfig", "Wix4ServiceConfig", "Wix4SchedServiceConfig_X64", "production system identity"} {
+	for _, want := range []string{"ServiceInstall", "ServiceControl", "MsiServiceConfig", "Wix4ServiceConfig", "Wix4SchedServiceConfig_X64", "production $SKU identity"} {
 		if !strings.Contains(verify, want) {
 			t.Errorf("compiled-table verifier missing %q", want)
 		}
 	}
 	if !strings.Contains(verify, `Assert-TableAbsent 'MsiServiceConfigFailureActions'`) {
 		t.Error("compiled-table verifier must reject the broken native failure-action table")
+	}
+}
+
+func TestSuiteMsiUsesSharedMachineResourcesAndMachineApp(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	project := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "GoMapi.SuiteInstaller.wixproj")
+	entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuitePackage.wxs")
+	user := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuiteUser.wxs")
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	for _, want := range []string{`<Compile Include="SharedMachine.wxs" />`, `<Compile Include="SuiteUser.wxs" />`, `SKU=suite;`, `HealthComponentGuid=299FDB55-B38D-5C25-8334-D45FA3CC3DDB;`} {
+		if !strings.Contains(project, want) {
+			t.Errorf("suite project missing %q", want)
+		}
+	}
+	for _, want := range []string{`<ComponentGroupRef Id="ResidentServiceComponents" />`, `<ComponentGroupRef Id="SuiteUserComponents" />`, `RollbackServiceConfiguration`, `RemoveExistingProducts`} {
+		if !strings.Contains(entry, want) {
+			t.Errorf("suite entry missing %q", want)
+		}
+	}
+	for _, want := range []string{`go-mapi.exe`, `CommonProgramsFolder`, `go-mapi-user-machine-v4`, `--startup --machine-install`, `Name="AppVersion"`} {
+		if !strings.Contains(user, want) {
+			t.Errorf("suite user payload missing %q", want)
+		}
+	}
+	if strings.Count(shared, "<ServiceInstall ") != 1 || !strings.Contains(shared, `Guid="$(var.HealthComponentGuid)"`) || !strings.Contains(shared, `Value="$(var.SKU)"`) {
+		t.Error("shared resources drift or SKU health marker is not separately owned")
+	}
+	for _, want := range []string{`ValidateSet('system','suite')`, `go-mapi-machine\.exe$`, `distribution`, `componentMap.app`, `GoMapi.SuiteInstaller.wixproj`} {
+		if !strings.Contains(build, want) {
+			t.Errorf("suite build contract missing %q", want)
+		}
+	}
+	for _, want := range []string{`ValidateSet('system','suite')`, `SuiteUserExe`, `SuiteStartup`, `SuiteAppShortcut`, `expectedUpgradeCode`} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("suite table verifier missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{`HKCU`, `UserChoice`, `Get-AppxPackage`, `Remove-AppxPackage`, `LOCALAPPDATA`} {
+		if strings.Contains(entry+user+shared, forbidden) {
+			t.Errorf("suite MSI touches per-user package/profile boundary: %q", forbidden)
+		}
 	}
 }
 

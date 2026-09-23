@@ -7,16 +7,17 @@
   "required": ["schema", "sku", "packageRelease", "commit", "components"],
   "properties": {
     "schema": { "const": "go-mapi-machine-signed-input-v1" },
-    "sku": { "const": "system" },
+    "sku": { "enum": ["system", "suite"] },
     "packageRelease": { "type": "string" },
     "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "components": {
-      "type": "array", "minItems": 2, "maxItems": 2,
+      "type": "array", "minItems": 2, "maxItems": 3,
       "items": {
         "type": "object", "additionalProperties": false,
         "required": ["component", "version", "artifacts"],
         "properties": {
-          "component": { "enum": ["service", "interceptor"] },
+          "component": { "enum": ["service", "interceptor", "app"] },
+          "distribution": { "const": "machine" },
           "version": { "type": "string" },
           "artifacts": {
             "type": "array", "minItems": 1, "maxItems": 2,
@@ -30,8 +31,18 @@
               }
             }
           }
-        }
+        },
+        "if": { "properties": { "component": { "const": "app" } }, "required": ["component"] },
+        "then": { "required": ["distribution"] },
+        "else": { "not": { "required": ["distribution"] } }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "sku": { "const": "system" } }, "required": ["sku"] },
+      "then": { "properties": { "components": { "maxItems": 2, "not": { "contains": { "properties": { "component": { "const": "app" } }, "required": ["component"] } } } } },
+      "else": { "properties": { "components": { "minItems": 3, "contains": { "properties": { "component": { "const": "app" } }, "required": ["component"] } } } }
+    }
+  ]
 }

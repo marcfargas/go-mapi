@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('system')][string]$SKU = 'system',
+    [ValidateSet('system','suite')][string]$SKU = 'system',
     [Parameter(Mandatory)][string]$SignedInputManifest,
     [string]$OutputDirectory,
     [switch]$RequireSignedInputs
@@ -31,7 +31,7 @@ $manifestPath = [IO.Path]::GetFullPath($SignedInputManifest)
 if (-not (Test-Path -LiteralPath $manifestPath)) { Fail "missing signed-input manifest $manifestPath" }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 Get-ExactProperty $manifest @('schema','sku','packageRelease','commit','components') 'manifest'
-if ($manifest.schema -ne 'go-mapi-machine-signed-input-v1' -or $manifest.sku -ne $SKU -or $SKU -ne 'system') { Fail 'manifest schema or SKU does not match the explicit system build' }
+if ($manifest.schema -ne 'go-mapi-machine-signed-input-v1' -or $manifest.sku -ne $SKU) { Fail 'manifest schema or SKU does not match the explicit build' }
 if ($manifest.commit -notmatch '^[0-9a-f]{40}$') { Fail 'manifest commit must be a full lowercase Git commit SHA' }
 
 $identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU ([string]$manifest.packageRelease) 2>&1
@@ -40,8 +40,10 @@ $identity = $identityJSON | ConvertFrom-Json
 $componentMap = @{}
 $manifestRoot = Split-Path -Parent $manifestPath
 foreach ($component in @($manifest.components)) {
-    Get-ExactProperty $component @('component','version','artifacts') "component $($component.component)"
-    if ($component.component -notin @('service','interceptor') -or $componentMap.ContainsKey($component.component)) { Fail 'manifest must contain exactly one service and interceptor component' }
+    $fields = if ($component.component -eq 'app') { @('component','version','artifacts','distribution') } else { @('component','version','artifacts') }
+    Get-ExactProperty $component $fields "component $($component.component)"
+    if ($component.component -notin @('service','interceptor','app') -or $componentMap.ContainsKey($component.component)) { Fail 'manifest contains an unknown or duplicate component' }
+    if ($component.component -eq 'app' -and ($SKU -ne 'suite' -or $component.distribution -ne 'machine')) { Fail 'suite app input must be explicitly machine-distributed' }
     if ($component.version -notmatch '^\d+\.\d+\.\d+(?:-(?:alpha|beta|nightly)\.\d+)?$') { Fail "invalid contained version for $($component.component)" }
     $artifacts = @{}
     foreach ($artifact in @($component.artifacts)) {
@@ -58,11 +60,15 @@ foreach ($component in @($manifest.components)) {
     }
     $componentMap[$component.component] = @{ Version = [string]$component.version; Artifacts = $artifacts }
 }
-if ($componentMap.Count -ne 2 -or $componentMap.interceptor.Artifacts.Count -ne 2 -or -not $componentMap.interceptor.Artifacts.x86 -or -not $componentMap.interceptor.Artifacts.x64 -or $componentMap.service.Artifacts.Count -ne 1 -or -not $componentMap.service.Artifacts.x64) { Fail 'system input requires x86/x64 interceptor DLLs and one x64 service executable' }
+if ($componentMap.interceptor.Artifacts.Count -ne 2 -or -not $componentMap.interceptor.Artifacts.x86 -or -not $componentMap.interceptor.Artifacts.x64 -or $componentMap.service.Artifacts.Count -ne 1 -or -not $componentMap.service.Artifacts.x64) { Fail 'input requires x86/x64 interceptor DLLs and one x64 service executable' }
+if ($SKU -eq 'system' -and $componentMap.Count -ne 2) { Fail 'system input must not contain a user app' }
+if ($SKU -eq 'suite' -and ($componentMap.Count -ne 3 -or $componentMap.app.Artifacts.Count -ne 1 -or -not $componentMap.app.Artifacts.x64 -or $componentMap.app.Artifacts.x64 -notmatch 'go-mapi-machine\.exe$')) { Fail 'suite input requires a distinct machine-distributed x64 app executable' }
 
 $components = Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json
-$contract = $components.machinePackages.system
-if ($contract.upgradeCode -ne 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' -or ($contract.includedComponents -join ',') -ne 'service,interceptor') { Fail 'components.json system package contract is invalid' }
+$contract = $components.machinePackages.$SKU
+$expectedUpgradeCode = if ($SKU -eq 'system') { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' } else { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' }
+$expectedComponents = if ($SKU -eq 'system') { 'service,interceptor' } else { 'service,interceptor,app' }
+if ($contract.upgradeCode -ne $expectedUpgradeCode -or ($contract.includedComponents -join ',') -ne $expectedComponents) { Fail "components.json $SKU package contract is invalid" }
 $requiredAppMin = [string]$components.components.interceptor.requires.minInclusive
 
 $customProject = Join-Path $msiRoot 'customaction\GoMapi.AdminCustomActions.csproj'
@@ -72,7 +78,7 @@ $customBinary = Join-Path $msiRoot 'customaction\bin\x64\Release\net48\GoMapi.Ad
 if (-not (Test-Path $customBinary)) { Fail "missing packaged DTF custom action $customBinary" }
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-$project = Join-Path $msiRoot 'GoMapi.AdminInstaller.wixproj'
+$project = Join-Path $msiRoot $(if ($SKU -eq 'system') { 'GoMapi.AdminInstaller.wixproj' } else { 'GoMapi.SuiteInstaller.wixproj' })
 $arguments = @('build', $project, '--configuration', 'Release',
     "-p:MsiProductVersion=$($identity.productVersion)", "-p:PackageRelease=$($identity.release)",
     "-p:ProductCode=$($identity.productCode)", "-p:UpgradeCode=$($contract.upgradeCode)",
@@ -81,8 +87,12 @@ $arguments = @('build', $project, '--configuration', 'Release',
     "-p:SourceX64=$($componentMap.interceptor.Artifacts.x64)", "-p:SourceX86=$($componentMap.interceptor.Artifacts.x86)",
     "-p:CustomActionBinary=$customBinary", "-p:OutputName=$([IO.Path]::GetFileNameWithoutExtension($identity.assetName))",
     "-p:OutputPath=$OutputDirectory")
+if ($SKU -eq 'suite') {
+    $arguments += "-p:AppVersion=$($componentMap.app.Version)"
+    $arguments += "-p:SourceApp=$($componentMap.app.Artifacts.x64)"
+}
 dotnet @arguments
 if ($LASTEXITCODE -ne 0) { Fail 'WiX MSI build failed' }
 $msi = Get-ChildItem $OutputDirectory -Filter $identity.assetName -Recurse | Select-Object -First 1
 if (-not $msi) { Fail "WiX build did not produce immutable asset $($identity.assetName)" }
-Write-Host "Built system MSI: $($msi.FullName)"
+Write-Host "Built $SKU MSI: $($msi.FullName)"
