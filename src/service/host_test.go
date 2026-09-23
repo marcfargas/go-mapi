@@ -20,14 +20,33 @@ func TestResidentServiceIdentityIsFixed(t *testing.T) {
 }
 
 func TestParseExecutableModeAcceptsOnlyRegisteredService(t *testing.T) {
-	mode, err := ParseExecutableMode([]string{"service"})
-	if err != nil || mode != ModeService {
-		t.Fatalf("ParseExecutableMode(service) = %q, %v", mode, err)
+	invocation, err := ParseExecutableMode([]string{"service"})
+	if err != nil || invocation.Mode != ModeService || invocation.TransactionID != "" {
+		t.Fatalf("ParseExecutableMode(service) = %#v, %v", invocation, err)
 	}
-	for _, args := range [][]string{nil, {}, {"--service"}, {"service", "extra"}, {"--update-runner", "transaction"}} {
+	runner, err := ParseExecutableMode([]string{"--update-runner", "transaction-42"})
+	if err != nil || runner.Mode != ModeUpdateRunner || runner.TransactionID != "transaction-42" {
+		t.Fatalf("ParseExecutableMode(update-runner) = %#v, %v", runner, err)
+	}
+	for _, args := range [][]string{nil, {}, {"--service"}, {"service", "extra"}, {"--update-runner"}, {"--update-runner", `..\\outside`}, {"--update-runner", "tx", "extra"}} {
 		if _, err := ParseExecutableMode(args); err == nil {
 			t.Errorf("ParseExecutableMode(%q) accepted an unregistered process mode", args)
 		}
+	}
+}
+
+func TestHostStopsPromptlyWhenScheduleCompletesAfterReadyHandoff(t *testing.T) {
+	release := make(chan struct{})
+	host := Host{Schedule: ScheduleFunc(func(context.Context) { <-release })}
+	statuses := make(chan HostStatus, 3)
+	done := make(chan error, 1)
+	go func() { done <- host.Run(context.Background(), make(chan Control), statuses) }()
+	assertStatus(t, statuses, HostStartPending)
+	assertStatus(t, statuses, HostRunning)
+	close(release)
+	assertStatus(t, statuses, HostStopPending)
+	if err := <-done; err != nil {
+		t.Fatalf("Host.Run: %v", err)
 	}
 }
 

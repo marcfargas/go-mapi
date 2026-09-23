@@ -240,15 +240,16 @@ func TestReconcilePreservesInstallerBusyRetryDeadline(t *testing.T) {
 func defaultDependencies(t *testing.T) Dependencies {
 	t.Helper()
 	release := authorizedRelease(t, update.System, "4.0.1")
+	pending := &memoryPendingStore{}
 	return Dependencies{
 		ReleaseSource: &fakeReleaseSource{release: release},
 		Artifacts:     &fakeArtifactStore{},
 		Inventory:     &fakeInventory{products: []InstalledProduct{{Snapshot: oldProduct(update.System)}}},
-		Launcher:      &fakeLauncher{receipt: HandoffReceipt{Runner: ProcessIdentity{PID: 41, CreatedAtUnixNano: 1001}, Installer: ProcessIdentity{PID: 42, CreatedAtUnixNano: 1002}, Ready: true}},
+		Launcher:      &fakeLauncher{pending: pending, receipt: HandoffReceipt{Runner: ProcessIdentity{PID: 41, CreatedAtUnixNano: 1001}, Installer: ProcessIdentity{PID: 42, CreatedAtUnixNano: 1002}, Ready: true}},
 		Health:        fakeHealthProbe{healthy: true},
 		Processes:     &fakeProcessProbe{},
 		Reboot:        fakeRebootProbe(false),
-		Pending:       &memoryPendingStore{},
+		Pending:       pending,
 		Replay:        &memoryReplayStore{},
 		Status:        &memoryStatusStore{},
 		Events:        &memoryEventSink{},
@@ -313,11 +314,19 @@ type fakeLauncher struct {
 	calls   int
 	receipt HandoffReceipt
 	request HandoffRequest
+	pending *memoryPendingStore
 }
 
 func (f *fakeLauncher) Launch(_ context.Context, request HandoffRequest) (HandoffReceipt, error) {
 	f.calls++
 	f.request = request
+	if f.pending != nil && f.pending.pending != nil && f.receipt.Ready {
+		pending := *f.pending.pending
+		pending.Runner = &f.receipt.Runner
+		pending.Installer = &f.receipt.Installer
+		pending.Phase = PhaseInstallerRunning
+		_ = f.pending.Save(context.Background(), pending)
+	}
 	return f.receipt, nil
 }
 

@@ -288,12 +288,15 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	if !receipt.Ready || validateProcessIdentity(&receipt.Runner) != nil || validateProcessIdentity(&receipt.Installer) != nil {
 		return "", errors.New("detached runner did not provide durable ready evidence")
 	}
-	pending.Runner = &receipt.Runner
-	pending.Installer = &receipt.Installer
-	pending.Phase = PhaseInstallerRunning
-	pending.UpdatedAt = coordinator.deps.Clock.Now()
-	if err := coordinator.deps.Pending.Save(context.WithoutCancel(ctx), *pending); err != nil {
-		return "", fmt.Errorf("persist handoff evidence: %w", err)
+	// The runner owns the post-launch record. Reload rather than saving the
+	// stale prepared value: a fast installer may already have written exit
+	// evidence while the old service is returning from the ready wait.
+	durable, err := coordinator.deps.Pending.Load(context.WithoutCancel(ctx))
+	if err != nil {
+		return "", fmt.Errorf("reload durable handoff evidence: %w", err)
+	}
+	if durable == nil || durable.TransactionID != pending.TransactionID || durable.Phase != PhaseInstallerRunning || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
+		return "", errors.New("runner readiness does not match durable transaction evidence")
 	}
 	_ = coordinator.deps.Status.Save(context.WithoutCancel(ctx), ServiceStatus{LastCode: StatusReady})
 	coordinator.deps.Events.Record(context.WithoutCancel(ctx), Event{Code: EventHandedOff, TransactionID: pending.TransactionID})

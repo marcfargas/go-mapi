@@ -121,6 +121,25 @@ func TestFileStoresRoundTripStrictBoundedState(t *testing.T) {
 	}
 }
 
+func TestRunnerReadyStorePublishesStrictDurableIdentity(t *testing.T) {
+	storage := mustStorage(t, filepath.Join(t.TempDir(), "service"), privateStorage)
+	store, err := NewFileRunnerReadyStore(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: "tx-42", Runner: ProcessIdentity{PID: 11, CreatedAtUnixNano: 101}, Installer: ProcessIdentity{PID: 12, CreatedAtUnixNano: 102}, ReadyAt: time.Now().UTC()}
+	if err := store.Publish(context.Background(), ready); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background(), ready.TransactionID)
+	if err != nil || !reflect.DeepEqual(loaded, &ready) {
+		t.Fatalf("ready = %#v, %v", loaded, err)
+	}
+	if _, err := store.Load(context.Background(), `..\\outside`); err == nil {
+		t.Fatal("accepted unsafe ready transaction")
+	}
+}
+
 func TestPublicStatusAllowsOnlyBoundedRedactedCodes(t *testing.T) {
 	storage := mustStorage(t, filepath.Join(t.TempDir(), "status"), publicReadStorage)
 	store, err := NewPublicStatusStore(storage)
@@ -214,6 +233,36 @@ func TestProtectedArtifactStoreStreamsToFixedReleasePath(t *testing.T) {
 	data, err := storage.Read(strings.Split(wantHandle, "/"), payload.Artifact.Size)
 	if err != nil || !bytes.Equal(data, body) {
 		t.Fatalf("staged bytes = %q, %v", data, err)
+	}
+}
+
+func TestProtectedArtifactResolverDerivesPathAndReverifiesHash(t *testing.T) {
+	storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
+	pending := validPending(time.Now().UTC())
+	identity, err := machineIdentity(pending.SKU, pending.Candidate.PackageVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("installer")
+	sum := sha256.Sum256(body)
+	pending.ArtifactSHA256 = hex.EncodeToString(sum[:])
+	components := []string{string(pending.SKU), fmt.Sprint(pending.Replay.Sequence), identity.AssetName}
+	if _, err := storage.WriteAtomic(context.Background(), components, bytes.NewReader(body), int64(len(body)), int64(len(body)), pending.ArtifactSHA256); err != nil {
+		t.Fatal(err)
+	}
+	resolver, _ := NewProtectedArtifactResolver(storage)
+	path, err := resolver.Resolve(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (SHA256FileVerifier{}).VerifySHA256(context.Background(), path, pending.ArtifactSHA256); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (SHA256FileVerifier{}).VerifySHA256(context.Background(), path, pending.ArtifactSHA256); err == nil {
+		t.Fatal("accepted installer changed before launch")
 	}
 }
 

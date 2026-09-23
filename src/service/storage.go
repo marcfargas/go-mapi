@@ -22,6 +22,7 @@ import (
 const (
 	maxStateBytes  = int64(256 << 10)
 	maxStatusBytes = int64(4 << 10)
+	maxRunnerBytes = int64(128 << 20)
 
 	serviceStateDirectory = "service"
 	updateDirectory       = "updates"
@@ -286,6 +287,20 @@ func (storage *ProtectedStorage) Remove(components ...string) error {
 	return err
 }
 
+// Resolve returns one already-protected path selected only by closed path
+// components. It is intentionally package-private so public callers can never
+// turn protected storage into a general path oracle.
+func (storage *ProtectedStorage) resolve(components ...string) (string, error) {
+	path, err := storage.child(components...)
+	if err != nil {
+		return "", err
+	}
+	if err := storage.platform.checkPath(storage.root, path, true); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
 	buffer := make([]byte, 64<<10)
 	var total int64
@@ -318,6 +333,53 @@ func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (
 type FileStateStore struct {
 	storage *ProtectedStorage
 }
+
+type FileRunnerReadyStore struct {
+	storage *ProtectedStorage
+}
+
+func NewFileRunnerReadyStore(storage *ProtectedStorage) (*FileRunnerReadyStore, error) {
+	if storage == nil || storage.access != privateStorage {
+		return nil, errors.New("runner readiness requires private protected storage")
+	}
+	return &FileRunnerReadyStore{storage: storage}, nil
+}
+
+func (store *FileRunnerReadyStore) Publish(ctx context.Context, ready RunnerReadyV1) error {
+	if err := ready.Validate(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(ready)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = store.storage.WriteAtomic(ctx, []string{runnerReadyFileName(ready.TransactionID)}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
+	return err
+}
+
+func (store *FileRunnerReadyStore) Load(_ context.Context, transactionID string) (*RunnerReadyV1, error) {
+	if !transactionIDPattern.MatchString(transactionID) {
+		return nil, errors.New("invalid runner readiness transaction")
+	}
+	data, err := store.storage.Read([]string{runnerReadyFileName(transactionID)}, maxStatusBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ready RunnerReadyV1
+	if err := decodeStrict(data, &ready); err != nil {
+		return nil, err
+	}
+	if err := ready.Validate(); err != nil || ready.TransactionID != transactionID {
+		return nil, errors.New("invalid runner readiness evidence")
+	}
+	return &ready, nil
+}
+
+func runnerReadyFileName(transactionID string) string { return "ready-" + transactionID + "-v1.json" }
 
 func NewFileStateStore(storage *ProtectedStorage) (*FileStateStore, error) {
 	if storage == nil || storage.access != privateStorage {
@@ -544,6 +606,49 @@ type ArtifactDownload func(context.Context, update.Release, io.Writer) error
 type ProtectedArtifactStore struct {
 	storage  *ProtectedStorage
 	download ArtifactDownload
+}
+
+type ProtectedArtifactResolver struct {
+	storage *ProtectedStorage
+}
+
+func NewProtectedArtifactResolver(storage *ProtectedStorage) (*ProtectedArtifactResolver, error) {
+	if storage == nil || storage.access != privateStorage {
+		return nil, errors.New("artifact resolver requires private protected storage")
+	}
+	return &ProtectedArtifactResolver{storage: storage}, nil
+}
+
+func (resolver *ProtectedArtifactResolver) Resolve(_ context.Context, pending PendingV1) (string, error) {
+	if err := pending.Validate(); err != nil {
+		return "", err
+	}
+	identity, err := machineIdentity(pending.SKU, pending.Candidate.PackageVersion)
+	if err != nil {
+		return "", err
+	}
+	return resolver.storage.resolve(string(pending.SKU), fmt.Sprintf("%d", pending.Replay.Sequence), identity.AssetName)
+}
+
+type SHA256FileVerifier struct{}
+
+func (SHA256FileVerifier) VerifySHA256(ctx context.Context, path, expected string) error {
+	if !filepath.IsAbs(path) || !validSHA256(expected) {
+		return errors.New("invalid file integrity request")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := copyContext(ctx, hash, file); err != nil {
+		return err
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expected {
+		return errors.New("protected file SHA-256 changed")
+	}
+	return nil
 }
 
 func NewProtectedArtifactStore(storage *ProtectedStorage, download ArtifactDownload) (*ProtectedArtifactStore, error) {

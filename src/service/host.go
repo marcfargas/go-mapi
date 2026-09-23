@@ -18,16 +18,27 @@ const (
 
 type ExecutableMode string
 
-const ModeService ExecutableMode = "service"
+const (
+	ModeService      ExecutableMode = "service"
+	ModeUpdateRunner ExecutableMode = "update-runner"
+)
+
+type ExecutableInvocation struct {
+	Mode          ExecutableMode
+	TransactionID string
+}
 
 // ParseExecutableMode keeps the resident topology closed. The later one-shot
 // updater runner is a short-lived process and will be added as a distinct,
 // unregistered mode; it must never become another service.
-func ParseExecutableMode(args []string) (ExecutableMode, error) {
-	if len(args) != 1 || args[0] != ServiceArgument {
-		return "", fmt.Errorf("expected exactly %q mode", ServiceArgument)
+func ParseExecutableMode(args []string) (ExecutableInvocation, error) {
+	if len(args) == 1 && args[0] == ServiceArgument {
+		return ExecutableInvocation{Mode: ModeService}, nil
 	}
-	return ModeService, nil
+	if len(args) == 2 && args[0] == "--update-runner" && transactionIDPattern.MatchString(args[1]) {
+		return ExecutableInvocation{Mode: ModeUpdateRunner, TransactionID: args[1]}, nil
+	}
+	return ExecutableInvocation{}, fmt.Errorf("expected exactly %q or a bounded update-runner transaction", ServiceArgument)
 }
 
 type Control uint8
@@ -140,6 +151,9 @@ func (host Host) Run(parent context.Context, controls <-chan Control, statuses c
 
 	for {
 		select {
+		case <-workDone:
+			statuses <- HostStatus{State: HostStopPending}
+			return nil
 		case <-parent.Done():
 			statuses <- HostStatus{State: HostStopPending}
 			cancel()
