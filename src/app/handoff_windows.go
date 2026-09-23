@@ -30,6 +30,9 @@ func newHandoffPlatform() handoffPlatform {
 }
 
 func (p *windowsHandoffPlatform) CurrentChannel() (installChannel, error) {
+	if AppDistribution == "machine" {
+		return channelMachine, nil
+	}
 	_, packaged, err := currentPackageFullName()
 	if err != nil {
 		return "", err
@@ -201,6 +204,9 @@ func validateStandaloneUninstaller(path string) error {
 // settings or the queue watcher. A non-empty activation target means the
 // caller must release its mutex, activate the target, and exit.
 func startupHandoffAction(ctx context.Context) (installChannel, error) {
+	if AppDistribution == "machine" {
+		return "", nil
+	}
 	platform := newHandoffPlatform()
 	coordinator := &handoffCoordinator{platform: platform}
 	current, err := platform.CurrentChannel()
@@ -266,6 +272,9 @@ func runStoreToStandaloneHandoff(ctx context.Context) error {
 // Store launch can shut down a currently running standalone source instead of
 // being mistaken for an ordinary second instance and exiting.
 func prepareStoreTargetHandoff(ctx context.Context) error {
+	if AppDistribution == "machine" {
+		return nil
+	}
 	platform := newHandoffPlatform()
 	current, err := platform.CurrentChannel()
 	if err != nil || current != channelStore {

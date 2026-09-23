@@ -16,6 +16,7 @@ type installChannel string
 
 const (
 	channelStandalone    installChannel = "standalone"
+	channelMachine       installChannel = "machine"
 	channelStore         installChannel = "store"
 	handoffSchemaVersion                = 1
 )

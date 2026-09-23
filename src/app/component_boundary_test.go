@@ -109,3 +109,21 @@ func TestStandaloneStartupRegistrationStaysPerUserAndLimited(t *testing.T) {
 		}
 	}
 }
+
+func TestMachineStartupRegistrationIsReadOnly(t *testing.T) {
+	data, err := os.ReadFile("startup_machine_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"registry.LOCAL_MACHINE", "registry.QUERY_VALUE", "machineStartupValue"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("machine startup registration missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"registry.CreateKey", "registry.SET_VALUE", "registry.CURRENT_USER", "DeleteValue", "SetStringValue"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("machine startup registration contains mutating token %q", forbidden)
+		}
+	}
+}

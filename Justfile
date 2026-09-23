@@ -38,6 +38,9 @@ build-user:
 build-user-release:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials
 
+build-user-machine:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
+
 dev-user:
     cd src/app && wails build -devtools
     ./src/app/build/bin/go-mapi.exe

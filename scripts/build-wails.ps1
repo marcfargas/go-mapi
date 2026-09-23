@@ -34,6 +34,9 @@ param(
     # source avoids materialising the values in a runner file while keeping the
     # local .env.local workflow unchanged.
     [switch]$UseEnvironmentCredentials,
+    # The suite MSI consumes a distinct PE whose installed channel cannot be
+    # mistaken for the per-user standalone or Store package.
+    [switch]$MachineDistribution,
     # The installed application's explicit identity is a release concern. The
     # empty default preserves the existing local-development build behaviour.
     [string]$Aumid = '',
@@ -160,6 +163,9 @@ $ldflags = @(
     "-X `"main.oauthClientID=$($values['GOMAPI_OAUTH_CLIENT_ID'])`"",
     "-X `"main.oauthClientSecret=$($values['GOMAPI_OAUTH_CLIENT_SECRET'])`""
 )
+if ($MachineDistribution) {
+    $ldflags += '-X "main.AppDistribution=machine"'
+}
 if ([string]::IsNullOrWhiteSpace($StorePackageFamilyName)) {
     $StorePackageFamilyName = [Environment]::GetEnvironmentVariable('GOMAPI_STORE_PACKAGE_FAMILY_NAME')
 }

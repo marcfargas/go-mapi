@@ -68,7 +68,7 @@ func updateDistributionChannel() string {
 	if err != nil {
 		return "unknown"
 	}
-	if channel == channelStore || channel == channelStandalone {
+	if channel == channelStore || channel == channelStandalone || channel == channelMachine {
 		return string(channel)
 	}
 	return "unknown"

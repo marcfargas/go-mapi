@@ -30,11 +30,13 @@ const (
 )
 
 type windowsStartupService struct {
-	registration startupRegistrationStore
-	msix         msixStartupTaskAPI
-	packaged     bool
-	identityErr  error
-	exePath      string
+	registration        startupRegistrationStore
+	machineRegistration startupRegistrationStore
+	msix                msixStartupTaskAPI
+	packaged            bool
+	machine             bool
+	identityErr         error
+	exePath             string
 }
 
 type startupRegistrationStore interface {
@@ -80,6 +82,10 @@ func (windowsStartupRegistrationStore) Delete() error {
 }
 
 func newStartupService() startupService {
+	if AppDistribution == "machine" {
+		exePath, err := os.Executable()
+		return &windowsStartupService{machine: true, machineRegistration: windowsMachineStartupRegistrationStore{}, exePath: exePath, identityErr: err}
+	}
 	_, packaged, err := currentPackageFullName()
 	exePath, exeErr := os.Executable()
 	if exeErr != nil && err == nil {
@@ -96,6 +102,9 @@ func (s *windowsStartupService) State(ctx context.Context, requested bool) Start
 	if s.identityErr != nil {
 		return startupFailure("unknown", requested, fmt.Sprintf("Cannot determine app channel: %v", s.identityErr))
 	}
+	if s.machine {
+		return s.machineState(requested)
+	}
 	if s.packaged {
 		return s.msixState(ctx, requested, "query")
 	}
@@ -105,6 +114,9 @@ func (s *windowsStartupService) State(ctx context.Context, requested bool) Start
 func (s *windowsStartupService) Set(ctx context.Context, enabled bool) StartupState {
 	if s.identityErr != nil {
 		return startupFailure("unknown", enabled, fmt.Sprintf("Cannot determine app channel: %v", s.identityErr))
+	}
+	if s.machine {
+		return s.machineState(enabled)
 	}
 	if s.packaged {
 		action := "disable"
@@ -170,6 +182,30 @@ func (s *windowsStartupService) standaloneState(ctx context.Context, requested b
 
 func (s *windowsStartupService) standaloneCommand() string {
 	return fmt.Sprintf(`"%s" --startup`, filepath.Clean(s.exePath))
+}
+
+func (s *windowsStartupService) machineState(requested bool) StartupState {
+	state := StartupState{Backend: "machine", Requested: requested, Effective: "missing"}
+	command, err := s.machineRegistration.Read()
+	if err != nil {
+		if errors.Is(err, registry.ErrNotExist) {
+			state.Warning = "Machine startup registration is absent; repair the suite MSI."
+			return state
+		}
+		return startupFailure("machine", requested, fmt.Sprintf("Cannot read machine startup registration: %v", err))
+	}
+	state.Registered = true
+	if !strings.EqualFold(strings.TrimSpace(command), fmt.Sprintf(`"%s" --startup --machine-install`, filepath.Clean(s.exePath))) {
+		state.Effective = "mismatched"
+		state.Warning = "Machine startup registration does not match this suite app; repair the suite MSI."
+		return state
+	}
+	if requested {
+		state.Effective = "enabled"
+	} else {
+		state.Effective = "disabled"
+	}
+	return state
 }
 
 type msixStartupTaskAPI interface {
