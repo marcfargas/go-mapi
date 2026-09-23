@@ -20,24 +20,29 @@ const maxMachineEnvelopeBytes = 256 << 10
 // the discovery URL. The root and origin must be supplied by the signed
 // service build, never by a writable machine setting.
 type AuthenticatedReleaseSource struct {
-	sku    update.SKU
-	policy update.Policy
-	url    string
-	client *http.Client
-	now    func() time.Time
+	sku       update.SKU
+	policy    update.Policy
+	publisher update.PublisherPolicy
+	url       string
+	client    *http.Client
+	now       func() time.Time
 }
 
-func NewAuthenticatedReleaseSource(sku update.SKU, root update.Root, metadataOrigin string, client *http.Client, now func() time.Time) (*AuthenticatedReleaseSource, error) {
+func NewAuthenticatedReleaseSource(sku update.SKU, root update.Root, metadataOrigin string, publisher update.PublisherPolicy, client *http.Client, now func() time.Time) (*AuthenticatedReleaseSource, error) {
 	policy, err := update.NewMachinePolicy(sku, root)
 	if err != nil {
 		return nil, err
 	}
+	if err := update.ValidatePublisherPolicy(publisher); err != nil {
+		return nil, fmt.Errorf("invalid protected publisher policy: %w", err)
+	}
+	publisher.EKUs = append([]string(nil), publisher.EKUs...)
 	origin, err := url.Parse(metadataOrigin)
 	if err != nil || origin.Scheme != "https" || origin.Host == "" || origin.User != nil || origin.RawQuery != "" || origin.Fragment != "" || origin.Opaque != "" || origin.Path != "" && origin.Path != "/" || client == nil || now == nil {
 		return nil, errors.New("machine release source requires a fixed HTTPS metadata origin and machine client")
 	}
 	origin.Path = "/machine/" + string(sku) + "/targets.json"
-	return &AuthenticatedReleaseSource{sku: sku, policy: policy, url: origin.String(), client: client, now: now}, nil
+	return &AuthenticatedReleaseSource{sku: sku, policy: policy, publisher: publisher, url: origin.String(), client: client, now: now}, nil
 }
 
 func (source *AuthenticatedReleaseSource) Discover(ctx context.Context, request DiscoveryRequest) (update.Release, error) {
@@ -82,6 +87,9 @@ func (source *AuthenticatedReleaseSource) Discover(ctx context.Context, request 
 	release, err := source.policy.Authorize(envelope, versions, source.now())
 	if err != nil {
 		return update.Release{}, fmt.Errorf("authorize machine release: %w", err)
+	}
+	if err := update.MatchPublisherPolicy(source.publisher, release.Payload().Publisher); err != nil {
+		return update.Release{}, fmt.Errorf("authorize machine publisher: %w", err)
 	}
 	if _, err := source.policy.Accept(request.Replay, release); err != nil {
 		return update.Release{}, fmt.Errorf("reject machine release replay: %w", err)

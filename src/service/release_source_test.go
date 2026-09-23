@@ -24,6 +24,14 @@ func (transport releaseTransport) RoundTrip(request *http.Request) (*http.Respon
 }
 
 func sourceFixture(t *testing.T, sku update.SKU, candidate string, responseStatus int) (*AuthenticatedReleaseSource, DiscoveryRequest, *string) {
+	return sourceFixtureWithPublisher(t, sku, candidate, responseStatus, testPublisher(), testPublisher())
+}
+
+func testPublisher() update.PublisherPolicy {
+	return update.PublisherPolicy{Publisher: "Example", EKUs: []string{"1.3.6.1.5.5.7.3.3", "1.2.3.4"}, PolicyID: "release"}
+}
+
+func sourceFixtureWithPublisher(t *testing.T, sku update.SKU, candidate string, responseStatus int, protectedPublisher, targetPublisher update.PublisherPolicy) (*AuthenticatedReleaseSource, DiscoveryRequest, *string) {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -31,8 +39,12 @@ func sourceFixture(t *testing.T, sku update.SKU, candidate string, responseStatu
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(public)
 	root := update.Root{Schema: update.MachineRootSchema, Version: 1, AllowedOrigin: "https://github.com/marcfargas/go-mapi/releases/download/", Root: update.KeyRole{Keys: map[string]string{"root": encoded}, Threshold: 1}, Targets: update.KeyRole{Keys: map[string]string{"targets": encoded}, Threshold: 1}}
-	release := authorizedRelease(t, sku, candidate)
-	signed := release.SignedBytes()
+	payload := authorizedRelease(t, sku, candidate).Payload()
+	payload.Publisher = targetPublisher
+	signed, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
 	envelope, err := json.Marshal(update.Envelope{Schema: update.EnvelopeSchema, Signed: base64.RawURLEncoding.EncodeToString(signed), Signatures: []update.Signature{{KeyID: "targets", Signature: base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, signed))}}})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +55,7 @@ func sourceFixture(t *testing.T, sku update.SKU, candidate string, responseStatu
 		fetched = request.URL.String()
 		return &http.Response{StatusCode: responseStatus, Body: io.NopCloser(strings.NewReader(responseBody)), ContentLength: int64(len(responseBody)), Header: make(http.Header), Request: request}, nil
 	})}
-	source, err := NewAuthenticatedReleaseSource(sku, root, "https://updates.example.test", client, func() time.Time { return coordinatorNow })
+	source, err := NewAuthenticatedReleaseSource(sku, root, "https://updates.example.test", protectedPublisher, client, func() time.Time { return coordinatorNow })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +102,7 @@ func TestAuthenticatedSourceRejectsWrongSKUAndForgedInstalledIdentityBeforeFetch
 func TestAuthenticatedSourceRejectsInvalidMetadataOrigin(t *testing.T) {
 	source, _, _ := sourceFixture(t, update.System, "4.0.1", http.StatusOK)
 	for _, origin := range []string{"http://updates.example.test", "https://user:pass@updates.example.test", "https://updates.example.test/other", "https://updates.example.test?sku=suite"} {
-		if _, err := NewAuthenticatedReleaseSource(update.System, source.policy.Root(), origin, source.client, source.now); err == nil {
+		if _, err := NewAuthenticatedReleaseSource(update.System, source.policy.Root(), origin, source.publisher, source.client, source.now); err == nil {
 			t.Fatalf("accepted metadata origin %q", origin)
 		}
 	}
@@ -116,6 +128,24 @@ func TestAuthenticatedSourceRejectsReplayAndInvalidSignature(t *testing.T) {
 	request.Replay = update.ReplayState{}
 	if _, err := source.Discover(context.Background(), request); err == nil || errors.Is(err, ErrOffline) {
 		t.Fatalf("invalid signature err=%v", err)
+	}
+}
+
+func TestAuthenticatedSourceRejectsSignedPublisherOverride(t *testing.T) {
+	wrong := testPublisher()
+	wrong.PolicyID = "different-signed-policy"
+	source, request, _ := sourceFixtureWithPublisher(t, update.System, "4.0.1", http.StatusOK, testPublisher(), wrong)
+	if _, err := source.Discover(context.Background(), request); err == nil || !strings.Contains(err.Error(), "publisher") {
+		t.Fatalf("signed publisher override error = %v", err)
+	}
+}
+
+func TestAuthenticatedSourceCopiesProtectedPublisherPolicy(t *testing.T) {
+	policy := testPublisher()
+	source, request, _ := sourceFixtureWithPublisher(t, update.System, "4.0.1", http.StatusOK, policy, testPublisher())
+	policy.EKUs[0] = "1.2.3.99"
+	if _, err := source.Discover(context.Background(), request); err != nil {
+		t.Fatalf("constructor policy changed through caller slice: %v", err)
 	}
 }
 
