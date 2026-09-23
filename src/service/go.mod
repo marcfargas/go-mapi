@@ -7,4 +7,9 @@ require (
 	golang.org/x/sys v0.30.0
 )
 
+require (
+	github.com/Masterminds/semver/v3 v3.4.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+)
+
 replace github.com/marcfargas/go-mapi/internal/mapi => ../../internal/mapi
