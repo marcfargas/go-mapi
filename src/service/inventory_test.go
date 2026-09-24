@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
@@ -123,6 +124,21 @@ func TestInstallerInventoryHonorsCancellationBetweenNativeCalls(t *testing.T) {
 	_, err := NewInstallerInventory(api).Registrations(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Registrations error = %v", err)
+	}
+}
+
+func TestAwaitMachineProductRegistrationCoversMSIRegistrationGap(t *testing.T) {
+	const code = "{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}"
+	api := &fakeInstallerAPI{related: map[string][]string{}, versions: map[string]string{code: "4.0.1"}}
+	api.afterRelated = func() { api.related[SystemUpgradeCode] = []string{code} }
+	registration, err := awaitMachineProductRegistration(context.Background(), NewInstallerInventory(api), time.Second)
+	if err != nil || registration.ProductVersion != "4.0.1" || registration.SKU != update.System {
+		t.Fatalf("registration after transient MSI gap = %+v, %v", registration, err)
+	}
+
+	missing := NewInstallerInventory(&fakeInstallerAPI{related: map[string][]string{}})
+	if _, err := awaitMachineProductRegistration(context.Background(), missing, 20*time.Millisecond); !errors.Is(err, ErrNoMachineProduct) {
+		t.Fatalf("persistent missing registration error = %v, want repair condition", err)
 	}
 }
 

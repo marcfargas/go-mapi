@@ -23,7 +23,7 @@ type DetachedProcessSpawner interface {
 }
 
 type ReadyAwaiter interface {
-	Await(context.Context, RunnerReadyStore, string, ProcessIdentity) (RunnerReadyV1, error)
+	Await(context.Context, RunnerReadyStore, string, uint, ProcessIdentity) (RunnerReadyV1, error)
 }
 
 type PollReadyAwaiter struct {
@@ -31,7 +31,7 @@ type PollReadyAwaiter struct {
 	Timeout  time.Duration
 }
 
-func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStore, transactionID string, runner ProcessIdentity) (RunnerReadyV1, error) {
+func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStore, transactionID string, attempt uint, runner ProcessIdentity) (RunnerReadyV1, error) {
 	if awaiter.Interval <= 0 || awaiter.Timeout <= 0 || store == nil {
 		return RunnerReadyV1{}, errors.New("invalid ready awaiter")
 	}
@@ -40,7 +40,7 @@ func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStor
 	ticker := time.NewTicker(awaiter.Interval)
 	defer ticker.Stop()
 	for {
-		ready, err := store.Load(ctx, transactionID)
+		ready, err := store.Load(ctx, transactionID, attempt)
 		if err != nil {
 			return RunnerReadyV1{}, err
 		}
@@ -79,25 +79,31 @@ func NewDetachedRunnerLauncher(storage *ProtectedStorage, ready RunnerReadyStore
 }
 
 func (launcher *DetachedRunnerLauncher) Launch(ctx context.Context, request HandoffRequest) (HandoffReceipt, error) {
-	if !transactionIDPattern.MatchString(request.TransactionID) || !validSHA256(request.Artifact.SHA256) {
+	if !transactionIDPattern.MatchString(request.TransactionID) || request.Attempt == 0 || !validSHA256(request.Artifact.SHA256) {
 		return HandoffReceipt{}, errors.New("invalid detached runner handoff")
 	}
 	artifactPath, err := launcher.resolveArtifactHandle(request.Artifact.Handle)
 	if err != nil {
 		return HandoffReceipt{}, err
 	}
-	if err := launcher.integrity.VerifySHA256(ctx, artifactPath, request.Artifact.SHA256); err != nil {
-		return HandoffReceipt{}, fmt.Errorf("reverify handoff artifact: %w", err)
-	}
-	runnerPath, err := launcher.stageRunner(ctx, request.TransactionID)
+	releaseArtifact, err := pinVerifiedFile(artifactPath)
 	if err != nil {
 		return HandoffReceipt{}, err
 	}
+	defer releaseArtifact()
+	if err := launcher.integrity.VerifySHA256(ctx, artifactPath, request.Artifact.SHA256); err != nil {
+		return HandoffReceipt{}, fmt.Errorf("reverify handoff artifact: %w", err)
+	}
+	runnerPath, releaseRunner, err := launcher.stageRunner(ctx, request.TransactionID)
+	if err != nil {
+		return HandoffReceipt{}, err
+	}
+	defer releaseRunner()
 	identity, err := launcher.spawner.SpawnDetached(runnerPath, request.TransactionID)
 	if err != nil || validateProcessIdentity(&identity) != nil {
 		return HandoffReceipt{}, errors.New("spawn detached update runner")
 	}
-	ready, err := launcher.awaiter.Await(ctx, launcher.ready, request.TransactionID, identity)
+	ready, err := launcher.awaiter.Await(ctx, launcher.ready, request.TransactionID, request.Attempt, identity)
 	if err != nil {
 		return HandoffReceipt{}, fmt.Errorf("await durable runner readiness: %w", err)
 	}
@@ -112,50 +118,61 @@ func (launcher *DetachedRunnerLauncher) resolveArtifactHandle(handle string) (st
 	return launcher.storage.resolve(components...)
 }
 
-func (launcher *DetachedRunnerLauncher) stageRunner(ctx context.Context, transactionID string) (string, error) {
+func (launcher *DetachedRunnerLauncher) stageRunner(ctx context.Context, transactionID string) (string, func(), error) {
+	releaseSource, err := pinVerifiedFile(launcher.source)
+	if err != nil {
+		return "", nil, err
+	}
+	defer releaseSource()
 	if err := launcher.authenticode.VerifyAuthenticode(ctx, launcher.source); err != nil {
-		return "", fmt.Errorf("verify installed service Authenticode: %w", err)
+		return "", nil, fmt.Errorf("verify installed service Authenticode: %w", err)
 	}
 	source, err := os.Open(launcher.source)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	info, err := source.Stat()
 	if err != nil {
 		source.Close()
-		return "", err
+		return "", nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxRunnerBytes {
 		source.Close()
-		return "", errors.New("installed service executable exceeds runner bound")
+		return "", nil, errors.New("installed service executable exceeds runner bound")
 	}
 	hash := sha256.New()
 	if _, err := io.Copy(hash, source); err != nil {
 		source.Close()
-		return "", err
+		return "", nil, err
 	}
 	if err := source.Close(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
 	source, err = os.Open(launcher.source)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer source.Close()
 	components := []string{"runners", transactionID, stagedRunnerName}
 	if _, err := launcher.storage.WriteAtomic(ctx, components, source, maxRunnerBytes, info.Size(), digest); err != nil {
-		return "", fmt.Errorf("copy protected update runner: %w", err)
+		return "", nil, fmt.Errorf("copy protected update runner: %w", err)
 	}
 	path, err := launcher.storage.resolve(components...)
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+	releaseRunner, err := pinVerifiedFile(path)
+	if err != nil {
+		return "", nil, err
 	}
 	if err := launcher.integrity.VerifySHA256(ctx, path, digest); err != nil {
-		return "", fmt.Errorf("reverify staged runner hash: %w", err)
+		releaseRunner()
+		return "", nil, fmt.Errorf("reverify staged runner hash: %w", err)
 	}
 	if err := launcher.authenticode.VerifyAuthenticode(ctx, path); err != nil {
-		return "", fmt.Errorf("reverify staged runner Authenticode: %w", err)
+		releaseRunner()
+		return "", nil, fmt.Errorf("reverify staged runner Authenticode: %w", err)
 	}
-	return path, nil
+	return path, releaseRunner, nil
 }

@@ -7,6 +7,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RequireSignedInputs) {
+    Write-Warning 'Building with unsigned machine inputs for local validation only; this does not prove trusted update or release readiness.'
+}
 $msiRoot = $PSScriptRoot
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $msiRoot '..\..\..'))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'release\machine' }

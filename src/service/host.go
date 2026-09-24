@@ -19,8 +19,10 @@ const (
 type ExecutableMode string
 
 const (
-	ModeService      ExecutableMode = "service"
-	ModeUpdateRunner ExecutableMode = "update-runner"
+	ModeService                ExecutableMode = "service"
+	ModeUpdateRunner           ExecutableMode = "update-runner"
+	ModeBeginFinalUninstall    ExecutableMode = "begin-final-uninstall"
+	ModeRollbackFinalUninstall ExecutableMode = "rollback-final-uninstall"
 )
 
 type ExecutableInvocation struct {
@@ -37,6 +39,12 @@ func ParseExecutableMode(args []string) (ExecutableInvocation, error) {
 	}
 	if len(args) == 2 && args[0] == "--update-runner" && transactionIDPattern.MatchString(args[1]) {
 		return ExecutableInvocation{Mode: ModeUpdateRunner, TransactionID: args[1]}, nil
+	}
+	if len(args) == 1 && args[0] == "--begin-final-uninstall" {
+		return ExecutableInvocation{Mode: ModeBeginFinalUninstall}, nil
+	}
+	if len(args) == 1 && args[0] == "--rollback-final-uninstall" {
+		return ExecutableInvocation{Mode: ModeRollbackFinalUninstall}, nil
 	}
 	return ExecutableInvocation{}, fmt.Errorf("expected exactly %q or a bounded update-runner transaction", ServiceArgument)
 }

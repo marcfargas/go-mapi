@@ -32,6 +32,10 @@ const (
 
 var storageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+var ErrFinalUninstallFenced = errors.New("final machine uninstall has fenced update preparation")
+
+const finalUninstallFenceName = "final-uninstall-fence-v1"
+
 type storageAccess uint8
 
 const (
@@ -403,15 +407,15 @@ func (store *FileRunnerReadyStore) Publish(ctx context.Context, ready RunnerRead
 		return err
 	}
 	data = append(data, '\n')
-	_, err = store.storage.WriteAtomic(ctx, []string{runnerReadyFileName(ready.TransactionID)}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
+	_, err = store.storage.WriteAtomic(ctx, []string{runnerReadyFileName(ready.TransactionID, ready.Attempt)}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
 	return err
 }
 
-func (store *FileRunnerReadyStore) Load(_ context.Context, transactionID string) (*RunnerReadyV1, error) {
-	if !transactionIDPattern.MatchString(transactionID) {
+func (store *FileRunnerReadyStore) Load(_ context.Context, transactionID string, attempt uint) (*RunnerReadyV1, error) {
+	if !transactionIDPattern.MatchString(transactionID) || attempt == 0 {
 		return nil, errors.New("invalid runner readiness transaction")
 	}
-	data, err := store.storage.Read([]string{runnerReadyFileName(transactionID)}, maxStatusBytes)
+	data, err := store.storage.Read([]string{runnerReadyFileName(transactionID, attempt)}, maxStatusBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -422,13 +426,15 @@ func (store *FileRunnerReadyStore) Load(_ context.Context, transactionID string)
 	if err := decodeStrict(data, &ready); err != nil {
 		return nil, err
 	}
-	if err := ready.Validate(); err != nil || ready.TransactionID != transactionID {
+	if err := ready.Validate(); err != nil || ready.TransactionID != transactionID || ready.Attempt != attempt {
 		return nil, errors.New("invalid runner readiness evidence")
 	}
 	return &ready, nil
 }
 
-func runnerReadyFileName(transactionID string) string { return "ready-" + transactionID + "-v1.json" }
+func runnerReadyFileName(transactionID string, attempt uint) string {
+	return fmt.Sprintf("ready-%s-attempt-%d-v1.json", transactionID, attempt)
+}
 
 func NewFileStateStore(storage *ProtectedStorage) (*FileStateStore, error) {
 	if storage == nil || storage.access != privateStorage {
@@ -438,6 +444,11 @@ func NewFileStateStore(storage *ProtectedStorage) (*FileStateStore, error) {
 }
 
 func (store *FileStateStore) Load(_ context.Context) (*PendingV1, error) {
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	data, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -450,6 +461,11 @@ func (store *FileStateStore) Load(_ context.Context) (*PendingV1, error) {
 }
 
 func (store *FileStateStore) Save(ctx context.Context, pending PendingV1) error {
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	data, err := MarshalPending(pending)
 	if err != nil {
 		return err
@@ -458,7 +474,98 @@ func (store *FileStateStore) Save(ctx context.Context, pending PendingV1) error 
 	return err
 }
 
-func (store *FileStateStore) Clear(_ context.Context) error {
+// CompareAndSave is the short state.lock transaction used at installer
+// authorization boundaries. It rejects a stale or concurrently prepared
+// record instead of overwriting another process's decision.
+func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *PendingV1, next PendingV1) error {
+	encoded, err := MarshalPending(next)
+	if err != nil {
+		return err
+	}
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if expected == nil {
+		if _, err := store.storage.Read([]string{finalUninstallFenceName}, 64); err == nil {
+			return ErrFinalUninstallFenced
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	current, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
+	if expected == nil {
+		if err == nil {
+			return ErrStateConflict
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	} else {
+		if err != nil {
+			return err
+		}
+		prior, err := MarshalPending(*expected)
+		if err != nil || !bytes.Equal(current, prior) {
+			return ErrStateConflict
+		}
+	}
+	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v1.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), "")
+	return err
+}
+
+// BeginFinalUninstall shares state.lock with new transaction preparation.
+// A pending transaction is never discarded to make uninstall appear safe.
+func (store *FileStateStore) BeginFinalUninstall(ctx context.Context) error {
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes); err == nil {
+		return errors.New("active machine update blocks final uninstall")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := store.storage.Read([]string{finalUninstallFenceName}, 64); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_, err = store.storage.WriteAtomic(ctx, []string{finalUninstallFenceName}, strings.NewReader("go-mapi-final-uninstall-v1\n"), 64, -1, "")
+	return err
+}
+
+func (store *FileStateStore) RollbackFinalUninstall() error {
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return store.storage.Remove(finalUninstallFenceName)
+}
+
+// CompareAndClear retires only the exact terminal record observed by the
+// coordinator. A runner or another service instance can never be erased by a
+// stale retry decision.
+func (store *FileStateStore) CompareAndClear(_ context.Context, expected PendingV1) error {
+	prior, err := MarshalPending(expected)
+	if err != nil {
+		return err
+	}
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	current, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, prior) {
+		return ErrStateConflict
+	}
 	return store.storage.Remove("pending-v1.json")
 }
 
@@ -501,6 +608,27 @@ func (store *FileReplayStore) Save(ctx context.Context, state update.ReplayState
 	if err != nil || state.Sequence == 0 || !validSHA256(state.Digest) {
 		return errors.New("invalid replay state")
 	}
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	previous, err := store.storage.Read([]string{name}, maxStateBytes)
+	if err == nil {
+		var old update.ReplayState
+		if err := decodeStrict(previous, &old); err != nil {
+			return err
+		}
+		if old.Namespace != state.Namespace || old.Sequence > state.Sequence ||
+			(old.Sequence == state.Sequence && old.Digest != state.Digest) {
+			return ErrStateConflict
+		}
+		if old.Sequence == state.Sequence {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -515,6 +643,73 @@ func replayFileName(sku update.SKU) (string, error) {
 		return "", errors.New("invalid replay SKU")
 	}
 	return "replay-" + string(sku) + "-v1.json", nil
+}
+
+type FileLastResultStore struct{ storage *ProtectedStorage }
+
+func NewFileLastResultStore(storage *ProtectedStorage) (*FileLastResultStore, error) {
+	if storage == nil || storage.access != privateStorage {
+		return nil, errors.New("last result store requires private protected storage")
+	}
+	return &FileLastResultStore{storage: storage}, nil
+}
+
+func (store *FileLastResultStore) Load(_ context.Context) (*LastResultV1, error) {
+	data, err := store.storage.Read([]string{"last-result-v1.json"}, maxStateBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var result LastResultV1
+	if err := decodeStrict(data, &result); err != nil {
+		return nil, err
+	}
+	if err := result.Validate(); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (store *FileLastResultStore) Save(ctx context.Context, result LastResultV1) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
+	unlock, err := lockStateStore(store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	previous, err := store.storage.Read([]string{"last-result-v1.json"}, maxStateBytes)
+	if err == nil {
+		var old LastResultV1
+		if err := decodeStrict(previous, &old); err != nil {
+			return err
+		}
+		if err := old.Validate(); err != nil {
+			return err
+		}
+		if old.SKU == result.SKU && (old.Sequence > result.Sequence ||
+			(old.Sequence == result.Sequence && old.Digest != result.Digest)) {
+			return ErrStateConflict
+		}
+		if old.TransactionID == result.TransactionID {
+			if old != result {
+				return ErrStateConflict
+			}
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = store.storage.WriteAtomic(ctx, []string{"last-result-v1.json"}, bytes.NewReader(data), maxStateBytes, int64(len(data)), "")
+	return err
 }
 
 type FileStatusStore struct {
@@ -568,9 +763,19 @@ const PublicStatusSchemaV1 = "go-mapi-public-status-v1"
 // PublicStatusV1 is intentionally too small to carry URLs, paths, errors,
 // account names, proxy details, transaction IDs, or installer arguments.
 type PublicStatusV1 struct {
-	Schema    string    `json:"schema"`
-	Code      EventCode `json:"code"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Schema             string     `json:"schema"`
+	SKU                update.SKU `json:"sku"`
+	PackageVersion     string     `json:"packageVersion,omitempty"`
+	ServiceVersion     string     `json:"serviceVersion,omitempty"`
+	InterceptorVersion string     `json:"interceptorVersion,omitempty"`
+	AppVersion         string     `json:"appVersion,omitempty"`
+	Health             string     `json:"health,omitempty"`
+	Signature          string     `json:"signature,omitempty"`
+	Updates            string     `json:"updates"`
+	Code               EventCode  `json:"code"`
+	LastResult         Result     `json:"lastResult,omitempty"`
+	LastResultAt       time.Time  `json:"lastResultAt,omitempty"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 type PublicStatusStore struct {
@@ -585,7 +790,7 @@ func NewPublicStatusStore(storage *ProtectedStorage) (*PublicStatusStore, error)
 }
 
 func (store *PublicStatusStore) Save(ctx context.Context, status PublicStatusV1) error {
-	if status.Schema != PublicStatusSchemaV1 || status.UpdatedAt.IsZero() || !validPublicEvent(status.Code) {
+	if !validPublicStatus(status) {
 		return errors.New("invalid public status")
 	}
 	data, err := json.Marshal(status)
@@ -600,9 +805,40 @@ func (store *PublicStatusStore) Save(ctx context.Context, status PublicStatusV1)
 	return err
 }
 
+func (store *PublicStatusStore) Load(context.Context) (PublicStatusV1, error) {
+	data, err := store.storage.Read([]string{"status-v1.json"}, maxStatusBytes)
+	if err != nil {
+		return PublicStatusV1{}, err
+	}
+	var status PublicStatusV1
+	if err := decodeStrict(data, &status); err != nil {
+		return PublicStatusV1{}, err
+	}
+	if !validPublicStatus(status) {
+		return PublicStatusV1{}, errors.New("invalid public status")
+	}
+	return status, nil
+}
+
+func validPublicStatus(status PublicStatusV1) bool {
+	return status.Schema == PublicStatusSchemaV1 && !status.UpdatedAt.IsZero() &&
+		validPublicEvent(status.Code) && (status.SKU == "" || status.SKU == update.System || status.SKU == update.Suite) &&
+		validPublicVersion(status.PackageVersion) && validPublicVersion(status.ServiceVersion) &&
+		validPublicVersion(status.InterceptorVersion) && validPublicVersion(status.AppVersion) &&
+		(status.Health == "" || status.Health == "healthy" || status.Health == "repair-required") &&
+		(status.Signature == "" || status.Signature == "verified" || status.Signature == "unavailable" || status.Signature == "invalid") &&
+		(status.Updates == "enabled" || status.Updates == "disabled" || status.Updates == "unknown") &&
+		((status.LastResult == "" && status.LastResultAt.IsZero()) ||
+			((status.LastResult == ResultInstalled || status.LastResult == ResultRolledBack || status.LastResult == ResultBusyExhausted) && !status.LastResultAt.IsZero()))
+}
+
+func validPublicVersion(version string) bool {
+	return version == "" || (len(version) <= 64 && mapi.IsStrictReleaseVersion(version))
+}
+
 func validPublicEvent(code EventCode) bool {
 	switch code {
-	case EventOffline, EventPrepared, EventHandedOff, EventStillRunning, EventCommitted, EventRolledBack, EventRebootPending, EventRepairNeeded:
+	case EventOffline, EventPrepared, EventHandedOff, EventStillRunning, EventCommitted, EventRolledBack, EventRebootPending, EventRepairNeeded, EventUnverified, EventPending:
 		return true
 	default:
 		return false

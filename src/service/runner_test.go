@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,16 +13,17 @@ import (
 func TestUpdateRunnerPersistsIdentityBeforeReadyThenRecordsExit(t *testing.T) {
 	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
 	pending := validPending(now)
+	pending.Schema = PendingSchemaV2
 	store := &orderedPendingStore{pending: &pending}
 	ready := &memoryReadyStore{order: &store.order}
-	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 52, CreatedAtUnixNano: 2002}, code: 3010, order: &store.order}
+	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 52, CreatedAtUnixNano: 2002}, thread: ProcessIdentity{PID: 53, CreatedAtUnixNano: 2003}, code: 3010, order: &store.order}
 	runtime := &fakeRunnerRuntime{self: ProcessIdentity{PID: 51, CreatedAtUnixNano: 2001}, process: process, order: &store.order}
-	runner := UpdateRunner{Pending: store, Ready: ready, Artifacts: fixedArtifactResolver("/protected/update.msi"), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now)}
+	runner := UpdateRunner{Pending: store, Ready: ready, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now)}
 
 	if err := runner.Run(context.Background(), pending.TransactionID); err != nil {
 		t.Fatal(err)
 	}
-	wantOrder := []string{"verify", "save-runner", "start-installer", "save-installer-running", "ready", "wait", "save-exit"}
+	wantOrder := []string{"verify", "save-runner", "start-installer", "save-child-recorded", "save-resume-authorized", "resume", "save-running", "ready", "wait", "save-exit"}
 	if !reflect.DeepEqual(store.order, wantOrder) {
 		t.Fatalf("runner order = %v, want %v", store.order, wantOrder)
 	}
@@ -36,10 +38,11 @@ func TestUpdateRunnerPersistsIdentityBeforeReadyThenRecordsExit(t *testing.T) {
 func TestUpdateRunnerCancellationCannotCancelInstallerAfterReady(t *testing.T) {
 	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
 	pending := validPending(now)
+	pending.Schema = PendingSchemaV2
 	store := &orderedPendingStore{pending: &pending}
 	ctx, cancel := context.WithCancel(context.Background())
-	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 62, CreatedAtUnixNano: 3002}, code: 0, wait: func() { cancel() }, order: &store.order}
-	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver("/protected/update.msi"), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 61, CreatedAtUnixNano: 3001}, process: process, order: &store.order}, Clock: fixedRunnerClock(now)}
+	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 62, CreatedAtUnixNano: 3002}, thread: ProcessIdentity{PID: 63, CreatedAtUnixNano: 3003}, code: 0, wait: func() { cancel() }, order: &store.order}
+	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 61, CreatedAtUnixNano: 3001}, process: process, order: &store.order}, Clock: fixedRunnerClock(now)}
 
 	if err := runner.Run(ctx, pending.TransactionID); err != nil {
 		t.Fatalf("post-ready cancellation reached runner: %v", err)
@@ -64,10 +67,11 @@ func TestUpdateRunnerFailureBoundariesLeaveNoFalseReadyOrExit(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			pending := validPending(now)
+			pending.Schema = PendingSchemaV2
 			store := &orderedPendingStore{pending: &pending}
 			ready := &memoryReadyStore{order: &store.order}
-			process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 72, CreatedAtUnixNano: 4002}, err: test.wait, order: &store.order}
-			runner := UpdateRunner{Pending: store, Ready: ready, Artifacts: fixedArtifactResolver("/protected/update.msi"), Integrity: &fakeIntegrityVerifier{err: test.integrity, order: &store.order}, Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 71, CreatedAtUnixNano: 4001}, process: process, err: test.start, order: &store.order}, Clock: fixedRunnerClock(now)}
+			process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 72, CreatedAtUnixNano: 4002}, thread: ProcessIdentity{PID: 73, CreatedAtUnixNano: 4003}, err: test.wait, order: &store.order}
+			runner := UpdateRunner{Pending: store, Ready: ready, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{err: test.integrity, order: &store.order}, Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 71, CreatedAtUnixNano: 4001}, process: process, err: test.start, order: &store.order}, Clock: fixedRunnerClock(now)}
 			if err := runner.Run(context.Background(), pending.TransactionID); err == nil {
 				t.Fatal("Run unexpectedly succeeded")
 			}
@@ -81,12 +85,52 @@ func TestUpdateRunnerFailureBoundariesLeaveNoFalseReadyOrExit(t *testing.T) {
 	}
 }
 
+func TestUpdateRunnerDoesNotReleaseSuspendedChildWhenDurableWriteFails(t *testing.T) {
+	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	for _, phase := range []Phase{PhaseChildRecorded, PhaseResumeAuthorized} {
+		t.Run(string(phase), func(t *testing.T) {
+			pending := validPending(now)
+			pending.Schema = PendingSchemaV2
+			store := &orderedPendingStore{pending: &pending, failPhase: phase}
+			process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 82, CreatedAtUnixNano: 5002}, thread: ProcessIdentity{PID: 83, CreatedAtUnixNano: 5003}, order: &store.order}
+			runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 81, CreatedAtUnixNano: 5001}, process: process, order: &store.order}, Clock: fixedRunnerClock(now)}
+			if err := runner.Run(context.Background(), pending.TransactionID); err == nil {
+				t.Fatal("runner accepted failed durable write")
+			}
+			for _, action := range store.order {
+				if action == "resume" || action == "ready" || action == "wait" {
+					t.Fatalf("executed %s after failed durable write: %v", action, store.order)
+				}
+			}
+			if got := store.order[len(store.order)-1]; got != "abort" {
+				t.Fatalf("last action = %s, want abort: %v", got, store.order)
+			}
+		})
+	}
+}
+
+func TestUpdateRunnerNeverRelaunchesLegacyPreparedRecord(t *testing.T) {
+	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	pending := validPending(now) // v1 records may exist from earlier builds.
+	store := &orderedPendingStore{pending: &pending}
+	runtime := &fakeRunnerRuntime{self: ProcessIdentity{PID: 91, CreatedAtUnixNano: 6001}, order: &store.order}
+	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now)}
+	if err := runner.Run(context.Background(), pending.TransactionID); err == nil {
+		t.Fatal("legacy prepared record was relaunched")
+	}
+	if len(store.order) != 0 {
+		t.Fatalf("legacy record caused installer work: %v", store.order)
+	}
+}
+
 func TestFixedInstallerArgumentsExposeNoCallerSelectedProperties(t *testing.T) {
-	args, err := fixedInstallerArguments(`/protected/update.msi`, `/protected/msiexec.log`, "tx-42")
+	artifact := filepath.Join(testStorageRoot(t, "updates"), "update.msi")
+	log := filepath.Join(testStorageRoot(t, "updates"), "msiexec.log")
+	args, err := fixedInstallerArguments(artifact, log, "tx-42")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/i", `/protected/update.msi`, "/qn", "/norestart", "/L*V", `/protected/msiexec.log`, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=tx-42"}
+	want := []string{"/i", artifact, "/qn", "/norestart", "/L*V", log, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=tx-42"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("installer arguments = %q, want %q", args, want)
 	}
@@ -96,8 +140,9 @@ func TestFixedInstallerArgumentsExposeNoCallerSelectedProperties(t *testing.T) {
 }
 
 type orderedPendingStore struct {
-	pending *PendingV1
-	order   []string
+	pending   *PendingV1
+	order     []string
+	failPhase Phase
 }
 
 func (store *orderedPendingStore) Load(context.Context) (*PendingV1, error) {
@@ -108,11 +153,20 @@ func (store *orderedPendingStore) Load(context.Context) (*PendingV1, error) {
 	return &copy, nil
 }
 func (store *orderedPendingStore) Save(_ context.Context, pending PendingV1) error {
+	if pending.Phase == store.failPhase {
+		return errors.New("forced durable write failure")
+	}
 	copy := pending
 	store.pending = &copy
 	switch {
 	case pending.Exit != nil:
 		store.order = append(store.order, "save-exit")
+	case pending.Phase == PhaseChildRecorded:
+		store.order = append(store.order, "save-child-recorded")
+	case pending.Phase == PhaseResumeAuthorized:
+		store.order = append(store.order, "save-resume-authorized")
+	case pending.Phase == PhaseRunning:
+		store.order = append(store.order, "save-running")
 	case pending.Installer != nil:
 		store.order = append(store.order, "save-installer-running")
 	case pending.Runner != nil:
@@ -120,7 +174,19 @@ func (store *orderedPendingStore) Save(_ context.Context, pending PendingV1) err
 	}
 	return nil
 }
-func (store *orderedPendingStore) Clear(context.Context) error { store.pending = nil; return nil }
+func (store *orderedPendingStore) CompareAndSave(ctx context.Context, expected *PendingV1, pending PendingV1) error {
+	if expected == nil || store.pending == nil || !reflect.DeepEqual(*store.pending, *expected) {
+		return ErrStateConflict
+	}
+	return store.Save(ctx, pending)
+}
+func (store *orderedPendingStore) CompareAndClear(_ context.Context, expected PendingV1) error {
+	if store.pending == nil || !reflect.DeepEqual(*store.pending, expected) {
+		return ErrStateConflict
+	}
+	store.pending = nil
+	return nil
+}
 
 type memoryReadyStore struct {
 	ready *RunnerReadyV1
@@ -136,8 +202,8 @@ func (store *memoryReadyStore) Publish(_ context.Context, ready RunnerReadyV1) e
 	*store.order = append(*store.order, "ready")
 	return nil
 }
-func (store *memoryReadyStore) Load(_ context.Context, transactionID string) (*RunnerReadyV1, error) {
-	if store.ready == nil || store.ready.TransactionID != transactionID {
+func (store *memoryReadyStore) Load(_ context.Context, transactionID string, attempt uint) (*RunnerReadyV1, error) {
+	if store.ready == nil || store.ready.TransactionID != transactionID || store.ready.Attempt != attempt {
 		return nil, nil
 	}
 	copy := *store.ready
@@ -145,6 +211,20 @@ func (store *memoryReadyStore) Load(_ context.Context, transactionID string) (*R
 }
 
 type fixedArtifactResolver string
+
+func runnerFixtureArtifact(t *testing.T) string {
+	t.Helper()
+	storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
+	components := []string{"system", "42", "fixture.msi"}
+	if _, err := storage.WriteAtomic(context.Background(), components, strings.NewReader("fixture"), 7, 7, ""); err != nil {
+		t.Fatal(err)
+	}
+	path, err := storage.resolve(components...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 func (resolver fixedArtifactResolver) Resolve(context.Context, PendingV1) (string, error) {
 	return string(resolver), nil
@@ -181,13 +261,23 @@ func (runtime *fakeRunnerRuntime) StartInstaller(path, transactionID string) (In
 
 type fakeInstallerProcess struct {
 	identity ProcessIdentity
+	thread   ProcessIdentity
 	code     uint32
 	err      error
 	wait     func()
 	order    *[]string
 }
 
-func (process *fakeInstallerProcess) Identity() ProcessIdentity { return process.identity }
+func (process *fakeInstallerProcess) Identity() ProcessIdentity      { return process.identity }
+func (process *fakeInstallerProcess) InitialThread() ProcessIdentity { return process.thread }
+func (process *fakeInstallerProcess) Resume() error {
+	*process.order = append(*process.order, "resume")
+	return nil
+}
+func (process *fakeInstallerProcess) Abort() error {
+	*process.order = append(*process.order, "abort")
+	return nil
+}
 func (process *fakeInstallerProcess) Wait() (uint32, error) {
 	*process.order = append(*process.order, "wait")
 	if process.wait != nil {

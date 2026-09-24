@@ -13,28 +13,35 @@ import (
 )
 
 const PendingSchemaV1 = "go-mapi-service-pending-v1"
+const PendingSchemaV2 = "go-mapi-service-pending-v2"
 
 type Phase string
 
 const (
-	PhasePrepared         Phase = "prepared"
-	PhaseInstallerRunning Phase = "installer-running"
-	PhaseStillRunning     Phase = "still-running"
-	PhaseCommitted        Phase = "committed"
-	PhaseRolledBack       Phase = "rolled-back"
-	PhaseRebootPending    Phase = "reboot-pending"
-	PhaseRepairRequired   Phase = "repair-required"
+	PhasePrepared           Phase = "prepared"
+	PhaseChildRecorded      Phase = "child-recorded"
+	PhaseResumeAuthorized   Phase = "resume-authorized"
+	PhaseRunning            Phase = "running"
+	PhaseInstallerRunning   Phase = "installer-running"
+	PhaseStillRunning       Phase = "still-running"
+	PhaseCommitted          Phase = "committed"
+	PhaseRolledBack         Phase = "rolled-back"
+	PhaseRebootPending      Phase = "reboot-pending"
+	PhaseRepairRequired     Phase = "repair-required"
+	PhaseOutcomeUnconfirmed Phase = "outcome-unconfirmed"
 )
 
 type Result string
 
 const (
-	ResultNone           Result = ""
-	ResultInstalled      Result = "installed"
-	ResultRolledBack     Result = "rolled-back"
-	ResultRebootRequired Result = "reboot-required"
-	ResultAmbiguous      Result = "ambiguous"
-	ResultRetryScheduled Result = "retry-scheduled"
+	ResultNone               Result = ""
+	ResultInstalled          Result = "installed"
+	ResultRolledBack         Result = "rolled-back"
+	ResultRebootRequired     Result = "reboot-required"
+	ResultAmbiguous          Result = "ambiguous"
+	ResultRetryScheduled     Result = "retry-scheduled"
+	ResultBusyExhausted      Result = "busy-exhausted"
+	ResultOutcomeUnconfirmed Result = "outcome-unconfirmed"
 )
 
 // ProcessIdentity prevents a recycled PID from being mistaken for the runner
@@ -61,22 +68,25 @@ type ProductSnapshot struct {
 // transaction. It intentionally has no URL, command-line, property, signer,
 // or caller-selected destination fields.
 type PendingV1 struct {
-	Schema         string             `json:"schema"`
-	TransactionID  string             `json:"transactionId"`
-	SKU            update.SKU         `json:"sku"`
-	Old            ProductSnapshot    `json:"old"`
-	Candidate      ProductSnapshot    `json:"candidate"`
-	Replay         update.ReplayState `json:"replay"`
-	ArtifactSHA256 string             `json:"artifactSha256"`
-	Phase          Phase              `json:"phase"`
-	Runner         *ProcessIdentity   `json:"runner,omitempty"`
-	Installer      *ProcessIdentity   `json:"installer,omitempty"`
-	Exit           *ExitEvidence      `json:"exit,omitempty"`
-	PreparedAt     time.Time          `json:"preparedAt"`
-	UpdatedAt      time.Time          `json:"updatedAt"`
-	Attempt        uint               `json:"attempt"`
-	NextAttemptAt  *time.Time         `json:"nextAttemptAt,omitempty"`
-	Result         Result             `json:"result,omitempty"`
+	Schema          string             `json:"schema"`
+	TransactionID   string             `json:"transactionId"`
+	SKU             update.SKU         `json:"sku"`
+	Old             ProductSnapshot    `json:"old"`
+	Candidate       ProductSnapshot    `json:"candidate"`
+	Replay          update.ReplayState `json:"replay"`
+	ArtifactSHA256  string             `json:"artifactSha256"`
+	LaunchBootID    string             `json:"launchBootId,omitempty"`
+	Phase           Phase              `json:"phase"`
+	Runner          *ProcessIdentity   `json:"runner,omitempty"`
+	Installer       *ProcessIdentity   `json:"installer,omitempty"`
+	InstallerThread *ProcessIdentity   `json:"installerThread,omitempty"`
+	Exit            *ExitEvidence      `json:"exit,omitempty"`
+	PreparedAt      time.Time          `json:"preparedAt"`
+	UpdatedAt       time.Time          `json:"updatedAt"`
+	Attempt         uint               `json:"attempt"`
+	NextAttemptAt   *time.Time         `json:"nextAttemptAt,omitempty"`
+	RetryDeadline   *time.Time         `json:"retryDeadline,omitempty"`
+	Result          Result             `json:"result,omitempty"`
 }
 
 var transactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
@@ -113,7 +123,7 @@ func UnmarshalPending(encoded []byte) (PendingV1, error) {
 }
 
 func (pending PendingV1) Validate() error {
-	if pending.Schema != PendingSchemaV1 {
+	if pending.Schema != PendingSchemaV1 && pending.Schema != PendingSchemaV2 {
 		return errors.New("unsupported pending update schema")
 	}
 	if !transactionIDPattern.MatchString(pending.TransactionID) {
@@ -134,6 +144,9 @@ func (pending PendingV1) Validate() error {
 	if !validSHA256(pending.ArtifactSHA256) {
 		return errors.New("invalid pending artifact hash")
 	}
+	if pending.LaunchBootID != "" && !transactionIDPattern.MatchString(pending.LaunchBootID) {
+		return errors.New("invalid launch boot identity")
+	}
 	if !validPhase(pending.Phase) || pending.PreparedAt.IsZero() || pending.UpdatedAt.IsZero() || pending.Attempt == 0 {
 		return errors.New("invalid pending lifecycle state")
 	}
@@ -143,11 +156,28 @@ func (pending PendingV1) Validate() error {
 	if err := validateProcessIdentity(pending.Installer); err != nil {
 		return fmt.Errorf("invalid installer identity: %w", err)
 	}
+	if err := validateProcessIdentity(pending.InstallerThread); err != nil {
+		return fmt.Errorf("invalid installer thread identity: %w", err)
+	}
+	if pending.Schema == PendingSchemaV1 && (pending.InstallerThread != nil || pending.Phase == PhaseChildRecorded || pending.Phase == PhaseResumeAuthorized || pending.Phase == PhaseRunning) {
+		return errors.New("v1 pending record contains v2 execution state")
+	}
+	if pending.Schema == PendingSchemaV2 && (pending.Phase == PhaseChildRecorded || pending.Phase == PhaseResumeAuthorized || pending.Phase == PhaseRunning) && (pending.Runner == nil || pending.Installer == nil || pending.InstallerThread == nil) {
+		return errors.New("v2 running transaction lacks process and thread identities")
+	}
 	if (pending.Phase == PhaseInstallerRunning || pending.Phase == PhaseStillRunning) && (pending.Runner == nil || pending.Installer == nil) {
 		return errors.New("running transaction lacks process identities")
 	}
 	if pending.Exit != nil && pending.Exit.ObservedAt.IsZero() {
 		return errors.New("invalid installer exit evidence")
+	}
+	if pending.RetryDeadline != nil && (!pending.RetryDeadline.After(pending.PreparedAt) || pending.RetryDeadline.After(pending.PreparedAt.Add(10*time.Minute))) {
+		return errors.New("invalid absolute installer retry deadline")
+	}
+	if pending.Schema == PendingSchemaV2 && pending.Result == ResultRetryScheduled &&
+		(pending.Phase != PhaseRolledBack || pending.Exit == nil || pending.Exit.Code != 1618 || pending.NextAttemptAt == nil || pending.RetryDeadline == nil ||
+			!pending.NextAttemptAt.Before(*pending.RetryDeadline) || pending.Attempt >= 3) {
+		return errors.New("invalid installer-busy retry authorization")
 	}
 	return nil
 }
@@ -178,7 +208,7 @@ func validSHA256(value string) bool {
 
 func validPhase(phase Phase) bool {
 	switch phase {
-	case PhasePrepared, PhaseInstallerRunning, PhaseStillRunning, PhaseCommitted, PhaseRolledBack, PhaseRebootPending, PhaseRepairRequired:
+	case PhasePrepared, PhaseChildRecorded, PhaseResumeAuthorized, PhaseRunning, PhaseInstallerRunning, PhaseStillRunning, PhaseCommitted, PhaseRolledBack, PhaseRebootPending, PhaseRepairRequired, PhaseOutcomeUnconfirmed:
 		return true
 	default:
 		return false

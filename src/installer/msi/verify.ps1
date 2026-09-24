@@ -66,8 +66,9 @@ $expectedUpgradeCode = if ($SKU -eq 'system') { 'B3C97B33-3F10-47CA-9FA7-24EE3B7
 $foreignUpgradeCode = if ($SKU -eq 'system') { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' } else { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' }
 if ($properties.ProductCode.Trim('{}') -ne $identity.productCode -or $properties.ProductVersion -ne $identity.productVersion -or $properties.UpgradeCode.Trim('{}') -ne $expectedUpgradeCode) { Fail "compiled MSI identity does not match the production $SKU identity" }
 if ($properties.ContainsKey('GOMAPI_MIGRATE_SKU') -and $properties.GOMAPI_MIGRATE_SKU) { Fail 'SKU migration opt-in must have no default' }
+if ($properties.ContainsKey('GOMAPI_AUTO_UPDATE') -and $properties.GOMAPI_AUTO_UPDATE) { Fail 'automatic update choice must be resolved from explicit property or existing machine setting' }
 $secureProperties = @([string]$properties.SecureCustomProperties -split ';')
-if ($secureProperties -notcontains 'GOMAPI_MIGRATE_SKU' -or $secureProperties -notcontains 'GOMAPI_FOREIGN_PRODUCT') { Fail 'migration opt-in and foreign-product detection must be Secure properties' }
+if ($secureProperties -notcontains 'GOMAPI_MIGRATE_SKU' -or $secureProperties -notcontains 'GOMAPI_FOREIGN_PRODUCT' -or $secureProperties -notcontains 'GOMAPI_AUTO_UPDATE') { Fail 'machine administrator options and foreign-product detection must be Secure properties' }
 $foreignUpgradeRows = @(Query 'SELECT `UpgradeCode`,`VersionMin`,`VersionMax`,`Language`,`Attributes`,`Remove`,`ActionProperty` FROM `Upgrade`' | Where-Object { (Field $_ 7) -eq 'GOMAPI_FOREIGN_PRODUCT' })
 if ($foreignUpgradeRows.Count -ne 1) { Fail 'MSI must have exactly one foreign-product Upgrade row' }
 $foreignUpgrade = $foreignUpgradeRows[0]
@@ -80,6 +81,7 @@ if ((Field $foreignUpgrade 1).Trim('{}') -ne $foreignUpgradeCode -or
 $migrationLaunch = 'Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = "1"'
 $launchConditions = @(Query 'SELECT `Condition` FROM `LaunchCondition`' | ForEach-Object { Field $_ 1 })
 if ($launchConditions -notcontains $migrationLaunch) { Fail 'foreign machine product must block installation absent explicit migration opt-in' }
+if ($launchConditions -notcontains 'NOT (REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE AND RollbackDisabled)') { Fail 'final uninstall must reject rollback-disabled transactions' }
 
 $services = @(Query 'SELECT `Name`,`DisplayName`,`ServiceType`,`StartType`,`ErrorControl`,`StartName`,`Arguments`,`Component_` FROM `ServiceInstall`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)|$(Field $_ 6)|$(Field $_ 7)|$(Field $_ 8)" })
 if ($services.Count -ne 1 -or $services[0] -ne 'go-mapi|go-mapi system service|16|2|32769|LocalSystem|service|ResidentService') { Fail "unexpected resident service contract: $($services -join ';')" }
@@ -91,6 +93,7 @@ $failureActions = @(Query 'SELECT `ServiceName`,`Component_`,`NewService`,`First
 if ($failureActions.Count -ne 1 -or $failureActions[0] -ne 'go-mapi|ResidentService|1|restart|restart|none|1|60||') { Fail "service failure actions are not bounded restart/restart/none with no reboot: $($failureActions -join ';')" }
 
 $registry = @(Query 'SELECT `Root`,`Key`,`Name`,`Value`,`Component_` FROM `Registry`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)|$(Field $_ 5)" })
+if (@($registry | Where-Object { $_ -match '^2\|SOFTWARE\\go-mapi\\MachineProduct\|AutoUpdateEnabled\|#\[GOMAPI_AUTO_UPDATE\]\|SystemHealthRegistration$' }).Count -ne 1) { Fail 'machine update choice must be one installer-owned 64-bit DWORD' }
 if (@($registry | Where-Object { $_ -match 'MapiRegistrationShared' }).Count -lt 3) { Fail 'missing shared active-MAPI registry rows' }
 if (-not ($registry -match '%ProgramW6432%\\go-mapi\\interceptor\\%PROCESSOR_ARCHITECTURE%\\go-mapi\.dll')) { Fail 'missing caller-architecture-aware DLLPath' }
 if ($registry -match '(?i)UserChoice|HKCU') { Fail 'MSI attempts per-user Default Apps mutation' }
@@ -106,7 +109,7 @@ if ($SKU -eq 'suite') {
 }
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
-foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackAdminUninstall','FinalizeAdminUninstall')) {
+foreach ($required in @('ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
 }
 foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_X64','Wix4ExecServiceConfig_X64')) {
@@ -114,7 +117,16 @@ foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_
 }
 
 $sequence = @(Query 'SELECT `Action`,`Condition`,`Sequence` FROM `InstallExecuteSequence`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)" })
-foreach ($required in @('PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration')) {
+if (-not ($sequence -match '^CommitAdminUninstall\|REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE\|')) { Fail 'manifest cleanup must be commit-only on final uninstall' }
+$beginFenceSequence = @($sequence | Where-Object { $_ -match '^BeginResidentUninstallFence\|' })[0] -split '\|'
+$rollbackFenceSequence = @($sequence | Where-Object { $_ -match '^RollbackResidentUninstallFence\|' })[0] -split '\|'
+$stopServicesSequence = @($sequence | Where-Object { $_ -match '^StopServices\|' })[0] -split '\|'
+if (-not $beginFenceSequence -or -not $rollbackFenceSequence -or -not $stopServicesSequence -or
+    $beginFenceSequence[1] -ne 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' -or
+    $rollbackFenceSequence[1] -ne 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' -or
+    [int]$rollbackFenceSequence[2] -ge [int]$beginFenceSequence[2] -or
+    [int]$beginFenceSequence[2] -ge [int]$stopServicesSequence[2]) { Fail 'final uninstall fence must precede service stop with an earlier rollback action' }
+foreach ($required in @('ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration')) {
     if (-not ($sequence -match "^$required\|")) { Fail "custom action $required is not sequenced" }
 }
 $rollbackSequence = @($sequence | Where-Object { $_ -match '^RollbackServiceConfiguration\|' })[0] -split '\|'
@@ -123,9 +135,12 @@ $deleteServicesSequence = @($sequence | Where-Object { $_ -match '^DeleteService
 $findSequence = @($sequence | Where-Object { $_ -match '^FindRelatedProducts\|' })[0] -split '\|'
 $launchSequence = @($sequence | Where-Object { $_ -match '^LaunchConditions\|' })[0] -split '\|'
 $initializeSequence = @($sequence | Where-Object { $_ -match '^InstallInitialize\|' })[0] -split '\|'
+$choiceSequence = @($sequence | Where-Object { $_ -match '^ResolveAutoUpdateChoice\|' })[0] -split '\|'
 if (-not $findSequence -or -not $launchSequence -or -not $initializeSequence -or
+    -not $choiceSequence -or $choiceSequence[1] -ne 'NOT (REMOVE~="ALL")' -or
     [int]$findSequence[2] -ge [int]$launchSequence[2] -or
-    [int]$launchSequence[2] -ge [int]$initializeSequence[2] -or
+    [int]$launchSequence[2] -ge [int]$choiceSequence[2] -or
+    [int]$choiceSequence[2] -ge [int]$initializeSequence[2] -or
     [int]$initializeSequence[2] -ge [int]$removeSequence[2]) {
     Fail 'foreign-product detection and rejection must precede early transactional removal'
 }

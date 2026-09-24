@@ -97,6 +97,30 @@ func TestSystemMsiOwnsExactlyOneResidentService(t *testing.T) {
 	}
 }
 
+func TestMachineMsiOwnsAndPreservesAutomaticUpdateChoice(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	actions := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	if !strings.Contains(shared, `Name="AutoUpdateEnabled" Value="[GOMAPI_AUTO_UPDATE]" Type="integer"`) {
+		t.Fatal("machine MSI does not own the 64-bit DWORD update choice")
+	}
+	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
+		entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", filename)
+		if !strings.Contains(entry, `<Property Id="GOMAPI_AUTO_UPDATE" Secure="yes" />`) {
+			t.Errorf("%s does not accept the administrator update choice", filename)
+		}
+	}
+	for _, want := range []string{"ResolveAutoUpdate(session);", "RegistryView.Registry64", "RegistryValueKind.DWord", "Existing machine product has no automatic update setting", `session["GOMAPI_AUTO_UPDATE"] = choice;`} {
+		if !strings.Contains(actions, want) {
+			t.Errorf("machine migration does not preserve/update setting: %q", want)
+		}
+	}
+	if !strings.Contains(verify, "AutoUpdateEnabled") || !strings.Contains(verify, "GOMAPI_AUTO_UPDATE") {
+		t.Fatal("compiled machine MSI verifier does not inspect the update choice")
+	}
+}
+
 func TestSystemMsiBuildUsesTypedInputsAndProductionIdentity(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")

@@ -406,6 +406,9 @@ jobs:
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
       GOMAPI_ADMIN_RELEASE_ROOT_B64: ${{ secrets.ADMIN_RELEASE_ROOT_B64 }}
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
+      ADMIN_RELEASE_PUBLISHER: ${{ vars.ADMIN_RELEASE_PUBLISHER }}
+      ADMIN_RELEASE_EKUS_JSON: ${{ vars.ADMIN_RELEASE_EKUS_JSON }}
+      ADMIN_RELEASE_POLICY_ID: ${{ vars.ADMIN_RELEASE_POLICY_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -466,11 +469,7 @@ jobs:
           .\src\interceptor\verify-release.ps1
           if ($LASTEXITCODE -ne 0) { throw 'interceptor release verification failed' }
           New-Item -ItemType Directory -Force release/machine-input | Out-Null
-          $env:GOOS = 'windows'
-          $env:GOARCH = 'amd64'
-          $env:CGO_ENABLED = '0'
-          go build -trimpath -o release/machine-input/go-mapi-service.exe ./src/service/cmd/go-mapi-service
-          if ($LASTEXITCODE -ne 0) { throw 'service PE build failed' }
+          ./src/service/build.ps1 -OutputPath release/machine-input/go-mapi-service.exe -RequirePublisherPolicy
           Copy-Item release/interceptor/go-mapi-x86.dll release/machine-input/go-mapi-x86.dll
           Copy-Item release/interceptor/go-mapi-x64.dll release/machine-input/go-mapi-x64.dll
 

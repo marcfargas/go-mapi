@@ -27,7 +27,7 @@ build-service:
     go build ./src/service/...
 
 build-service-windows output="release/service/go-mapi-service.exe":
-    pwsh -NoProfile -Command "$env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='0'; New-Item -ItemType Directory -Force (Split-Path '{{output}}') | Out-Null; go build -trimpath -o '{{output}}' ./src/service/cmd/go-mapi-service"
+    pwsh -NoProfile -File src/service/build.ps1 -OutputPath '{{output}}'
 
 e2e-user: build-frontend
     npm run -w @marcfargas/go-mapi-e2e test

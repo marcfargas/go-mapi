@@ -23,6 +23,8 @@ namespace GoMapi.AdminCustomActions
         private const string QueueProtocol = "queue-v1";
         private const string JournalSchema = "go-mapi-admin-migration-journal-v1";
         private const string ActiveDllPath = @"%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll";
+        private const string UninstallCleanupKey = @"SOFTWARE\go-mapi\UninstallCleanup";
+        private const string VolatileBootKey = @"SOFTWARE\go-mapi\MachineProduct\ServiceBoot";
 
         // MSI's rollback of ServiceInstall recreates the service, but does not
         // replay MsiServiceConfig or WiX Util's failure-action custom action.
@@ -35,7 +37,7 @@ namespace GoMapi.AdminCustomActions
             {
                 RunServiceControl("config go-mapi start= delayed-auto");
                 RunServiceControl("sidtype go-mapi unrestricted");
-                RunServiceControl("failure go-mapi reset= 86400 actions= restart/60000/restart/60000");
+                RunServiceControl("failure go-mapi reset= 86400 actions= restart/60000/restart/60000/none/0");
             });
         }
 
@@ -60,11 +62,47 @@ namespace GoMapi.AdminCustomActions
             }
         }
 
+        // Resolve before RemoveExistingProducts removes the old machine marker.
+        // An explicit administrator property wins; repair and cross-SKU migration
+        // otherwise preserve the existing valid DWORD.
+        private static void ResolveAutoUpdate(Session session)
+        {
+            var choice = session["GOMAPI_AUTO_UPDATE"];
+            if (string.IsNullOrEmpty(choice))
+            {
+                using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                using (var key = root.OpenSubKey(@"SOFTWARE\go-mapi\MachineProduct"))
+                {
+                    if (key != null)
+                    {
+                        if (!Array.Exists(key.GetValueNames(), name => name == "AutoUpdateEnabled"))
+                            throw new InvalidDataException("Existing machine product has no automatic update setting");
+                        if (key.GetValueKind("AutoUpdateEnabled") != RegistryValueKind.DWord)
+                            throw new InvalidDataException("Machine automatic update setting has an invalid type");
+                        var value = (int)key.GetValue("AutoUpdateEnabled");
+                        choice = value.ToString(CultureInfo.InvariantCulture);
+                    }
+                }
+                if (string.IsNullOrEmpty(choice))
+                    choice = "1";
+            }
+            if (choice != "0" && choice != "1")
+                throw new InvalidDataException("Machine automatic update setting must be 0 or 1");
+            session["GOMAPI_AUTO_UPDATE"] = choice;
+        }
+
+        [CustomAction]
+        public static ActionResult ResolveAutoUpdateChoice(Session session)
+        {
+            return Guard(session, "auto-update-choice", () => ResolveAutoUpdate(session));
+        }
+
         [CustomAction]
         public static ActionResult PrepareAdminMigration(Session session)
         {
             return Guard(session, "prepare", () =>
             {
+                ResolveAutoUpdate(session);
                 var paths = Paths.Create();
                 EnsureProtectedJournalDirectory(paths.JournalDirectory);
                 var installedManifest = Path.Combine(paths.InstallRoot, "installed-component-v1.json");
@@ -271,7 +309,40 @@ namespace GoMapi.AdminCustomActions
                 }.ToString();
                 session["RollbackAdminUninstall"] = data;
                 session["FinalizeAdminUninstall"] = data;
+                session["CommitAdminUninstall"] = data;
             });
+        }
+
+        [CustomAction]
+        public static ActionResult BeginResidentUninstallFence(Session session)
+        {
+            return Guard(session, "begin-resident-uninstall-fence", () => RunResidentFence("--begin-final-uninstall"));
+        }
+
+        [CustomAction]
+        public static ActionResult RollbackResidentUninstallFence(Session session)
+        {
+            return Guard(session, "rollback-resident-uninstall-fence", () => RunResidentFence("--rollback-final-uninstall"));
+        }
+
+        private static void RunResidentFence(string argument)
+        {
+            var executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "go-mapi", "service", "go-mapi-service.exe");
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("Installed resident service is required for the final uninstall fence", executable);
+            using (var process = new Process())
+            {
+                process.StartInfo = new ProcessStartInfo(executable, argument) { UseShellExecute = false, CreateNoWindow = true };
+                if (!process.Start())
+                    throw new InvalidOperationException("Could not start resident uninstall fence");
+                if (!process.WaitForExit(30000))
+                {
+                    process.Kill();
+                    throw new TimeoutException("Resident uninstall fence timed out");
+                }
+                if (process.ExitCode != 0)
+                    throw new InvalidOperationException("Resident uninstall fence refused the operation");
+            }
         }
 
         [CustomAction]
@@ -290,8 +361,47 @@ namespace GoMapi.AdminCustomActions
                     journal.State = "uninstalled";
                     SaveJournal(data["JournalPath"], journal);
                 }
-                DeleteFileIfExists(Path.Combine(data["InstallRoot"], "installed-component-v1.json"));
             });
+        }
+
+        // Keep the installed manifest intact until MSI has completed its
+        // script. A deferred deletion cannot be restored if a later action
+        // rolls the uninstall back.
+        [CustomAction]
+        public static ActionResult CommitAdminUninstall(Session session)
+        {
+            try
+            {
+                var manifest = Path.Combine(session.CustomActionData["InstallRoot"], "installed-component-v1.json");
+                DeleteFileIfExists(manifest);
+                var machineRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi");
+                SafeDeleteDirectory(Path.Combine(machineRoot, "updates"));
+                SafeDeleteDirectory(Path.Combine(machineRoot, "status"));
+                SafeDeleteDirectory(Path.Combine(machineRoot, "service"));
+                using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                {
+                    root.DeleteSubKeyTree(VolatileBootKey, false);
+                    root.DeleteSubKeyTree(UninstallCleanupKey, false);
+                }
+                return ActionResult.Success;
+            }
+            catch (Exception error)
+            {
+                // Commit actions cannot safely undo a partially completed
+                // cleanup. Leave the exact file for administrator retry.
+                session.Log("go-mapi admin migration commit-uninstall cleanup incomplete: {0}", error);
+                try
+                {
+                    using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                    using (var marker = root.CreateSubKey(UninstallCleanupKey, true))
+                        marker.SetValue("Result", "manifest-cleanup-incomplete", RegistryValueKind.String);
+                }
+                catch (Exception markerError)
+                {
+                    session.Log("go-mapi admin migration could not persist cleanup marker: {0}", markerError);
+                }
+                return ActionResult.Success;
+            }
         }
 
         [CustomAction]
@@ -632,11 +742,28 @@ namespace GoMapi.AdminCustomActions
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "go-mapi"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "go-mapi"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "updates"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "service"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "status"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "uninst"),
             }.Select(item => Path.GetFullPath(item).TrimEnd(Path.DirectorySeparatorChar));
             if (!allowed.Contains(full, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException("Refusing non-owned directory: " + full);
+            RejectReparseTree(full);
             Directory.Delete(full, true);
+        }
+
+        private static void RejectReparseTree(string path)
+        {
+            if ((File.GetAttributes(path) & System.IO.FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Refusing reparse point under owned directory: " + path);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & System.IO.FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Refusing reparse point under owned directory: " + entry);
+                if ((attributes & System.IO.FileAttributes.Directory) != 0)
+                    RejectReparseTree(entry);
+            }
         }
 
         private static void DeleteFileIfExists(string path)

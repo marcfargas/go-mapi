@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -35,7 +36,7 @@ func TestProgramDataPathsAreFixedMachineSurfaces(t *testing.T) {
 }
 
 func TestProtectedStorageRejectsTraversalAndSymlinks(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "protected"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "protected"), privateStorage)
 	for _, components := range [][]string{{"..", "escape"}, {"nested/path"}, {`nested\\path`}, {"file:stream"}, {""}} {
 		if _, err := storage.WriteAtomic(context.Background(), components, strings.NewReader("x"), 1, 1, ""); err == nil {
 			t.Fatalf("accepted hostile components %#v", components)
@@ -53,8 +54,32 @@ func TestProtectedStorageRejectsTraversalAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestFinalUninstallFenceSerializesWithNewPreparation(t *testing.T) {
+	storage := mustStorage(t, testStorageRoot(t, "protected"), privateStorage)
+	state, err := NewFileStateStore(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.BeginFinalUninstall(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending := pendingForReconcile(t, nil)
+	if err := state.CompareAndSave(context.Background(), nil, pending); !errors.Is(err, ErrFinalUninstallFenced) {
+		t.Fatalf("prepare during final uninstall = %v", err)
+	}
+	if err := state.RollbackFinalUninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.CompareAndSave(context.Background(), nil, pending); err != nil {
+		t.Fatalf("prepare after rollback = %v", err)
+	}
+	if err := state.BeginFinalUninstall(context.Background()); err == nil {
+		t.Fatal("final uninstall accepted active pending transaction")
+	}
+}
+
 func TestProtectedStorageBoundsSyncReplaceAndRehash(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "protected"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "protected"), privateStorage)
 	body := []byte("authenticated MSI bytes")
 	sum := sha256.Sum256(body)
 	digest := hex.EncodeToString(sum[:])
@@ -91,7 +116,7 @@ func TestProtectedStorageBoundsSyncReplaceAndRehash(t *testing.T) {
 }
 
 func TestFileStoresRoundTripStrictBoundedState(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "service"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
 	stateStore, _ := NewFileStateStore(storage)
 	replayStore, _ := NewFileReplayStore(storage)
 	statusStore, _ := NewFileStatusStore(storage)
@@ -122,34 +147,115 @@ func TestFileStoresRoundTripStrictBoundedState(t *testing.T) {
 	}
 }
 
+func TestFileTerminalStoresRejectReplayRollbackAndKeepLastResult(t *testing.T) {
+	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
+	replay, _ := NewFileReplayStore(storage)
+	last, _ := NewFileLastResultStore(storage)
+	ctx := context.Background()
+	state := update.ReplayState{Namespace: "system", Sequence: 42, Digest: strings.Repeat("a", 64)}
+	if err := replay.Save(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.Save(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	older := state
+	older.Sequence--
+	if err := replay.Save(ctx, older); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("replay rollback = %v", err)
+	}
+	result := LastResultV1{Schema: LastResultSchemaV1, TransactionID: "tx-42", SKU: update.System,
+		Result: ResultInstalled, Sequence: state.Sequence, Digest: state.Digest, FinishedAt: time.Now().UTC()}
+	if err := last.Save(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	if err := last.Save(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := last.Load(ctx); err != nil || !reflect.DeepEqual(got, &result) {
+		t.Fatalf("last result = %#v, %v", got, err)
+	}
+	changed := result
+	changed.Result = ResultRolledBack
+	if err := last.Save(ctx, changed); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("changed same transaction result = %v", err)
+	}
+}
+
+func TestFileStateStoreRejectsStaleAuthorizationWrites(t *testing.T) {
+	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
+	store, err := NewFileStateStore(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared := validPending(time.Now().UTC())
+	prepared.Schema = PendingSchemaV2
+	if err := store.CompareAndSave(context.Background(), nil, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompareAndSave(context.Background(), nil, prepared); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("second prepare = %v, want state conflict", err)
+	}
+	stale := prepared
+	current := prepared
+	current.Runner = &ProcessIdentity{PID: 101, CreatedAtUnixNano: 202}
+	if err := store.CompareAndSave(context.Background(), &prepared, current); err != nil {
+		t.Fatal(err)
+	}
+	stale.UpdatedAt = stale.UpdatedAt.Add(time.Second)
+	if err := store.CompareAndSave(context.Background(), &prepared, stale); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("stale runner overwrite = %v, want state conflict", err)
+	}
+	if err := store.CompareAndClear(context.Background(), prepared); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("stale retry clear = %v, want state conflict", err)
+	}
+	got, err := store.Load(context.Background())
+	if err != nil || !reflect.DeepEqual(got, &current) {
+		t.Fatalf("durable runner identity = %#v, %v", got, err)
+	}
+	if err := store.CompareAndClear(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.Load(context.Background()); err != nil || got != nil {
+		t.Fatalf("retired pending = %#v, %v", got, err)
+	}
+}
+
 func TestRunnerReadyStorePublishesStrictDurableIdentity(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "service"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
 	store, err := NewFileRunnerReadyStore(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ready := RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: "tx-42", Runner: ProcessIdentity{PID: 11, CreatedAtUnixNano: 101}, Installer: ProcessIdentity{PID: 12, CreatedAtUnixNano: 102}, ReadyAt: time.Now().UTC()}
+	ready := RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: "tx-42", Attempt: 1, Runner: ProcessIdentity{PID: 11, CreatedAtUnixNano: 101}, Installer: ProcessIdentity{PID: 12, CreatedAtUnixNano: 102}, ReadyAt: time.Now().UTC()}
 	if err := store.Publish(context.Background(), ready); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := store.Load(context.Background(), ready.TransactionID)
+	loaded, err := store.Load(context.Background(), ready.TransactionID, ready.Attempt)
 	if err != nil || !reflect.DeepEqual(loaded, &ready) {
 		t.Fatalf("ready = %#v, %v", loaded, err)
 	}
-	if _, err := store.Load(context.Background(), `..\\outside`); err == nil {
+	if stale, err := store.Load(context.Background(), ready.TransactionID, 2); err != nil || stale != nil {
+		t.Fatalf("previous attempt leaked into attempt two: %#v, %v", stale, err)
+	}
+	if _, err := store.Load(context.Background(), `..\\outside`, 1); err == nil {
 		t.Fatal("accepted unsafe ready transaction")
 	}
 }
 
 func TestPublicStatusAllowsOnlyBoundedRedactedCodes(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "status"), publicReadStorage)
+	storage := mustStorage(t, testStorageRoot(t, "status"), publicReadStorage)
 	store, err := NewPublicStatusStore(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := PublicStatusV1{Schema: PublicStatusSchemaV1, Code: EventOffline, UpdatedAt: time.Now().UTC()}
+	status := PublicStatusV1{Schema: PublicStatusSchemaV1, SKU: update.System, Updates: "unknown", Code: EventOffline, UpdatedAt: time.Now().UTC()}
 	if err := store.Save(context.Background(), status); err != nil {
 		t.Fatal(err)
+	}
+	loaded, err := store.Load(context.Background())
+	if err != nil || loaded != status {
+		t.Fatalf("public status = %#v, %v", loaded, err)
 	}
 	data, err := storage.Read([]string{"status-v1.json"}, maxStatusBytes)
 	if err != nil {
@@ -161,7 +267,7 @@ func TestPublicStatusAllowsOnlyBoundedRedactedCodes(t *testing.T) {
 			t.Fatalf("public status leaked %q: %s", forbidden, text)
 		}
 	}
-	if err := store.Save(context.Background(), PublicStatusV1{Schema: PublicStatusSchemaV1, Code: EventCode("proxy-auth user:secret"), UpdatedAt: time.Now()}); err == nil {
+	if err := store.Save(context.Background(), PublicStatusV1{Schema: PublicStatusSchemaV1, SKU: update.System, Updates: "unknown", Code: EventCode("proxy-auth user:secret"), UpdatedAt: time.Now()}); err == nil {
 		t.Fatal("accepted arbitrary public status detail")
 	}
 }
@@ -188,7 +294,7 @@ func TestStorageACLContractSeparatesPrivateAndPublicStatus(t *testing.T) {
 }
 
 func TestProtectedStorageDetectsReplacementAfterAtomicMove(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "protected")
+	root := testStorageRoot(t, "protected")
 	platform := &substitutingPlatform{storagePlatform: newStoragePlatform()}
 	storage, err := newProtectedStorage(root, privateStorage, platform)
 	if err != nil {
@@ -212,7 +318,7 @@ func TestProtectedArtifactStoreStreamsToFixedReleasePath(t *testing.T) {
 	release := authorizedRelease(t, update.System, "4.0.1")
 	payload := release.Payload()
 	body := []byte("verified installer")
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
 	store, err := NewProtectedArtifactStore(storage, func(_ context.Context, got update.Release, destination io.Writer) error {
 		if got.Digest() != release.Digest() {
 			return errors.New("wrong release")
@@ -268,7 +374,7 @@ func TestProtectedArtifactStoreRejectsBadDownloadWithoutReplacingArtifact(t *tes
 		}, nil},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
+			storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
 			initial, err := NewProtectedArtifactStore(storage, func(_ context.Context, _ update.Release, destination io.Writer) error {
 				_, err := destination.Write(good)
 				return err
@@ -298,7 +404,7 @@ func TestProtectedArtifactStoreRejectsBadDownloadWithoutReplacingArtifact(t *tes
 }
 
 func TestProtectedArtifactResolverDerivesPathAndReverifiesHash(t *testing.T) {
-	storage := mustStorage(t, filepath.Join(t.TempDir(), "updates"), privateStorage)
+	storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
 	pending := validPending(time.Now().UTC())
 	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
 	if err != nil {
@@ -334,4 +440,26 @@ func mustStorage(t *testing.T, root string, access storageAccess) *ProtectedStor
 		t.Fatal(err)
 	}
 	return storage
+}
+
+func testStorageRoot(t *testing.T, leaf string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return filepath.Join(t.TempDir(), leaf)
+	}
+	programData := os.Getenv("ProgramData")
+	if !filepath.IsAbs(programData) {
+		t.Fatal("Windows ProgramData is not an absolute path")
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(programData, "go-mapi-storage-test-"+hex.EncodeToString(nonce[:]))
+	t.Cleanup(func() {
+		if err := os.RemoveAll(base); err != nil {
+			t.Errorf("remove protected test storage: %v", err)
+		}
+	})
+	return filepath.Join(base, leaf)
 }

@@ -54,6 +54,31 @@ side by side. A change between them requires an explicit administrator-approved
 migration. A suite install needs no separate user-level package; existing
 user-level installations are left alone.
 
+For a machine MSI, an administrator can choose the managed-update setting at
+install or repair time. Use the MSI file you intend to install in an elevated
+terminal. For a new installation:
+
+```powershell
+$msi = 'C:\Install\go-mapi-system-x64.msi' # use the actual system or suite MSI filename
+msiexec /i $msi GOMAPI_AUTO_UPDATE=0 /qn /norestart
+msiexec /i $msi GOMAPI_AUTO_UPDATE=1 /qn /norestart
+```
+
+To change an existing installation, explicitly reinstall its registry values:
+
+```powershell
+msiexec /i $msi REINSTALL=ALL REINSTALLMODE=amus GOMAPI_AUTO_UPDATE=0 /qn /norestart
+msiexec /i $msi REINSTALL=ALL REINSTALLMODE=amus GOMAPI_AUTO_UPDATE=1 /qn /norestart
+```
+
+`0` disables unattended installs; `1` enables them once the signed managed-update path is available. A new
+machine install defaults to `1`. Repair and same-package upgrades preserve a
+valid existing choice unless an administrator uses the explicit reinstall command above. If
+the existing machine setting is missing or invalid, supply an explicit choice
+to repair it. A disabled setting does not stop service health and status. A
+full Windows **Restart** may be needed to verify an interrupted installation;
+signing and end-to-end update delivery remain under validation.
+
 During the v4 release-candidate period, use the selected test distribution.
 The service-managed update path and signed publication are still being
 validated; final stable download locations will be published here after that

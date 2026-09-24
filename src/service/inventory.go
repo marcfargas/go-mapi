@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
@@ -89,6 +90,32 @@ func (inventory InstallerInventory) Installed(ctx context.Context) (ProductRegis
 		return ProductRegistration{}, err
 	}
 	return RequireSingleMachineProduct(registrations)
+}
+
+// The service can start before Windows Installer publishes its registration.
+// Wait briefly for that one transient state before reporting repair required;
+// any other inventory failure is reported immediately.
+func awaitMachineProductRegistration(ctx context.Context, inventory InstallerInventory, grace time.Duration) (ProductRegistration, error) {
+	if grace <= 0 {
+		return inventory.Installed(ctx)
+	}
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	retry := time.NewTicker(500 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		registration, err := inventory.Installed(ctx)
+		if !errors.Is(err, ErrNoMachineProduct) {
+			return registration, err
+		}
+		select {
+		case <-ctx.Done():
+			return ProductRegistration{}, ctx.Err()
+		case <-deadline.C:
+			return ProductRegistration{}, err
+		case <-retry.C:
+		}
+	}
 }
 
 func (inventory InstallerInventory) Registrations(ctx context.Context) ([]ProductRegistration, error) {

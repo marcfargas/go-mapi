@@ -17,6 +17,12 @@ func main() {
 		}
 		return
 	}
+	if invocation.Mode == service.ModeBeginFinalUninstall || invocation.Mode == service.ModeRollbackFinalUninstall {
+		if err := service.RunFinalUninstallFence(invocation.Mode); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	schedule, err := service.NewProductionResidentSchedule()
 	if err != nil {
 		os.Exit(1)

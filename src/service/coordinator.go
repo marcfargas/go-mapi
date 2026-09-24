@@ -13,22 +13,25 @@ import (
 )
 
 var (
-	ErrBusy                  = errors.New("service update coordinator is busy")
-	ErrOffline               = errors.New("release source is offline")
-	ErrUnauthorizedCandidate = errors.New("release candidate does not belong to installed SKU")
+	ErrBusy                    = errors.New("service update coordinator is busy")
+	ErrOffline                 = errors.New("release source is offline")
+	ErrUnauthorizedCandidate   = errors.New("release candidate does not belong to installed SKU")
+	ErrStateConflict           = errors.New("pending update state changed concurrently")
+	ErrVerificationUnavailable = errors.New("complete installed-product verification is unavailable")
 )
 
 type Outcome string
 
 const (
-	OutcomeNoUpdate       Outcome = "no-update"
-	OutcomeHandedOff      Outcome = "handed-off"
-	OutcomeStillRunning   Outcome = "still-running"
-	OutcomeCommitted      Outcome = "committed"
-	OutcomeRolledBack     Outcome = "rolled-back"
-	OutcomeRebootPending  Outcome = "reboot-pending"
-	OutcomeRepairRequired Outcome = "repair-required"
-	OutcomeBackoff        Outcome = "backoff"
+	OutcomeNoUpdate           Outcome = "no-update"
+	OutcomeHandedOff          Outcome = "handed-off"
+	OutcomeStillRunning       Outcome = "still-running"
+	OutcomeCommitted          Outcome = "committed"
+	OutcomeRolledBack         Outcome = "rolled-back"
+	OutcomeRebootPending      Outcome = "reboot-pending"
+	OutcomeRepairRequired     Outcome = "repair-required"
+	OutcomeBackoff            Outcome = "backoff"
+	OutcomeOutcomeUnconfirmed Outcome = "outcome-unconfirmed"
 )
 
 const (
@@ -47,6 +50,8 @@ const (
 	EventRolledBack    EventCode = "rolled-back"
 	EventRebootPending EventCode = "reboot-pending"
 	EventRepairNeeded  EventCode = "repair-required"
+	EventUnverified    EventCode = "unverified"
+	EventPending       EventCode = "pending"
 )
 
 // Event is deliberately bounded and redacted. Platform log adapters receive
@@ -82,6 +87,7 @@ type StagedArtifact struct {
 // URLs/properties. The fixed Windows adapter owns the one permitted invocation.
 type HandoffRequest struct {
 	TransactionID string
+	Attempt       uint
 	Artifact      StagedArtifact
 }
 
@@ -113,6 +119,10 @@ type RunnerLauncher interface {
 	Launch(context.Context, HandoffRequest) (HandoffReceipt, error)
 }
 
+type RetryGate interface {
+	AllowRetry(context.Context, PendingV1) (bool, error)
+}
+
 type HealthProbe interface {
 	Healthy(context.Context, ProductSnapshot) (bool, error)
 }
@@ -121,19 +131,28 @@ type ProcessProbe interface {
 	Alive(context.Context, ProcessIdentity) (bool, error)
 }
 
-type RebootProbe interface {
-	Pending(context.Context) (bool, error)
+// InstallerServerProbe checks the system-wide Windows Installer execution
+// boundary. A dead msiexec client alone cannot prove that the MSI server has
+// finished committing or rolling back its transaction.
+type InstallerServerProbe interface {
+	Idle(context.Context, bool) (bool, error)
 }
 
 type PendingStore interface {
 	Load(context.Context) (*PendingV1, error)
 	Save(context.Context, PendingV1) error
-	Clear(context.Context) error
+	CompareAndSave(context.Context, *PendingV1, PendingV1) error
+	CompareAndClear(context.Context, PendingV1) error
 }
 
 type ReplayStore interface {
 	Load(context.Context, update.SKU) (update.ReplayState, error)
 	Save(context.Context, update.ReplayState) error
+}
+
+type LastResultStore interface {
+	Load(context.Context) (*LastResultV1, error)
+	Save(context.Context, LastResultV1) error
 }
 
 type StatusStore interface {
@@ -146,24 +165,33 @@ type EventSink interface {
 }
 
 type Clock interface{ Now() time.Time }
+
+// BootIdentity is volatile across a Windows reboot and stable across service
+// restarts within that boot.
+type BootIdentity interface {
+	CurrentBootID(context.Context) (string, error)
+}
 type Backoff interface{ Delay(uint) time.Duration }
 type IDGenerator interface{ NewID() string }
 
 type Dependencies struct {
-	ReleaseSource ReleaseSource
-	Artifacts     ArtifactStore
-	Inventory     ProductInventory
-	Launcher      RunnerLauncher
-	Health        HealthProbe
-	Processes     ProcessProbe
-	Reboot        RebootProbe
-	Pending       PendingStore
-	Replay        ReplayStore
-	Status        StatusStore
-	Events        EventSink
-	Clock         Clock
-	Backoff       Backoff
-	IDs           IDGenerator
+	ReleaseSource   ReleaseSource
+	Artifacts       ArtifactStore
+	Inventory       ProductInventory
+	Launcher        RunnerLauncher
+	RetryGate       RetryGate
+	Health          HealthProbe
+	Processes       ProcessProbe
+	InstallerServer InstallerServerProbe
+	Pending         PendingStore
+	Replay          ReplayStore
+	LastResult      LastResultStore
+	Status          StatusStore
+	Events          EventSink
+	Clock           Clock
+	Boot            BootIdentity
+	Backoff         Backoff
+	IDs             IDGenerator
 }
 
 type Coordinator struct {
@@ -173,19 +201,42 @@ type Coordinator struct {
 }
 
 func NewCoordinator(config Config, deps Dependencies) (*Coordinator, error) {
-	if config.SKU != update.System && config.SKU != update.Suite {
-		return nil, errors.New("coordinator requires a fixed machine SKU")
+	if err := validateReconcileDependencies(config, deps); err != nil {
+		return nil, err
 	}
-	if config.MaxInstallerBusyRetries == 0 {
-		return nil, errors.New("coordinator requires a bounded installer-busy retry count")
-	}
-	if anyNil(deps.ReleaseSource, deps.Artifacts, deps.Inventory, deps.Launcher, deps.Health, deps.Processes, deps.Reboot, deps.Pending, deps.Replay, deps.Status, deps.Events, deps.Clock, deps.Backoff, deps.IDs) {
-		return nil, errors.New("coordinator dependencies are incomplete")
+	if anyNil(deps.ReleaseSource, deps.Artifacts, deps.Launcher, deps.Status, deps.Backoff, deps.IDs) {
+		return nil, errors.New("coordinator discovery dependencies are incomplete")
 	}
 	return &Coordinator{config: config, deps: deps}, nil
 }
 
+// NewReconciler composes the recovery-only resident caller before release
+// discovery exists. It cannot start an installation because it has no source,
+// artifact store or launcher; CheckAndStart rejects that incomplete mode.
+func NewReconciler(config Config, deps Dependencies) (*Coordinator, error) {
+	if err := validateReconcileDependencies(config, deps); err != nil {
+		return nil, err
+	}
+	return &Coordinator{config: config, deps: deps}, nil
+}
+
+func validateReconcileDependencies(config Config, deps Dependencies) error {
+	if config.SKU != update.System && config.SKU != update.Suite {
+		return errors.New("coordinator requires a fixed machine SKU")
+	}
+	if config.MaxInstallerBusyRetries == 0 {
+		return errors.New("coordinator requires a bounded installer-busy retry count")
+	}
+	if anyNil(deps.Inventory, deps.Health, deps.Processes, deps.InstallerServer, deps.Pending, deps.Replay, deps.LastResult, deps.Events, deps.Clock, deps.Boot) {
+		return errors.New("coordinator reconciliation dependencies are incomplete")
+	}
+	return nil
+}
+
 func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, error) {
+	if anyNil(coordinator.deps.ReleaseSource, coordinator.deps.Artifacts, coordinator.deps.Launcher, coordinator.deps.Status, coordinator.deps.Backoff, coordinator.deps.IDs) {
+		return "", errors.New("release discovery is not configured")
+	}
 	if !coordinator.mu.TryLock() {
 		return "", ErrBusy
 	}
@@ -196,26 +247,21 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	if err != nil {
 		return "", fmt.Errorf("load service status: %w", err)
 	}
-	if !status.NextCheckAt.IsZero() && now.Before(status.NextCheckAt) {
-		return OutcomeBackoff, nil
-	}
-
-	attempt := uint(1)
 	pending, err := coordinator.deps.Pending.Load(ctx)
 	if err != nil {
 		return "", fmt.Errorf("load pending update: %w", err)
 	}
 	if pending != nil {
-		if pending.Phase != PhaseRolledBack || pending.Result != ResultRetryScheduled || pending.NextAttemptAt == nil || now.Before(*pending.NextAttemptAt) {
-			return OutcomeStillRunning, nil
+		if pending.Phase == PhaseRolledBack && pending.Result == ResultRetryScheduled {
+			return coordinator.retryInstaller(ctx, *pending, now)
 		}
-		attempt = pending.Attempt + 1
-		if attempt > coordinator.config.MaxInstallerBusyRetries {
-			return OutcomeRolledBack, nil
+		if pending.Schema == PendingSchemaV2 && pending.Phase == PhasePrepared && pending.Attempt > 1 {
+			return coordinator.resumePreparedRetry(ctx, *pending, now)
 		}
-		if err := coordinator.deps.Pending.Clear(ctx); err != nil {
-			return "", fmt.Errorf("clear retried transaction: %w", err)
-		}
+		return OutcomeStillRunning, nil
+	}
+	if !status.NextCheckAt.IsZero() && now.Before(status.NextCheckAt) {
+		return OutcomeBackoff, nil
 	}
 
 	products, err := coordinator.deps.Inventory.Products(ctx)
@@ -252,6 +298,14 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	if err != nil {
 		return "", fmt.Errorf("authorize replay state: %w", err)
 	}
+	last, err := coordinator.deps.LastResult.Load(ctx)
+	if err != nil {
+		return "", fmt.Errorf("load last transaction result: %w", err)
+	}
+	if last != nil && (last.Result == ResultRolledBack || last.Result == ResultBusyExhausted) && last.SKU == coordinator.config.SKU && last.Digest == nextReplay.Digest &&
+		(now.Before(last.FinishedAt) || now.Sub(last.FinishedAt) < 24*time.Hour) {
+		return OutcomeNoUpdate, nil
+	}
 	if installed.ProductCode == candidate.ProductCode {
 		return OutcomeNoUpdate, nil
 	}
@@ -269,19 +323,27 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	retryDeadline := now.Add(10 * time.Minute)
 	pending = &PendingV1{
-		Schema: PendingSchemaV1, TransactionID: coordinator.deps.IDs.NewID(), SKU: coordinator.config.SKU,
+		Schema: PendingSchemaV2, TransactionID: coordinator.deps.IDs.NewID(), SKU: coordinator.config.SKU,
 		Old: installed, Candidate: candidate, Replay: nextReplay, ArtifactSHA256: artifact.SHA256,
-		Phase: PhasePrepared, PreparedAt: now, UpdatedAt: now, Attempt: attempt,
+		Phase: PhasePrepared, PreparedAt: now, UpdatedAt: now, Attempt: 1, RetryDeadline: &retryDeadline,
 	}
-	if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
+	pending.LaunchBootID, err = coordinator.deps.Boot.CurrentBootID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read launch boot identity: %w", err)
+	}
+	if pending.LaunchBootID == "" {
+		return "", errors.New("launch boot identity is empty")
+	}
+	if err := coordinator.deps.Pending.CompareAndSave(ctx, nil, *pending); err != nil {
 		return "", fmt.Errorf("persist prepared transaction: %w", err)
 	}
 	coordinator.deps.Events.Record(ctx, Event{Code: EventPrepared, TransactionID: pending.TransactionID})
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	receipt, err := coordinator.deps.Launcher.Launch(ctx, HandoffRequest{TransactionID: pending.TransactionID, Artifact: artifact})
+	receipt, err := coordinator.deps.Launcher.Launch(ctx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
 	if err != nil {
 		return "", fmt.Errorf("launch detached update runner: %w", err)
 	}
@@ -295,12 +357,33 @@ func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, err
 	if err != nil {
 		return "", fmt.Errorf("reload durable handoff evidence: %w", err)
 	}
-	if durable == nil || durable.TransactionID != pending.TransactionID || durable.Phase != PhaseInstallerRunning || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
+	if durable == nil || durable.TransactionID != pending.TransactionID || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
 		return "", errors.New("runner readiness does not match durable transaction evidence")
 	}
 	_ = coordinator.deps.Status.Save(context.WithoutCancel(ctx), ServiceStatus{LastCode: StatusReady})
 	coordinator.deps.Events.Record(context.WithoutCancel(ctx), Event{Code: EventHandedOff, TransactionID: pending.TransactionID})
 	return OutcomeHandedOff, nil
+}
+
+// ResumePreparedRetry is the resident recovery-only entry point for an
+// already persisted retry authorization. It never performs release discovery
+// or creates a new transaction.
+func (coordinator *Coordinator) ResumePreparedRetry(ctx context.Context) (Outcome, error) {
+	if coordinator.deps.Launcher == nil || coordinator.deps.RetryGate == nil {
+		return "", errors.New("prepared retry launcher is not configured")
+	}
+	if !coordinator.mu.TryLock() {
+		return "", ErrBusy
+	}
+	defer coordinator.mu.Unlock()
+	pending, err := coordinator.deps.Pending.Load(ctx)
+	if err != nil {
+		return "", err
+	}
+	if pending == nil || pending.Schema != PendingSchemaV2 || pending.Phase != PhasePrepared || pending.Attempt <= 1 || pending.SKU != coordinator.config.SKU {
+		return OutcomeNoUpdate, nil
+	}
+	return coordinator.resumePreparedRetry(ctx, *pending, coordinator.deps.Clock.Now())
 }
 
 func (coordinator *Coordinator) backoffOffline(ctx context.Context, status ServiceStatus, now time.Time) (Outcome, error) {
@@ -327,6 +410,13 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	if pending == nil {
 		return OutcomeNoUpdate, nil
 	}
+	bootID, err := coordinator.deps.Boot.CurrentBootID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read current boot identity: %w", err)
+	}
+	if bootID == "" {
+		return "", errors.New("current boot identity is empty")
+	}
 	if err := pending.Validate(); err != nil {
 		pending.Phase = PhaseRepairRequired
 		pending.Result = ResultAmbiguous
@@ -336,10 +426,51 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		}
 		return OutcomeRepairRequired, nil
 	}
+	observed := *pending
+	savePending := func() error { return coordinator.deps.Pending.CompareAndSave(ctx, &observed, *pending) }
 	// A scheduled 1618 retry is consumed only by CheckAndStart. Reconciliation
 	// must not slide its durable deadline on every service poll.
 	if pending.Phase == PhaseRolledBack && pending.Result == ResultRetryScheduled && pending.NextAttemptAt != nil {
+		if pending.RetryDeadline != nil && !coordinator.deps.Clock.Now().Before(*pending.RetryDeadline) {
+			pending.Result, pending.NextAttemptAt, pending.UpdatedAt = ResultBusyExhausted, nil, coordinator.deps.Clock.Now()
+			if err := savePending(); err != nil {
+				return "", err
+			}
+			return coordinator.retireTerminal(ctx, *pending, OutcomeRolledBack)
+		}
 		return OutcomeBackoff, nil
+	}
+	// Terminal records remain authoritative until ordered retirement. In
+	// particular, never turn a committed record back into a live transaction
+	// just because its former installer PID is still observable.
+	switch pending.Phase {
+	case PhaseCommitted:
+		// A crash may have happened after the terminal write and before replay
+		// persistence. With pending still present no newer transaction can
+		// advance replay, so retrying this exact state is idempotent.
+		if err := coordinator.deps.Replay.Save(ctx, pending.Replay); err != nil {
+			return "", fmt.Errorf("resume committed replay state: %w", err)
+		}
+		return coordinator.retireTerminal(ctx, *pending, OutcomeCommitted)
+	case PhaseRolledBack:
+		return coordinator.retireTerminal(ctx, *pending, OutcomeRolledBack)
+	case PhaseRepairRequired:
+		return OutcomeRepairRequired, nil
+	case PhaseOutcomeUnconfirmed:
+		// A missing exit can leave a healthy candidate waiting for a full
+		// restart. Once the volatile boot identity changes, re-observe the
+		// installer server and installed product before finalizing it.
+		if pending.LaunchBootID == "" || pending.LaunchBootID == bootID {
+			return OutcomeOutcomeUnconfirmed, nil
+		}
+	}
+	// A retry CAS may have committed just before service termination. Its
+	// prepared record is still the same protected authorization; no MSI exit
+	// can be inferred merely because the detached runner was not yet created.
+	if pending.Schema == PendingSchemaV2 && pending.Phase == PhasePrepared && pending.Attempt > 1 {
+		if pending.RetryDeadline != nil && coordinator.deps.Clock.Now().Before(*pending.RetryDeadline) {
+			return OutcomeBackoff, nil
+		}
 	}
 	for _, identity := range []*ProcessIdentity{pending.Runner, pending.Installer} {
 		if identity == nil {
@@ -350,17 +481,20 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 			return "", fmt.Errorf("probe transaction process identity: %w", probeErr)
 		}
 		if alive {
-			pending.Phase = PhaseStillRunning
-			pending.UpdatedAt = coordinator.deps.Clock.Now()
-			if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
-				return "", err
-			}
+			// The runner owns the launch phases. Reconciliation must not rewrite
+			// an authorized record while the runner may be advancing it by CAS.
 			coordinator.deps.Events.Record(ctx, Event{Code: EventStillRunning, TransactionID: pending.TransactionID})
 			return OutcomeStillRunning, nil
 		}
 	}
-	if pending.Exit == nil {
-		return coordinator.requireRepair(ctx, pending)
+	// Missing exit evidence needs a stronger server STOPPED barrier and
+	// cannot establish that a healthy candidate needs no reboot.
+	idle, err := coordinator.deps.InstallerServer.Idle(ctx, pending.Exit == nil)
+	if err != nil {
+		return "", fmt.Errorf("probe Windows Installer server: %w", err)
+	}
+	if !idle {
+		return OutcomeStillRunning, nil
 	}
 	products, err := coordinator.deps.Inventory.Products(ctx)
 	if err != nil {
@@ -377,34 +511,82 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	if !healthy {
 		return coordinator.requireRepair(ctx, pending)
 	}
-	if sameProduct(installed, pending.Candidate) {
-		rebootPending, err := coordinator.deps.Reboot.Pending(ctx)
-		if err != nil {
-			return "", fmt.Errorf("probe pending reboot: %w", err)
+	// Recheck the server after the installed-state observation. A concurrent
+	// MSI can begin while inventory and health are being read.
+	idle, err = coordinator.deps.InstallerServer.Idle(ctx, pending.Exit == nil)
+	if err != nil {
+		return "", fmt.Errorf("reprobe Windows Installer server: %w", err)
+	}
+	if !idle {
+		return OutcomeStillRunning, nil
+	}
+	confirmed, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil {
+		return "", fmt.Errorf("reprobe installed product during reconciliation: %w", err)
+	}
+	if len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, installed) {
+		return OutcomeStillRunning, nil
+	}
+	if pending.Exit == nil {
+		if sameProduct(installed, pending.Candidate) {
+			if pending.LaunchBootID != "" && pending.LaunchBootID != bootID {
+				return coordinator.commitCandidate(ctx, pending, savePending)
+			}
+			pending.Phase = PhaseOutcomeUnconfirmed
+			pending.Result = ResultOutcomeUnconfirmed
+			pending.UpdatedAt = coordinator.deps.Clock.Now()
+			if err := savePending(); err != nil {
+				return "", err
+			}
+			return OutcomeOutcomeUnconfirmed, nil
 		}
-		if rebootPending {
+		if sameProduct(installed, pending.Old) {
+			pending.Phase = PhaseRolledBack
+			pending.Result = ResultRolledBack
+			if pending.Schema == PendingSchemaV2 && pending.Attempt > 1 && pending.RetryDeadline != nil && !coordinator.deps.Clock.Now().Before(*pending.RetryDeadline) {
+				pending.Result = ResultBusyExhausted
+			}
+			pending.UpdatedAt = coordinator.deps.Clock.Now()
+			if err := savePending(); err != nil {
+				return "", err
+			}
+			if pending.Result == ResultBusyExhausted {
+				return coordinator.retireTerminal(ctx, *pending, OutcomeRolledBack)
+			}
+			return OutcomeRolledBack, nil
+		}
+		return coordinator.requireRepair(ctx, pending)
+	}
+	if sameProduct(installed, pending.Candidate) {
+		// A healthy candidate does not turn a failed MSI exit into success.
+		// Reboot evidence belongs to this attempt only when msiexec returned a
+		// reboot code; an unrelated system reboot flag is not sufficient.
+		if pending.Exit.Code == 3010 || pending.Exit.Code == 1641 {
+			if pending.LaunchBootID == "" {
+				pending.Phase = PhaseOutcomeUnconfirmed
+				pending.Result = ResultOutcomeUnconfirmed
+				pending.UpdatedAt = coordinator.deps.Clock.Now()
+				if err := savePending(); err != nil {
+					return "", err
+				}
+				return OutcomeOutcomeUnconfirmed, nil
+			}
+			if pending.LaunchBootID != bootID {
+				return coordinator.commitCandidate(ctx, pending, savePending)
+			}
 			pending.Phase = PhaseRebootPending
 			pending.Result = ResultRebootRequired
 			pending.UpdatedAt = coordinator.deps.Clock.Now()
-			if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
+			if err := savePending(); err != nil {
 				return "", err
 			}
 			coordinator.deps.Events.Record(ctx, Event{Code: EventRebootPending, TransactionID: pending.TransactionID})
 			return OutcomeRebootPending, nil
 		}
-		pending.Phase = PhaseCommitted
-		pending.Result = ResultInstalled
-		pending.NextAttemptAt = nil
-		pending.UpdatedAt = coordinator.deps.Clock.Now()
-		if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
-			return "", err
+		if pending.Exit.Code != 0 {
+			return coordinator.requireRepair(ctx, pending)
 		}
-		// Replay advances only after the complete candidate product is healthy.
-		if err := coordinator.deps.Replay.Save(ctx, pending.Replay); err != nil {
-			return "", fmt.Errorf("persist committed replay state: %w", err)
-		}
-		coordinator.deps.Events.Record(ctx, Event{Code: EventCommitted, TransactionID: pending.TransactionID})
-		return OutcomeCommitted, nil
+		return coordinator.commitCandidate(ctx, pending, savePending)
 	}
 	if sameProduct(installed, pending.Old) {
 		pending.Phase = PhaseRolledBack
@@ -412,13 +594,22 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		pending.UpdatedAt = coordinator.deps.Clock.Now()
 		pending.NextAttemptAt = nil
 		outcome := OutcomeRolledBack
-		if pending.Exit.Code == 1618 && pending.Attempt < coordinator.config.MaxInstallerBusyRetries {
-			next := coordinator.deps.Clock.Now().Add(coordinator.deps.Backoff.Delay(pending.Attempt))
-			pending.NextAttemptAt = &next
-			pending.Result = ResultRetryScheduled
-			outcome = OutcomeBackoff
+		if pending.Exit.Code == 1618 {
+			pending.Result = ResultBusyExhausted
+			if pending.Schema == PendingSchemaV2 && pending.RetryDeadline != nil && pending.Attempt < coordinator.config.MaxInstallerBusyRetries {
+				delay := 30 * time.Second
+				if pending.Attempt > 1 {
+					delay = 120 * time.Second
+				}
+				next := coordinator.deps.Clock.Now().Add(delay)
+				if !coordinator.deps.Clock.Now().Before(pending.PreparedAt) && next.Before(*pending.RetryDeadline) {
+					pending.NextAttemptAt = &next
+					pending.Result = ResultRetryScheduled
+					outcome = OutcomeBackoff
+				}
+			}
 		}
-		if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
+		if err := savePending(); err != nil {
 			return "", err
 		}
 		coordinator.deps.Events.Record(ctx, Event{Code: EventRolledBack, TransactionID: pending.TransactionID})
@@ -427,12 +618,182 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	return coordinator.requireRepair(ctx, pending)
 }
 
+func (coordinator *Coordinator) retryInstaller(ctx context.Context, pending PendingV1, now time.Time) (Outcome, error) {
+	if pending.Schema != PendingSchemaV2 || pending.Exit == nil || pending.Exit.Code != 1618 || pending.NextAttemptAt == nil || pending.RetryDeadline == nil {
+		return OutcomeBackoff, nil
+	}
+	if now.Before(pending.PreparedAt) || !now.Before(*pending.RetryDeadline) || pending.Attempt >= coordinator.config.MaxInstallerBusyRetries {
+		previous := pending
+		pending.Result, pending.NextAttemptAt, pending.UpdatedAt = ResultBusyExhausted, nil, now
+		if err := coordinator.deps.Pending.CompareAndSave(ctx, &previous, pending); err != nil {
+			return "", err
+		}
+		return coordinator.retireTerminal(ctx, pending, OutcomeRolledBack)
+	}
+	if now.Before(*pending.NextAttemptAt) || coordinator.deps.RetryGate == nil {
+		return OutcomeBackoff, nil
+	}
+	for _, identity := range []*ProcessIdentity{pending.Runner, pending.Installer} {
+		if identity == nil {
+			continue
+		}
+		alive, err := coordinator.deps.Processes.Alive(ctx, *identity)
+		if err != nil || alive {
+			return OutcomeBackoff, err
+		}
+	}
+	idle, err := coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil || !idle {
+		return OutcomeBackoff, err
+	}
+	products, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil {
+		return OutcomeBackoff, err
+	}
+	if len(products) != 1 || !sameProduct(products[0].Snapshot, pending.Old) {
+		return coordinator.requireRepair(ctx, &pending)
+	}
+	healthy, err := coordinator.deps.Health.Healthy(ctx, pending.Old)
+	if err != nil || !healthy {
+		return OutcomeBackoff, err
+	}
+	allowed, err := coordinator.deps.RetryGate.AllowRetry(ctx, pending)
+	if err != nil || !allowed {
+		return OutcomeBackoff, err
+	}
+	idle, err = coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil || !idle {
+		return OutcomeBackoff, err
+	}
+	confirmed, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil || len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, pending.Old) {
+		return OutcomeBackoff, err
+	}
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
+	if err != nil {
+		return "", err
+	}
+	artifact := StagedArtifact{Handle: fmt.Sprintf("%s/%d/%s", pending.SKU, pending.Replay.Sequence, identity.AssetName), SHA256: pending.ArtifactSHA256}
+	previous := pending
+	pending.Attempt++
+	pending.Phase, pending.Result = PhasePrepared, ResultNone
+	pending.Runner, pending.Installer, pending.InstallerThread, pending.Exit, pending.NextAttemptAt = nil, nil, nil, nil, nil
+	pending.UpdatedAt = now
+	if err := coordinator.deps.Pending.CompareAndSave(ctx, &previous, pending); err != nil {
+		return "", err
+	}
+	return coordinator.launchPreparedRetry(ctx, pending, artifact)
+}
+
+func (coordinator *Coordinator) resumePreparedRetry(ctx context.Context, pending PendingV1, now time.Time) (Outcome, error) {
+	if err := pending.Validate(); err != nil || pending.Phase != PhasePrepared || pending.Installer != nil || pending.InstallerThread != nil || pending.Exit != nil {
+		return OutcomeRepairRequired, errors.New("prepared retry has inconsistent installer evidence")
+	}
+	if pending.RetryDeadline == nil || pending.Attempt > coordinator.config.MaxInstallerBusyRetries || now.Before(pending.PreparedAt) || !now.Before(*pending.RetryDeadline) {
+		return OutcomeBackoff, nil
+	}
+	if coordinator.deps.RetryGate == nil {
+		return OutcomeBackoff, nil
+	}
+	if pending.Runner != nil {
+		alive, err := coordinator.deps.Processes.Alive(ctx, *pending.Runner)
+		if err != nil || alive {
+			return OutcomeStillRunning, err
+		}
+		previous := pending
+		pending.Runner = nil
+		pending.UpdatedAt = now
+		if err := coordinator.deps.Pending.CompareAndSave(ctx, &previous, pending); err != nil {
+			return "", err
+		}
+	}
+	idle, err := coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil || !idle {
+		return OutcomeBackoff, err
+	}
+	products, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil || len(products) != 1 || !sameProduct(products[0].Snapshot, pending.Old) {
+		return OutcomeBackoff, err
+	}
+	healthy, err := coordinator.deps.Health.Healthy(ctx, pending.Old)
+	if err != nil || !healthy {
+		return OutcomeBackoff, err
+	}
+	allowed, err := coordinator.deps.RetryGate.AllowRetry(ctx, pending)
+	if err != nil || !allowed {
+		return OutcomeBackoff, err
+	}
+	idle, err = coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil || !idle {
+		return OutcomeBackoff, err
+	}
+	confirmed, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil || len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, pending.Old) {
+		return OutcomeBackoff, err
+	}
+	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
+	if err != nil {
+		return "", err
+	}
+	artifact := StagedArtifact{Handle: fmt.Sprintf("%s/%d/%s", pending.SKU, pending.Replay.Sequence, identity.AssetName), SHA256: pending.ArtifactSHA256}
+	return coordinator.launchPreparedRetry(ctx, pending, artifact)
+}
+
+func (coordinator *Coordinator) launchPreparedRetry(ctx context.Context, pending PendingV1, artifact StagedArtifact) (Outcome, error) {
+	receipt, err := coordinator.deps.Launcher.Launch(ctx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
+	if err != nil {
+		return "", err
+	}
+	if !receipt.Ready || validateProcessIdentity(&receipt.Runner) != nil || validateProcessIdentity(&receipt.Installer) != nil {
+		return "", errors.New("retry runner has no durable ready evidence")
+	}
+	durable, err := coordinator.deps.Pending.Load(context.WithoutCancel(ctx))
+	if err != nil {
+		return "", err
+	}
+	if durable == nil || durable.TransactionID != pending.TransactionID || durable.Attempt != pending.Attempt || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
+		return "", errors.New("retry readiness does not match durable transaction")
+	}
+	return OutcomeHandedOff, nil
+}
+
+func (coordinator *Coordinator) retireTerminal(ctx context.Context, pending PendingV1, outcome Outcome) (Outcome, error) {
+	result := lastResultFromPending(pending)
+	if err := result.Validate(); err != nil {
+		return "", err
+	}
+	if err := coordinator.deps.LastResult.Save(ctx, result); err != nil {
+		return "", fmt.Errorf("persist last transaction result: %w", err)
+	}
+	if err := coordinator.deps.Pending.CompareAndClear(ctx, pending); err != nil {
+		return "", fmt.Errorf("retire terminal transaction: %w", err)
+	}
+	return outcome, nil
+}
+
+func (coordinator *Coordinator) commitCandidate(ctx context.Context, pending *PendingV1, savePending func() error) (Outcome, error) {
+	pending.Phase = PhaseCommitted
+	pending.Result = ResultInstalled
+	pending.NextAttemptAt = nil
+	pending.UpdatedAt = coordinator.deps.Clock.Now()
+	if err := savePending(); err != nil {
+		return "", err
+	}
+	// Replay advances only after the complete candidate product is healthy.
+	if err := coordinator.deps.Replay.Save(ctx, pending.Replay); err != nil {
+		return "", fmt.Errorf("persist committed replay state: %w", err)
+	}
+	coordinator.deps.Events.Record(ctx, Event{Code: EventCommitted, TransactionID: pending.TransactionID})
+	return OutcomeCommitted, nil
+}
+
 func (coordinator *Coordinator) requireRepair(ctx context.Context, pending *PendingV1) (Outcome, error) {
+	observed := *pending
 	pending.Phase = PhaseRepairRequired
 	pending.Result = ResultAmbiguous
 	pending.NextAttemptAt = nil
 	pending.UpdatedAt = coordinator.deps.Clock.Now()
-	if err := coordinator.deps.Pending.Save(ctx, *pending); err != nil {
+	if err := coordinator.deps.Pending.CompareAndSave(ctx, &observed, *pending); err != nil {
 		return "", fmt.Errorf("persist repair-required state: %w", err)
 	}
 	coordinator.deps.Events.Record(ctx, Event{Code: EventRepairNeeded, TransactionID: pending.TransactionID})

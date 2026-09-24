@@ -12,27 +12,50 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// InspectAuthenticode validates the signed file without UI, then extracts the
-// signer certificate from the live WinTrust state before closing it.
+// VerifyAuthenticode delegates the file's signature and certificate trust
+// decision to Windows. The service uses this check before a silent install.
+func VerifyAuthenticode(path string) error {
+	return withVerifiedWinTrust(path, nil)
+}
+
+// InspectAuthenticode is retained for the existing interactive admin repair
+// path, which still consumes signer identity from the live WinTrust state.
 func InspectAuthenticode(path string) (AuthenticodeIdentity, error) {
+	var identity AuthenticodeIdentity
+	err := withVerifiedWinTrust(path, func(data *windows.WinTrustData) error {
+		var inspectErr error
+		identity, inspectErr = inspectWinTrustIdentity(data)
+		return inspectErr
+	})
+	return identity, err
+}
+
+func withVerifiedWinTrust(path string, inspect func(*windows.WinTrustData) error) error {
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return AuthenticodeIdentity{}, err
+		return err
 	}
 	file := windows.WinTrustFileInfo{Size: uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})), FilePath: p}
 	data := windows.WinTrustData{Size: uint32(unsafe.Sizeof(windows.WinTrustData{})), UIChoice: windows.WTD_UI_NONE, RevocationChecks: windows.WTD_REVOKE_WHOLECHAIN, UnionChoice: windows.WTD_CHOICE_FILE, FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&file), StateAction: windows.WTD_STATEACTION_VERIFY, ProvFlags: windows.WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | windows.WTD_MOTW, UIContext: windows.WTD_UICONTEXT_INSTALL}
 	if err := windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data); err != nil {
-		return AuthenticodeIdentity{}, err
+		return err
 	}
 	defer func() {
 		data.StateAction = windows.WTD_STATEACTION_CLOSE
 		_ = windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data)
 	}()
+	if inspect == nil {
+		return nil
+	}
+	return inspect(&data)
+}
+
+func inspectWinTrustIdentity(data *windows.WinTrustData) (AuthenticodeIdentity, error) {
 	if err := procWTHelperProvDataFromStateData.Find(); err != nil {
 		return AuthenticodeIdentity{}, err
 	}
 	providerData, _, _ := procWTHelperProvDataFromStateData.Call(uintptr(data.StateData))
-	runtime.KeepAlive(&data)
+	runtime.KeepAlive(data)
 	if providerData == 0 {
 		return AuthenticodeIdentity{}, errors.New("missing WinTrust provider data")
 	}
@@ -40,7 +63,7 @@ func InspectAuthenticode(path string) (AuthenticodeIdentity, error) {
 		return AuthenticodeIdentity{}, err
 	}
 	signer := winTrustProviderSignerFromChain(providerData)
-	runtime.KeepAlive(&data)
+	runtime.KeepAlive(data)
 	if signer == nil {
 		return AuthenticodeIdentity{}, errors.New("missing WinTrust provider signer")
 	}
@@ -84,6 +107,7 @@ var procWTHelperGetProvSignerFromChain = windows.NewLazySystemDLL("wintrust.dll"
 
 // The returned pointer belongs to the live WinTrust state; the caller must
 // consume it before WTD_STATEACTION_CLOSE and keep WinTrustData alive.
+//
 //go:nocheckptr
 func winTrustProviderSignerFromChain(providerData uintptr) *winTrustProviderSigner {
 	r, _, _ := procWTHelperGetProvSignerFromChain.Call(providerData, 0, 0, 0)

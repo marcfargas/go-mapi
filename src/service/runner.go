@@ -14,13 +14,14 @@ const RunnerReadySchemaV1 = "go-mapi-runner-ready-v1"
 type RunnerReadyV1 struct {
 	Schema        string          `json:"schema"`
 	TransactionID string          `json:"transactionId"`
+	Attempt       uint            `json:"attempt"`
 	Runner        ProcessIdentity `json:"runner"`
 	Installer     ProcessIdentity `json:"installer"`
 	ReadyAt       time.Time       `json:"readyAt"`
 }
 
 func (ready RunnerReadyV1) Validate() error {
-	if ready.Schema != RunnerReadySchemaV1 || !transactionIDPattern.MatchString(ready.TransactionID) || ready.ReadyAt.IsZero() {
+	if ready.Schema != RunnerReadySchemaV1 || !transactionIDPattern.MatchString(ready.TransactionID) || ready.Attempt == 0 || ready.ReadyAt.IsZero() {
 		return errors.New("invalid runner ready signal")
 	}
 	if err := validateProcessIdentity(&ready.Runner); err != nil {
@@ -34,7 +35,7 @@ func (ready RunnerReadyV1) Validate() error {
 
 type RunnerReadyStore interface {
 	Publish(context.Context, RunnerReadyV1) error
-	Load(context.Context, string) (*RunnerReadyV1, error)
+	Load(context.Context, string, uint) (*RunnerReadyV1, error)
 }
 
 type RunnerArtifactResolver interface {
@@ -47,6 +48,11 @@ type FileIntegrityVerifier interface {
 
 type InstallerProcess interface {
 	Identity() ProcessIdentity
+	InitialThread() ProcessIdentity
+	// Resume releases a child created suspended only after its identity has
+	// been durably recorded. Abort closes its kill-on-close job before resume.
+	Resume() error
+	Abort() error
 	Wait() (uint32, error)
 }
 
@@ -69,8 +75,12 @@ type UpdateRunner struct {
 	Ready     RunnerReadyStore
 	Artifacts RunnerArtifactResolver
 	Integrity FileIntegrityVerifier
-	Runtime   RunnerRuntime
-	Clock     Clock
+	// VerifyIdentity checks the signed MSI's own identity against the exact
+	// protected pending candidate before any installer process is created.
+	VerifyIdentity func(context.Context, string, PendingV1) error
+	Runtime        RunnerRuntime
+	Clock          Clock
+	Authorize      func(context.Context) error
 }
 
 // Run executes one already-authorized transaction. Cancellation is honored
@@ -87,23 +97,34 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	if err != nil {
 		return fmt.Errorf("load prepared transaction: %w", err)
 	}
-	if pending == nil || pending.TransactionID != transactionID || pending.Phase != PhasePrepared || pending.Runner != nil || pending.Installer != nil || pending.Exit != nil {
+	if pending == nil || pending.Schema != PendingSchemaV2 || pending.TransactionID != transactionID || pending.Phase != PhasePrepared || pending.Runner != nil || pending.Installer != nil || pending.InstallerThread != nil || pending.Exit != nil {
 		return errors.New("update runner transaction is not exclusively prepared")
 	}
 	artifact, err := runner.Artifacts.Resolve(ctx, *pending)
 	if err != nil {
 		return fmt.Errorf("resolve protected installer: %w", err)
 	}
+	releaseArtifact, err := pinVerifiedFile(artifact)
+	if err != nil {
+		return fmt.Errorf("pin protected installer: %w", err)
+	}
+	defer releaseArtifact()
 	if err := runner.Integrity.VerifySHA256(ctx, artifact, pending.ArtifactSHA256); err != nil {
 		return fmt.Errorf("reverify protected installer: %w", err)
+	}
+	if runner.VerifyIdentity != nil {
+		if err := runner.VerifyIdentity(ctx, artifact, *pending); err != nil {
+			return fmt.Errorf("verify protected installer identity: %w", err)
+		}
 	}
 	self, err := runner.Runtime.SelfIdentity()
 	if err != nil || validateProcessIdentity(&self) != nil {
 		return errors.New("capture update runner process identity")
 	}
+	previous := *pending
 	pending.Runner = &self
 	pending.UpdatedAt = runner.Clock.Now()
-	if err := runner.Pending.Save(ctx, *pending); err != nil {
+	if err := runner.Pending.CompareAndSave(ctx, &previous, *pending); err != nil {
 		return fmt.Errorf("persist runner identity: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -114,21 +135,58 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 		return fmt.Errorf("start fixed Windows Installer command: %w", err)
 	}
 	installerIdentity := installer.Identity()
+	threadIdentity := installer.InitialThread()
 	if err := validateProcessIdentity(&installerIdentity); err != nil {
+		_ = installer.Abort()
 		return fmt.Errorf("capture installer identity: %w", err)
 	}
+	if err := validateProcessIdentity(&threadIdentity); err != nil {
+		_ = installer.Abort()
+		return fmt.Errorf("capture installer initial thread identity: %w", err)
+	}
+	previous = *pending
 	pending.Installer = &installerIdentity
-	pending.Phase = PhaseInstallerRunning
+	pending.InstallerThread = &threadIdentity
+	pending.Phase = PhaseChildRecorded
 	pending.UpdatedAt = runner.Clock.Now()
-	if err := runner.Pending.Save(context.WithoutCancel(ctx), *pending); err != nil {
+	if err := runner.Pending.CompareAndSave(context.WithoutCancel(ctx), &previous, *pending); err != nil {
+		_ = installer.Abort()
 		return fmt.Errorf("persist installer identity: %w", err)
 	}
-	ready := RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: transactionID, Runner: self, Installer: installerIdentity, ReadyAt: runner.Clock.Now()}
-	if err := runner.Ready.Publish(context.WithoutCancel(ctx), ready); err != nil {
-		return fmt.Errorf("publish durable runner readiness: %w", err)
+	previous = *pending
+	pending.Phase = PhaseResumeAuthorized
+	pending.UpdatedAt = runner.Clock.Now()
+	if runner.Authorize != nil {
+		if err := runner.Authorize(context.WithoutCancel(ctx)); err != nil {
+			_ = installer.Abort()
+			return fmt.Errorf("authorize installer resume: %w", err)
+		}
 	}
+	if err := runner.Pending.CompareAndSave(context.WithoutCancel(ctx), &previous, *pending); err != nil {
+		_ = installer.Abort()
+		return fmt.Errorf("persist installer resume authorization: %w", err)
+	}
+	if err := installer.Resume(); err != nil {
+		previous = *pending
+		pending.Phase = PhaseRepairRequired
+		pending.Result = ResultAmbiguous
+		pending.UpdatedAt = runner.Clock.Now()
+		if saveErr := runner.Pending.CompareAndSave(context.Background(), &previous, *pending); saveErr != nil {
+			return errors.Join(fmt.Errorf("resume recorded installer: %w", err), fmt.Errorf("persist abnormal resume state: %w", saveErr))
+		}
+		return fmt.Errorf("resume recorded installer: %w", err)
+	}
+	previous = *pending
+	pending.Phase = PhaseRunning
+	pending.UpdatedAt = runner.Clock.Now()
+	if err := runner.Pending.CompareAndSave(context.WithoutCancel(ctx), &previous, *pending); err != nil {
+		return fmt.Errorf("persist running installer: %w", err)
+	}
+	ready := RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: transactionID, Attempt: pending.Attempt, Runner: self, Installer: installerIdentity, ReadyAt: runner.Clock.Now()}
+	readyErr := runner.Ready.Publish(context.WithoutCancel(ctx), ready)
 
-	// Point of no return: never propagate service cancellation into msiexec.
+	// Resume authorization was durably written before disarming the private
+	// job. Service cancellation cannot revoke this installer attempt.
 	exitCode, err := installer.Wait()
 	if err != nil {
 		// Missing numeric exit evidence is intentionally reconciled as repair.
@@ -138,13 +196,17 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	if err != nil {
 		return fmt.Errorf("reload transaction after installer exit: %w", err)
 	}
-	if latest == nil || latest.TransactionID != transactionID || latest.Runner == nil || latest.Installer == nil || *latest.Runner != self || *latest.Installer != installerIdentity {
+	if latest == nil || latest.TransactionID != transactionID || latest.Runner == nil || latest.Installer == nil || latest.InstallerThread == nil || *latest.Runner != self || *latest.Installer != installerIdentity || *latest.InstallerThread != threadIdentity {
 		return errors.New("transaction identity changed while installer was running")
 	}
+	previous = *latest
 	latest.Exit = &ExitEvidence{Code: exitCode, ObservedAt: runner.Clock.Now()}
 	latest.UpdatedAt = runner.Clock.Now()
-	if err := runner.Pending.Save(context.Background(), *latest); err != nil {
+	if err := runner.Pending.CompareAndSave(context.Background(), &previous, *latest); err != nil {
 		return fmt.Errorf("persist installer exit evidence: %w", err)
+	}
+	if readyErr != nil {
+		return fmt.Errorf("publish durable runner readiness: %w", readyErr)
 	}
 	return nil
 }
