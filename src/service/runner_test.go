@@ -8,7 +8,43 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
+
+func TestSuiteRunnerAuthorizesPendingSKUBeforeResume(t *testing.T) {
+	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	release := authorizedRelease(t, update.Suite, "4.0.1")
+	pending := validPending(now)
+	pending.SKU = update.Suite
+	pending.Old = oldProduct(update.Suite)
+	pending.Old.Contained["app"] = "4.0.0"
+	pending.Candidate = mustProductFromRelease(t, release)
+	pending.Replay, _ = update.AcceptReplay(update.ReplayState{}, release)
+	pending.ArtifactSHA256 = release.Payload().Artifact.SHA256
+	store := &orderedPendingStore{pending: &pending}
+	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 152, CreatedAtUnixNano: 2002}, thread: ProcessIdentity{PID: 153, CreatedAtUnixNano: 2003}, order: &store.order}
+	runtime := &fakeRunnerRuntime{self: ProcessIdentity{PID: 151, CreatedAtUnixNano: 2001}, process: process, order: &store.order}
+	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now),
+		AuthorizePending: func(_ context.Context, observed PendingV1) error {
+			return authorizePendingProductSnapshot(observed, pending.Old)
+		}}
+	if err := runner.Run(context.Background(), pending.TransactionID); err != nil {
+		t.Fatalf("suite runner rejected matching installed SKU: %v", err)
+	}
+	if !containsAction(store.order, "resume") || !containsAction(store.order, "ready") {
+		t.Fatalf("suite runner did not resume and publish readiness: %v", store.order)
+	}
+}
+
+func containsAction(actions []string, wanted string) bool {
+	for _, action := range actions {
+		if action == wanted {
+			return true
+		}
+	}
+	return false
+}
 
 func TestUpdateRunnerPersistsIdentityBeforeReadyThenRecordsExit(t *testing.T) {
 	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
@@ -109,17 +145,31 @@ func TestUpdateRunnerDoesNotReleaseSuspendedChildWhenDurableWriteFails(t *testin
 	}
 }
 
-func TestUpdateRunnerNeverRelaunchesLegacyPreparedRecord(t *testing.T) {
+func TestUpdateRunnerRechecksPendingBeforeInstallerResume(t *testing.T) {
 	now := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
-	pending := validPending(now) // v1 records may exist from earlier builds.
+	pending := validPending(now)
+	pending.Schema = PendingSchemaV2
 	store := &orderedPendingStore{pending: &pending}
-	runtime := &fakeRunnerRuntime{self: ProcessIdentity{PID: 91, CreatedAtUnixNano: 6001}, order: &store.order}
-	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now)}
+	process := &fakeInstallerProcess{identity: ProcessIdentity{PID: 92, CreatedAtUnixNano: 7002}, thread: ProcessIdentity{PID: 93, CreatedAtUnixNano: 7003}, order: &store.order}
+	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order},
+		Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order},
+		Runtime: &fakeRunnerRuntime{self: ProcessIdentity{PID: 91, CreatedAtUnixNano: 7001}, process: process, order: &store.order},
+		Clock:   fixedRunnerClock(now), AuthorizePending: func(_ context.Context, observed PendingV1) error {
+			if observed.TransactionID != pending.TransactionID || observed.Old.ProductCode != pending.Old.ProductCode {
+				t.Fatalf("runner authorization lost pending identity: %#v", observed)
+			}
+			return errors.New("setting disabled after preparation")
+		}}
 	if err := runner.Run(context.Background(), pending.TransactionID); err == nil {
-		t.Fatal("legacy prepared record was relaunched")
+		t.Fatal("runner resumed installer after failed final authorization")
 	}
-	if len(store.order) != 0 {
-		t.Fatalf("legacy record caused installer work: %v", store.order)
+	for _, action := range store.order {
+		if action == "resume" || action == "ready" || action == "wait" {
+			t.Fatalf("runner performed %s after failed final authorization: %v", action, store.order)
+		}
+	}
+	if got := store.order[len(store.order)-1]; got != "abort" {
+		t.Fatalf("last action = %s, want abort", got)
 	}
 }
 

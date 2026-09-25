@@ -38,15 +38,7 @@ jobs:
     env:
       HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
       HAS_WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN != '' }}
-      ADMIN_RELEASE_ROOT_JSON: ${{ vars.ADMIN_RELEASE_ROOT_JSON }}
-      ADMIN_RELEASE_TARGETS_KEY_ID: ${{ vars.ADMIN_RELEASE_TARGETS_KEY_ID }}
       ADMIN_RELEASE_METADATA_ORIGIN: ${{ vars.ADMIN_RELEASE_METADATA_ORIGIN }}
-      ADMIN_RELEASE_PUBLISHER: ${{ vars.ADMIN_RELEASE_PUBLISHER }}
-      ADMIN_RELEASE_EKUS_JSON: ${{ vars.ADMIN_RELEASE_EKUS_JSON }}
-      ADMIN_RELEASE_POLICY_ID: ${{ vars.ADMIN_RELEASE_POLICY_ID }}
-      # Base64 of a PEM-encoded Ed25519 private key. The source repository
-      # contains neither this value nor a fallback signing key.
-      ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64: ${{ secrets.ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,33 +68,13 @@ jobs:
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing run requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
 
-      - name: Require protected admin metadata signing inputs
+      - name: Require fixed admin metadata origin
         if: (github.event_name == 'push' || inputs.publish || inputs.sign) && steps.version.outputs.track == 'stable'
         shell: pwsh
         run: |
-          $required = @(
-            'ADMIN_RELEASE_ROOT_JSON',
-            'ADMIN_RELEASE_TARGETS_KEY_ID',
-            'ADMIN_RELEASE_METADATA_ORIGIN',
-            'ADMIN_RELEASE_PUBLISHER',
-            'ADMIN_RELEASE_EKUS_JSON',
-            'ADMIN_RELEASE_POLICY_ID',
-            'ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64'
-          )
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "Public/signing run requires protected admin metadata input: $name"
-            }
+          if ($env:ADMIN_RELEASE_METADATA_ORIGIN -cne 'https://github.com/marcfargas/go-mapi/releases/download/') {
+            throw 'Admin artifact origin must be the immutable release namespace'
           }
-          $root = $env:ADMIN_RELEASE_ROOT_JSON | ConvertFrom-Json
-          if ($root.schema -ne 'go-mapi-admin-root-v1' -or $root.version -lt 1 -or $root.allowedOrigin -ne $env:ADMIN_RELEASE_METADATA_ORIGIN) {
-            throw 'ADMIN_RELEASE_ROOT_JSON is not a compatible trusted admin root'
-          }
-          $ekus = $env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json
-          $codeSigningEku = '1.3.6.1.5.5.7.3.3'
-          $subscriberEkus = @($ekus | Where-Object { $_ -ne $codeSigningEku })
-          if ($ekus.Count -lt 2 -or $ekus -notcontains $codeSigningEku -or $subscriberEkus.Count -lt 1 -or @($ekus | Select-Object -Unique).Count -ne $ekus.Count) { throw 'ADMIN_RELEASE_EKUS_JSON must contain code-signing and a distinct subscriber-identity EKU' }
-          if (-not (Get-Command openssl -ErrorAction SilentlyContinue)) { throw 'OpenSSL is required to sign admin release metadata' }
 
       - name: Install dual-bitness interceptor toolchain
         shell: pwsh
@@ -226,19 +198,10 @@ jobs:
         shell: pwsh
         run: |
           $msi = Resolve-Path release/admin/go-mapi-interceptor.msi
-          # Bind metadata to the actual signed leaf certificate, not merely a
-          # configured declaration. Canonical CN and every protected EKU must
-          # agree before targets are published.
           $signature = Get-AuthenticodeSignature -LiteralPath $msi
           $publishing = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
           if ($signature.SignatureType -ne 'Authenticode' -or $null -eq $signature.SignerCertificate -or $null -eq $signature.TimeStamperCertificate) { throw 'Signed MSI has no complete Authenticode and timestamp proof' }
-          if ($publishing -and $signature.Status -ne 'Valid') { throw 'Stable publication requires a trusted leaf signer certificate' }
-          $actualPublisher = $signature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false).Trim().ToLowerInvariant()
-          $expectedPublisher = $env:ADMIN_RELEASE_PUBLISHER.Trim().ToLowerInvariant()
-          if ([string]::IsNullOrWhiteSpace($actualPublisher) -or $actualPublisher -ne $expectedPublisher) { throw 'Signed MSI leaf signer CN does not match protected publisher policy' }
-          $expectedEKUs = @($env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json)
-          $actualEKUs = @($signature.SignerCertificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' } | ForEach-Object { ([Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]$_).EnhancedKeyUsages.Value })
-          foreach ($eku in $expectedEKUs) { if ($actualEKUs -notcontains $eku) { throw "Signed MSI leaf signer lacks required EKU: $eku" } }
+          if ($publishing -and $signature.Status -ne 'Valid') { throw 'Stable publication requires a trusted signer certificate' }
           $version = '${{ steps.version.outputs.version }}'
           $components = Get-Content components.json -Raw | ConvertFrom-Json
           $requires = $components.components.interceptor.requires
@@ -269,47 +232,10 @@ jobs:
               size = [Int64](Get-Item $msi).Length
               sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant()
             }
-            publisher = [ordered]@{
-              publisher = $env:ADMIN_RELEASE_PUBLISHER
-              ekus = @($env:ADMIN_RELEASE_EKUS_JSON | ConvertFrom-Json)
-              policyId = $env:ADMIN_RELEASE_POLICY_ID
-            }
           }
           $utf8 = [Text.UTF8Encoding]::new($false)
-          [IO.File]::WriteAllText('release/admin/admin-targets-signed.json', ($payload | ConvertTo-Json -Compress), $utf8)
-          $keyPath = Join-Path $env:RUNNER_TEMP 'admin-release-targets-ed25519.pem'
-          try {
-            [IO.File]::WriteAllBytes($keyPath, [Convert]::FromBase64String($env:ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64))
-            $root = $env:ADMIN_RELEASE_ROOT_JSON | ConvertFrom-Json
-            $configuredKey = @($root.targets.keys.PSObject.Properties | Where-Object Name -eq $env:ADMIN_RELEASE_TARGETS_KEY_ID | Select-Object -ExpandProperty Value)
-            if ($configuredKey.Count -ne 1) { throw 'ADMIN_RELEASE_TARGETS_KEY_ID is absent from the trusted root targets role' }
-            & openssl pkey -in $keyPath -pubout -outform DER -out release/admin/admin-targets-public.der
-            if ($LASTEXITCODE -ne 0) { throw 'Could not derive metadata signing public key' }
-            $publicDer = [IO.File]::ReadAllBytes('release/admin/admin-targets-public.der')
-            if ($publicDer.Length -lt 32) { throw 'Invalid Ed25519 metadata signing public key' }
-            $publicRaw = $publicDer[($publicDer.Length - 32)..($publicDer.Length - 1)]
-            $publicBase64Url = [Convert]::ToBase64String($publicRaw).TrimEnd('=').Replace('+','-').Replace('/','_')
-            if ($publicBase64Url -ne $configuredKey[0]) { throw 'Metadata signing private key does not match the trusted root target key' }
-            & openssl pkeyutl -sign -rawin -inkey $keyPath -in release/admin/admin-targets-signed.json -out release/admin/admin-targets.sig
-            if ($LASTEXITCODE -ne 0) { throw 'Ed25519 metadata signing failed' }
-          } finally {
-            Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath release/admin/admin-targets-public.der -Force -ErrorAction SilentlyContinue
-          }
-          $signed = [Convert]::ToBase64String([IO.File]::ReadAllBytes('release/admin/admin-targets-signed.json')).TrimEnd('=').Replace('+','-').Replace('/','_')
-          $signature = [Convert]::ToBase64String([IO.File]::ReadAllBytes('release/admin/admin-targets.sig')).TrimEnd('=').Replace('+','-').Replace('/','_')
-          $envelope = [ordered]@{
-            schema = 'go-mapi-admin-envelope-v1'
-            signed = $signed
-            signatures = @([ordered]@{ keyId = $env:ADMIN_RELEASE_TARGETS_KEY_ID; signature = $signature })
-          }
-          [IO.File]::WriteAllText('release/admin/admin-targets.json', ($envelope | ConvertTo-Json -Compress), $utf8)
-          # Retain the prior artifact name as a byte-identical alias during the
-          # independent-channel transition; consumers must treat it as the
-          # same signed envelope, never as an unsigned release descriptor.
-          [IO.File]::WriteAllText('release/admin/admin-release.json', ($envelope | ConvertTo-Json -Compress), $utf8)
-          [IO.File]::WriteAllText('release/admin/admin-release-root.json', $env:ADMIN_RELEASE_ROOT_JSON, $utf8)
-          Remove-Item -LiteralPath release/admin/admin-targets-signed.json,release/admin/admin-targets.sig -Force
+          [IO.File]::WriteAllText('release/admin/admin-targets.json', ($payload | ConvertTo-Json -Compress -Depth 8), $utf8)
+          [IO.File]::WriteAllText('release/admin/admin-release.json', ($payload | ConvertTo-Json -Compress -Depth 8), $utf8)
 
       - name: Generate development release manifest
         if: steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.publish || inputs.sign)
@@ -354,7 +280,6 @@ jobs:
             release/admin/go-mapi-interceptor.msi
             release/admin/admin-release.json
             release/admin/admin-targets.json
-            release/admin/admin-release-root.json
             release/winget/
 
       - name: Publish GitHub admin release
@@ -373,7 +298,6 @@ jobs:
             release/admin/go-mapi-interceptor.msi
             release/admin/admin-release.json
             release/admin/admin-targets.json
-            release/admin/admin-release-root.json
             release/winget/*.yaml
 
       - name: Submit winget update
@@ -394,9 +318,7 @@ jobs:
       # never embeds or rebuilds the Wails artifact.
 
   validate-machine-package:
-    # This is deliberately non-publishing until the service embeds the
-    # go-mapi-machine-root-v1 trust root and the signed targets endpoint exists.
-    # The existing admin-v* repair channel remains available in the meantime.
+    # This validation job builds machine packages but does not publish them.
     if: github.event_name == 'workflow_dispatch' && inputs.sku != 'admin'
     environment: artifact-signing
     runs-on: windows-latest
@@ -404,11 +326,8 @@ jobs:
       HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
       GOMAPI_OAUTH_CLIENT_ID: ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
-      GOMAPI_ADMIN_RELEASE_ROOT_B64: ${{ secrets.ADMIN_RELEASE_ROOT_B64 }}
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
-      ADMIN_RELEASE_PUBLISHER: ${{ vars.ADMIN_RELEASE_PUBLISHER }}
-      ADMIN_RELEASE_EKUS_JSON: ${{ vars.ADMIN_RELEASE_EKUS_JSON }}
-      ADMIN_RELEASE_POLICY_ID: ${{ vars.ADMIN_RELEASE_POLICY_ID }}
+      MACHINE_RELEASE_TARGET_SPEC_JSON: ${{ vars.MACHINE_RELEASE_TARGET_SPEC_JSON }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -422,7 +341,7 @@ jobs:
         id: machine
         shell: pwsh
         run: |
-          if ('${{ inputs.publish }}' -eq 'true') { throw 'Machine publication is disabled until signed service root/targets integration is complete' }
+          if ('${{ inputs.publish }}' -eq 'true') { throw 'Machine publication remains gated on native system update proof' }
           $sku = '${{ inputs.sku }}'
           $release = '${{ inputs.version }}'
           $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
@@ -449,6 +368,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Machine signing requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden' }
+          if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
 
       - name: Install dual-bitness interceptor toolchain
         shell: pwsh
@@ -469,7 +389,9 @@ jobs:
           .\src\interceptor\verify-release.ps1
           if ($LASTEXITCODE -ne 0) { throw 'interceptor release verification failed' }
           New-Item -ItemType Directory -Force release/machine-input | Out-Null
-          ./src/service/build.ps1 -OutputPath release/machine-input/go-mapi-service.exe -RequirePublisherPolicy
+          if ('${{ inputs.sign }}' -eq 'true') { $env:MACHINE_RELEASE_METADATA_ORIGIN = 'https://go-mapi.app' }
+          $requireMachineTrust = '${{ inputs.sign }}' -eq 'true'
+          ./src/service/build.ps1 -OutputPath release/machine-input/go-mapi-service.exe -RequireMachineReleaseTrust:$requireMachineTrust
           Copy-Item release/interceptor/go-mapi-x86.dll release/machine-input/go-mapi-x86.dll
           Copy-Item release/interceptor/go-mapi-x64.dll release/machine-input/go-mapi-x64.dll
 
@@ -477,7 +399,7 @@ jobs:
         if: inputs.sku == 'suite'
         shell: pwsh
         run: |
-          foreach ($name in @('GOMAPI_OAUTH_CLIENT_ID','GOMAPI_OAUTH_CLIENT_SECRET','GOMAPI_ADMIN_RELEASE_ROOT_B64','GOMAPI_ADMIN_RELEASE_METADATA_URL')) {
+          foreach ($name in @('GOMAPI_OAUTH_CLIENT_ID','GOMAPI_OAUTH_CLIENT_SECRET','GOMAPI_ADMIN_RELEASE_METADATA_URL')) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Suite validation needs protected input $name" }
           }
           npm ci
@@ -489,7 +411,10 @@ jobs:
           $env:PATH += ';' + (go env GOPATH) + '\bin'
           .\scripts\build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
           if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
+          .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'machine app provenance verification failed' }
           Copy-Item src/app/build/bin/go-mapi-machine.exe release/machine-input/go-mapi-machine.exe
+          Copy-Item src/app/build/bin/app-artifacts.json release/machine-input/app-artifacts.json
 
       - name: Capture unsigned PE hashes from this checkout
         shell: pwsh
@@ -555,12 +480,20 @@ jobs:
               $path = Join-Path release/machine-input $artifact.filename
               if ('${{ inputs.sign }}' -eq 'true') {
                 $signature = Get-AuthenticodeSignature -LiteralPath $path
-                if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Incomplete Azure signing proof: $path" }
+                if ($signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Incomplete or untrusted Azure signing proof: $path" }
               }
               $artifact.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
             }
           }
           $inputManifest = [ordered]@{ schema='go-mapi-machine-signed-input-v1'; sku=$sku; packageRelease='${{ steps.machine.outputs.release }}'; commit='${{ github.sha }}'; components=$parts }
+          if ($sku -eq 'suite') {
+            $unsigned = Get-Content release/machine-input/unsigned-hashes.json -Raw | ConvertFrom-Json -AsHashtable
+            $inputManifest.appBuild = [ordered]@{
+              manifest='app-artifacts.json'
+              sha256=(Get-FileHash -LiteralPath release/machine-input/app-artifacts.json -Algorithm SHA256).Hash.ToLowerInvariant()
+              unsignedSha256=$unsigned['go-mapi-machine.exe']
+            }
+          }
           [IO.File]::WriteAllText('release/machine-input/signed-input.json', ($inputManifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
           .\src\installer\msi\build.ps1 -SKU $sku -SignedInputManifest release/machine-input/signed-input.json -RequireSignedInputs:$('true' -eq '${{ inputs.sign }}')
           if ($LASTEXITCODE -ne 0) { throw 'machine MSI build failed' }
@@ -592,8 +525,9 @@ jobs:
           $path = Join-Path release/machine '${{ steps.machine.outputs.asset }}'
           if ('${{ inputs.sign }}' -eq 'true') {
             $signature = Get-AuthenticodeSignature -LiteralPath $path
-            if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Incomplete Azure MSI signing proof' }
+            if ($signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Incomplete or untrusted Azure MSI signing proof' }
             .\src\installer\msi\verify.ps1 -MsiPath $path -SKU $sku -PackageRelease $release -RequireSignature
+            if ($LASTEXITCODE -ne 0) { throw 'Signed machine MSI table verification failed' }
           }
           $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Machine package identity failed' }
@@ -617,6 +551,37 @@ jobs:
             msi=[ordered]@{ size=(Get-Item $path).Length; sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant(); signed=('${{ inputs.sign }}' -eq 'true') }
             toolchain=[ordered]@{ go='1.25'; dotnet='8.0.x'; azureSigningAction='c7ab2a863ab5f9a846ddb8265964877ef296ee82' }
           }
+          if ('${{ inputs.sign }}' -eq 'true') {
+            $provenance.azure = [ordered]@{
+              tenantId='${{ vars.AZURE_TENANT_ID }}'; clientId='${{ vars.AZURE_CLIENT_ID }}'
+              subscriptionId='${{ vars.AZURE_SUBSCRIPTION_ID }}'; endpoint='${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}'
+              account='${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}'; certificateProfile='${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}'
+              leafSubject=$signature.SignerCertificate.Subject; leafThumbprint=$signature.SignerCertificate.Thumbprint
+              signatureStatus=$signature.Status.ToString(); timestampThumbprint=$signature.TimeStamperCertificate.Thumbprint
+            }
+          }
+          if ('${{ inputs.sign }}' -eq 'true') {
+            $spec = $env:MACHINE_RELEASE_TARGET_SPEC_JSON | ConvertFrom-Json
+            if ($spec.sku -cne $sku -or $spec.packageRelease -cne $release) { throw 'Machine target spec SKU/release mismatch' }
+            $expectedContained = @($manifest.components | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
+            $specifiedContained = @($spec.contained | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
+            if (($expectedContained -join ',') -cne ($specifiedContained -join ',')) { throw 'Target contained versions differ from signed MSI inputs' }
+            $specPath = Join-Path $env:RUNNER_TEMP 'machine-target-spec.json'
+            $targetName = "$sku-targets.json"
+            $targetPath = Join-Path release/machine $targetName
+            try {
+              [IO.File]::WriteAllText($specPath, $env:MACHINE_RELEASE_TARGET_SPEC_JSON, [Text.UTF8Encoding]::new($false))
+              go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath
+              if ($LASTEXITCODE -ne 0) { throw 'Final signed machine MSI target generation failed' }
+              $target = Get-Content $targetPath -Raw | ConvertFrom-Json
+              if ($target.sku -cne $sku -or $target.artifact.sha256 -cne $provenance.msi.sha256 -or
+                  $target.artifact.size -ne $provenance.msi.size -or
+                  $target.artifact.url -cne "https://github.com/marcfargas/go-mapi/releases/download/$($identity.tag)/$($identity.assetName)") {
+                throw 'Plain target does not bind exact final machine MSI'
+              }
+              $provenance.targets = [ordered]@{ file=$targetName; sha256=(Get-FileHash $targetPath -Algorithm SHA256).Hash.ToLowerInvariant(); sequence=$target.sequence; artifactUrl=$target.artifact.url }
+            } finally { Remove-Item -LiteralPath $specPath -Force -ErrorAction SilentlyContinue }
+          }
           $validation = Join-Path release/machine "$sku-$release.validation.json"
           [IO.File]::WriteAllText($validation, ($provenance | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 
@@ -627,4 +592,5 @@ jobs:
           path: |
             release/machine/${{ steps.machine.outputs.asset }}
             release/machine/*.validation.json
+            release/machine/*-targets.json
             release/machine-input/signed-input.json

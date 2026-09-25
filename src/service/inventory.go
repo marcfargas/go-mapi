@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	SystemUpgradeCode = "B3C97B33-3F10-47CA-9FA7-24EE3B75E325"
-	SuiteUpgradeCode  = "2E050A24-94A2-4FC9-B176-C5CCC1225FE6"
+	SystemUpgradeCode = mapi.SystemUpgradeCode
+	SuiteUpgradeCode  = mapi.SuiteUpgradeCode
 )
 
 var (

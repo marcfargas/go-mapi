@@ -449,7 +449,7 @@ func (store *FileStateStore) Load(_ context.Context) (*PendingV1, error) {
 		return nil, err
 	}
 	defer unlock()
-	data, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
+	data, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
@@ -470,7 +470,7 @@ func (store *FileStateStore) Save(ctx context.Context, pending PendingV1) error 
 	if err != nil {
 		return err
 	}
-	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v1.json"}, bytes.NewReader(data), maxStateBytes, int64(len(data)), "")
+	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v2.json"}, bytes.NewReader(data), maxStateBytes, int64(len(data)), "")
 	return err
 }
 
@@ -494,7 +494,7 @@ func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *Pendi
 			return err
 		}
 	}
-	current, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
+	current, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
 	if expected == nil {
 		if err == nil {
 			return ErrStateConflict
@@ -511,7 +511,7 @@ func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *Pendi
 			return ErrStateConflict
 		}
 	}
-	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v1.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), "")
+	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v2.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), "")
 	return err
 }
 
@@ -523,7 +523,7 @@ func (store *FileStateStore) BeginFinalUninstall(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	if _, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes); err == nil {
+	if _, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes); err == nil {
 		return errors.New("active machine update blocks final uninstall")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -559,14 +559,14 @@ func (store *FileStateStore) CompareAndClear(_ context.Context, expected Pending
 		return err
 	}
 	defer unlock()
-	current, err := store.storage.Read([]string{"pending-v1.json"}, maxStateBytes)
+	current, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
 	if err != nil {
 		return err
 	}
 	if !bytes.Equal(current, prior) {
 		return ErrStateConflict
 	}
-	return store.storage.Remove("pending-v1.json")
+	return store.storage.Remove("pending-v2.json")
 }
 
 type FileReplayStore struct {
@@ -712,65 +712,15 @@ func (store *FileLastResultStore) Save(ctx context.Context, result LastResultV1)
 	return err
 }
 
-type FileStatusStore struct {
-	storage *ProtectedStorage
-}
-
-func NewFileStatusStore(storage *ProtectedStorage) (*FileStatusStore, error) {
-	if storage == nil || storage.access != privateStorage {
-		return nil, errors.New("internal status store requires private protected storage")
-	}
-	return &FileStatusStore{storage: storage}, nil
-}
-
-func (store *FileStatusStore) Load(_ context.Context) (ServiceStatus, error) {
-	data, err := store.storage.Read([]string{"status-v1.json"}, maxStatusBytes)
-	if errors.Is(err, os.ErrNotExist) {
-		return ServiceStatus{}, nil
-	}
-	if err != nil {
-		return ServiceStatus{}, err
-	}
-	var status ServiceStatus
-	if err := decodeStrict(data, &status); err != nil {
-		return ServiceStatus{}, err
-	}
-	if !validStatusCode(status.LastCode) {
-		return ServiceStatus{}, errors.New("invalid internal status code")
-	}
-	return status, nil
-}
-
-func (store *FileStatusStore) Save(ctx context.Context, status ServiceStatus) error {
-	if !validStatusCode(status.LastCode) {
-		return errors.New("invalid internal status code")
-	}
-	data, err := json.Marshal(status)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	_, err = store.storage.WriteAtomic(ctx, []string{"status-v1.json"}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
-	return err
-}
-
-func validStatusCode(code string) bool {
-	return code == "" || code == StatusOffline || code == StatusReady
-}
-
-const PublicStatusSchemaV1 = "go-mapi-public-status-v1"
-
-// PublicStatusV1 is intentionally too small to carry URLs, paths, errors,
-// account names, proxy details, transaction IDs, or installer arguments.
-type PublicStatusV1 struct {
-	Schema             string     `json:"schema"`
+// residentStatus is an in-memory health observation used to publish the
+// single app-readable public status schema.
+type residentStatus struct {
 	SKU                update.SKU `json:"sku"`
 	PackageVersion     string     `json:"packageVersion,omitempty"`
 	ServiceVersion     string     `json:"serviceVersion,omitempty"`
 	InterceptorVersion string     `json:"interceptorVersion,omitempty"`
 	AppVersion         string     `json:"appVersion,omitempty"`
 	Health             string     `json:"health,omitempty"`
-	Signature          string     `json:"signature,omitempty"`
 	Updates            string     `json:"updates"`
 	Code               EventCode  `json:"code"`
 	LastResult         Result     `json:"lastResult,omitempty"`
@@ -789,9 +739,10 @@ func NewPublicStatusStore(storage *ProtectedStorage) (*PublicStatusStore, error)
 	return &PublicStatusStore{storage: storage}, nil
 }
 
-func (store *PublicStatusStore) Save(ctx context.Context, status PublicStatusV1) error {
-	if !validPublicStatus(status) {
-		return errors.New("invalid public status")
+// Save publishes the bounded app-readable machine status.
+func (store *PublicStatusStore) Save(ctx context.Context, status mapi.PublicStatusV2) error {
+	if err := mapi.ValidatePublicStatusV2(status); err != nil {
+		return err
 	}
 	data, err := json.Marshal(status)
 	if err != nil {
@@ -801,48 +752,8 @@ func (store *PublicStatusStore) Save(ctx context.Context, status PublicStatusV1)
 	if int64(len(data)) > maxStatusBytes {
 		return errors.New("public status exceeds bound")
 	}
-	_, err = store.storage.WriteAtomic(ctx, []string{"status-v1.json"}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
+	_, err = store.storage.WriteAtomic(ctx, []string{"status-v2.json"}, bytes.NewReader(data), maxStatusBytes, int64(len(data)), "")
 	return err
-}
-
-func (store *PublicStatusStore) Load(context.Context) (PublicStatusV1, error) {
-	data, err := store.storage.Read([]string{"status-v1.json"}, maxStatusBytes)
-	if err != nil {
-		return PublicStatusV1{}, err
-	}
-	var status PublicStatusV1
-	if err := decodeStrict(data, &status); err != nil {
-		return PublicStatusV1{}, err
-	}
-	if !validPublicStatus(status) {
-		return PublicStatusV1{}, errors.New("invalid public status")
-	}
-	return status, nil
-}
-
-func validPublicStatus(status PublicStatusV1) bool {
-	return status.Schema == PublicStatusSchemaV1 && !status.UpdatedAt.IsZero() &&
-		validPublicEvent(status.Code) && (status.SKU == "" || status.SKU == update.System || status.SKU == update.Suite) &&
-		validPublicVersion(status.PackageVersion) && validPublicVersion(status.ServiceVersion) &&
-		validPublicVersion(status.InterceptorVersion) && validPublicVersion(status.AppVersion) &&
-		(status.Health == "" || status.Health == "healthy" || status.Health == "repair-required") &&
-		(status.Signature == "" || status.Signature == "verified" || status.Signature == "unavailable" || status.Signature == "invalid") &&
-		(status.Updates == "enabled" || status.Updates == "disabled" || status.Updates == "unknown") &&
-		((status.LastResult == "" && status.LastResultAt.IsZero()) ||
-			((status.LastResult == ResultInstalled || status.LastResult == ResultRolledBack || status.LastResult == ResultBusyExhausted) && !status.LastResultAt.IsZero()))
-}
-
-func validPublicVersion(version string) bool {
-	return version == "" || (len(version) <= 64 && mapi.IsStrictReleaseVersion(version))
-}
-
-func validPublicEvent(code EventCode) bool {
-	switch code {
-	case EventOffline, EventPrepared, EventHandedOff, EventStillRunning, EventCommitted, EventRolledBack, EventRebootPending, EventRepairNeeded, EventUnverified, EventPending:
-		return true
-	default:
-		return false
-	}
 }
 
 func decodeStrict(data []byte, destination any) error {
@@ -873,14 +784,12 @@ func StagingComponents(release update.Release) ([]string, error) {
 	return []string{string(sku), fmt.Sprintf("%d", release.Sequence()), identity.AssetName}, nil
 }
 
-type ArtifactDownload func(context.Context, update.Release, io.Writer) error
-
 // ProtectedArtifactStore is the coordinator's only artifact sink. The handle
 // is an opaque rooted relative identity; it never accepts a destination from
 // metadata or another caller.
 type ProtectedArtifactStore struct {
-	storage  *ProtectedStorage
-	download ArtifactDownload
+	storage      *ProtectedStorage
+	stateStorage *ProtectedStorage
 }
 
 type ProtectedArtifactResolver struct {
@@ -926,22 +835,69 @@ func (SHA256FileVerifier) VerifySHA256(ctx context.Context, path, expected strin
 	return nil
 }
 
-func NewProtectedArtifactStore(storage *ProtectedStorage, download ArtifactDownload) (*ProtectedArtifactStore, error) {
-	if storage == nil || storage.access != privateStorage || download == nil {
-		return nil, errors.New("artifact store requires private storage and a downloader")
+func NewProtectedArtifactStore(storage *ProtectedStorage, stateStorage ...*ProtectedStorage) (*ProtectedArtifactStore, error) {
+	if storage == nil || storage.access != privateStorage {
+		return nil, errors.New("artifact store requires private storage")
 	}
-	return &ProtectedArtifactStore{storage: storage, download: download}, nil
+	store := &ProtectedArtifactStore{storage: storage}
+	if len(stateStorage) > 1 || len(stateStorage) == 1 && (stateStorage[0] == nil || stateStorage[0].access != privateStorage) {
+		return nil, errors.New("artifact discard guard requires private state storage")
+	}
+	if len(stateStorage) == 1 {
+		store.stateStorage = stateStorage[0]
+	}
+	return store, nil
 }
 
-func (store *ProtectedArtifactStore) Stage(ctx context.Context, release update.Release) (StagedArtifact, error) {
+// Discard removes a staged candidate only while the shared state lock proves
+// that no durable pending transaction references it. An unreadable pending
+// record fails closed. A concurrent winner that has not yet committed may
+// need to restage, but cannot install missing or unverified bytes.
+func (store *ProtectedArtifactStore) Discard(ctx context.Context, artifact StagedArtifact) error {
+	if store == nil || store.stateStorage == nil {
+		return errors.New("artifact discard guard is unavailable")
+	}
+	components := strings.Split(artifact.Handle, "/")
+	if len(components) != 3 || components[0] != string(update.System) && components[0] != string(update.Suite) || !validSHA256(artifact.SHA256) {
+		return errors.New("invalid staged artifact handle")
+	}
+	if _, err := store.storage.child(components...); err != nil {
+		return err
+	}
+	unlock, err := lockStateStoreBounded(ctx, store.stateStorage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	data, err := store.stateStorage.Read([]string{"pending-v2.json"}, maxStateBytes)
+	if err == nil {
+		pending, decodeErr := UnmarshalPending(data)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if string(pending.SKU) == components[0] && fmt.Sprintf("%d", pending.Replay.Sequence) == components[1] && pending.ArtifactSHA256 == artifact.SHA256 {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return store.storage.Remove(components...)
+}
+
+// StageWith lets the shared engine own the only artifact network operation.
+// This store only chooses and atomically writes the protected destination.
+func (store *ProtectedArtifactStore) StageWith(ctx context.Context, release update.Release, write func(io.Writer) error) (StagedArtifact, error) {
+	if store == nil || write == nil {
+		return StagedArtifact{}, errors.New("artifact staging writer is unavailable")
+	}
 	components, err := StagingComponents(release)
 	if err != nil {
 		return StagedArtifact{}, err
 	}
 	payload := release.Payload()
 	digest, err := store.storage.writeAtomic(ctx, components, payload.Artifact.Size, payload.Artifact.Size, payload.Artifact.SHA256, func(destination io.Writer) error {
-		if err := store.download(ctx, release, destination); err != nil {
-			return fmt.Errorf("download authenticated artifact: %w", err)
+		if err := write(destination); err != nil {
+			return fmt.Errorf("write prepared artifact: %w", err)
 		}
 		return nil
 	})

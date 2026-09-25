@@ -81,6 +81,9 @@ type UpdateRunner struct {
 	Runtime        RunnerRuntime
 	Clock          Clock
 	Authorize      func(context.Context) error
+	// AuthorizePending rechecks the exact installed product and machine setting
+	// after the installer child is created suspended, before its thread resumes.
+	AuthorizePending func(context.Context, PendingV1) error
 }
 
 // Run executes one already-authorized transaction. Cancellation is honored
@@ -156,7 +159,12 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	previous = *pending
 	pending.Phase = PhaseResumeAuthorized
 	pending.UpdatedAt = runner.Clock.Now()
-	if runner.Authorize != nil {
+	if runner.AuthorizePending != nil {
+		if err := runner.AuthorizePending(context.WithoutCancel(ctx), *pending); err != nil {
+			_ = installer.Abort()
+			return fmt.Errorf("authorize installer resume: %w", err)
+		}
+	} else if runner.Authorize != nil {
 		if err := runner.Authorize(context.WithoutCancel(ctx)); err != nil {
 			_ = installer.Abort()
 			return fmt.Errorf("authorize installer resume: %w", err)

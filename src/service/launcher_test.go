@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,10 +26,9 @@ func TestDetachedRunnerLauncherCopiesReverifiesAndAwaitsDurableReady(t *testing.
 	}
 	runnerID := ProcessIdentity{PID: 80, CreatedAtUnixNano: 8000}
 	installerID := ProcessIdentity{PID: 81, CreatedAtUnixNano: 8001}
-	auth := &recordingAuthenticode{}
 	spawner := &recordingSpawner{identity: runnerID}
 	awaiter := fixedReadyAwaiter{ready: RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: "tx-80", Attempt: 1, Runner: runnerID, Installer: installerID, ReadyAt: time.Now().UTC()}}
-	launcher, err := NewDetachedRunnerLauncher(storage, &memoryReadyStore{order: &[]string{}}, auth, spawner, awaiter, source)
+	launcher, err := NewDetachedRunnerLauncher(storage, &memoryReadyStore{order: &[]string{}}, spawner, awaiter, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,31 +43,18 @@ func TestDetachedRunnerLauncherCopiesReverifiesAndAwaitsDurableReady(t *testing.
 	if spawner.path != staged || spawner.transaction != "tx-80" {
 		t.Fatalf("spawn = %q %q", spawner.path, spawner.transaction)
 	}
-	if !reflect.DeepEqual(auth.paths, []string{source, staged}) {
-		t.Fatalf("Authenticode paths = %v", auth.paths)
-	}
 }
 
 func TestDetachedRunnerLauncherRejectsArbitraryArtifactHandle(t *testing.T) {
 	storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
 	source := filepath.Join(storage.root, "service.exe")
 	_ = os.WriteFile(source, []byte("x"), 0700)
-	launcher, _ := NewDetachedRunnerLauncher(storage, &memoryReadyStore{order: &[]string{}}, &recordingAuthenticode{}, &recordingSpawner{}, fixedReadyAwaiter{}, source)
+	launcher, _ := NewDetachedRunnerLauncher(storage, &memoryReadyStore{order: &[]string{}}, &recordingSpawner{}, fixedReadyAwaiter{}, source)
 	for _, handle := range []string{"/absolute.msi", "../outside.msi", "system/42/../../outside.msi", "system/42/file:stream"} {
 		if _, err := launcher.Launch(context.Background(), HandoffRequest{TransactionID: "tx-1", Attempt: 1, Artifact: StagedArtifact{Handle: handle, SHA256: strings.Repeat("a", 64)}}); err == nil {
 			t.Fatalf("accepted handle %q", handle)
 		}
 	}
-}
-
-type recordingAuthenticode struct {
-	paths []string
-	err   error
-}
-
-func (verifier *recordingAuthenticode) VerifyAuthenticode(_ context.Context, path string) error {
-	verifier.paths = append(verifier.paths, path)
-	return verifier.err
 }
 
 type recordingSpawner struct {

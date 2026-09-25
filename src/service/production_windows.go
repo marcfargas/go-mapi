@@ -4,15 +4,19 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"debug/pe"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"sync"
 	"time"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -58,10 +62,88 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		return nil, err
 	}
 	inventory := NewWindowsInstallerInventory()
-	return residentHealthSchedule(func(ctx context.Context) (checkErr error) {
-		status := PublicStatusV1{Schema: PublicStatusSchemaV1, Updates: "unknown", Code: EventRepairNeeded, Health: "repair-required", UpdatedAt: time.Now().UTC()}
+	discoveryStore, err := NewFileDiscoveryStore(stateStorage)
+	if err != nil {
+		return nil, err
+	}
+	var statusMu sync.Mutex
+	currentStatus := residentStatus{Updates: "unknown", Code: EventRepairNeeded, Health: "repair-required", UpdatedAt: time.Now().UTC()}
+	var discoveryState DiscoveryState
+	var healthObservedAt time.Time
+	engines := make(map[update.SKU]*update.Engine, 2)
+	coordinators := make(map[update.SKU]*Coordinator, 2)
+	origin, originErr := EmbeddedMachineMetadataOrigin()
+	if originErr != nil && !errors.Is(originErr, ErrMachineTrustUnavailable) {
+		return nil, originErr
+	}
+	if originErr == nil {
+		checkInterval, err := machineCheckInterval()
+		if err != nil {
+			return nil, err
+		}
+		client, err := NewMachineHTTPClient()
+		if err != nil {
+			return nil, err
+		}
+		for _, sku := range []update.SKU{update.System, update.Suite} {
+			engine, err := update.NewEngine(update.Config{SKU: sku, MetadataOrigin: origin, ArtifactOrigin: update.MachineArtifactOrigin, Client: client, Now: time.Now, SuccessInterval: checkInterval})
+			if err != nil {
+				return nil, err
+			}
+			coordinator, err := newProductionMachineCoordinator(sku, stateStorage, updateStorage, pendingStore, replayStore, lastResultStore, inventory)
+			if err != nil {
+				return nil, err
+			}
+			engines[sku], coordinators[sku] = engine, coordinator
+		}
+	}
+	publish := func(ctx context.Context) error {
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		currentStatus.UpdatedAt = time.Now().UTC()
+		checkerResult := "unavailable"
+		if currentStatus.Updates == "disabled" {
+			checkerResult = "disabled"
+		} else if len(engines) != 0 && discoveryState.SKU == currentStatus.SKU {
+			checkerResult = discoveryState.Result
+			if (checkerResult == "available" || checkerResult == "no-update") && !discoveryState.Effective(currentStatus.UpdatedAt, currentStatus.PackageVersion) {
+				checkerResult = "unavailable"
+			}
+		}
+		statusV2 := mapi.PublicStatusV2{
+			Schema: mapi.PublicStatusSchemaV2, SKU: string(currentStatus.SKU), PackageVersion: currentStatus.PackageVersion,
+			ServiceVersion: currentStatus.ServiceVersion, InterceptorVersion: currentStatus.InterceptorVersion, AppVersion: currentStatus.AppVersion,
+			Health: currentStatus.Health, Updates: currentStatus.Updates, Code: string(currentStatus.Code),
+			LastResult: string(currentStatus.LastResult), LastResultAt: currentStatus.LastResultAt,
+			Capability: "unavailable", Checker: checkerResult, UpdatedAt: currentStatus.UpdatedAt, HealthObservedAt: healthObservedAt,
+		}
+		if len(engines) != 0 {
+			statusV2.Capability = "discovery"
+			if coordinators[currentStatus.SKU] != nil {
+				statusV2.Capability = "automatic"
+			}
+		}
+		if discoveryState.SKU == currentStatus.SKU {
+			statusV2.LastAttemptAt, statusV2.LastSuccessAt, statusV2.NextAttemptAt = discoveryState.LastAttemptAt, discoveryState.LastSuccessAt, discoveryState.NextAttemptAt
+			if checkerResult == "available" || checkerResult == "no-update" {
+				statusV2.CandidateExpiresAt = discoveryState.CandidateExpiresAt
+			}
+			if checkerResult == "available" {
+				statusV2.CandidateVersion = discoveryState.CandidateVersion
+			}
+		}
+		return statusStore.Save(context.WithoutCancel(ctx), statusV2)
+	}
+	healthCheck := func(ctx context.Context) (checkErr error) {
+		status := residentStatus{Updates: "unknown", Code: EventRepairNeeded, Health: "repair-required", UpdatedAt: time.Now().UTC()}
 		defer func() {
-			if err := statusStore.Save(context.WithoutCancel(ctx), status); err != nil {
+			statusMu.Lock()
+			currentStatus = status
+			if status.Health == "healthy" {
+				healthObservedAt = time.Now().UTC()
+			}
+			statusMu.Unlock()
+			if err := publish(ctx); err != nil {
 				checkErr = errors.Join(checkErr, fmt.Errorf("publish resident status: %w", err))
 			}
 		}()
@@ -94,12 +176,6 @@ func NewProductionResidentSchedule() (Schedule, error) {
 				func(ctx context.Context, transaction PendingV1) (Outcome, error) {
 					return reconcileProductionPending(ctx, inventory, pendingStore, replayStore, lastResultStore, stateStorage, updateStorage, transaction)
 				})
-			if errors.Is(err, ErrVerificationUnavailable) {
-				status.Code = EventUnverified
-				status.Health = ""
-				status.Signature = "unavailable"
-				return nil
-			}
 			if err != nil {
 				return fmt.Errorf("reconcile resident transaction: %w", err)
 			}
@@ -137,21 +213,301 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		status.InterceptorVersion = marker.InterceptorVersion
 		status.AppVersion = marker.AppVersion
 		status.Health = "healthy"
-		if err := verifyProductionSignatures(ctx, snapshot); err != nil {
-			if errors.Is(err, ErrVerificationUnavailable) {
-				status.Code = EventUnverified
-				status.Signature = "unavailable"
-				return nil
-			}
-			status.Signature = "invalid"
-			return err
-		}
-		status.Signature = "verified"
 		if status.Code != EventCommitted && status.Code != EventRolledBack {
 			status.Code = EventPending
 		}
 		return nil
-	}), nil
+	}
+	heartbeat := func(ctx context.Context) error {
+		// A repair, independent MSI upgrade or pending recovery can change the
+		// installed identity between six-hour full probes. Reverify it before
+		// carrying a fresh publication timestamp forward.
+		registration, observeErr := inventory.Installed(ctx)
+		var marker machineProductMarker
+		var snapshot ProductSnapshot
+		if observeErr == nil {
+			marker, observeErr = readMachineProductMarker()
+		}
+		if observeErr == nil {
+			snapshot, observeErr = installedProductSnapshot(registration, marker)
+		}
+		pending, pendingErr := pendingStore.Load(ctx)
+		statusMu.Lock()
+		changed := observeErr != nil || pendingErr != nil || pending != nil || currentStatus.SKU != snapshot.SKU ||
+			currentStatus.PackageVersion != snapshot.PackageVersion || currentStatus.ServiceVersion != marker.ServiceVersion ||
+			currentStatus.InterceptorVersion != marker.InterceptorVersion || currentStatus.AppVersion != marker.AppVersion
+		statusMu.Unlock()
+		if changed {
+			return healthCheck(ctx)
+		}
+		statusMu.Lock()
+		if enabled, err := readMachineAutoUpdate(); err == nil {
+			if enabled {
+				currentStatus.Updates = "enabled"
+			} else {
+				currentStatus.Updates = "disabled"
+			}
+		} else {
+			currentStatus.Updates = "unknown"
+		}
+		statusMu.Unlock()
+		return publish(ctx)
+	}
+	var attemptMu sync.Mutex
+	var checkedCandidate update.Candidate
+	var checkedSKU update.SKU
+	var discoveryCheck func(context.Context) (bool, error)
+	if len(engines) != 0 {
+		discoveryCheck = func(ctx context.Context) (bool, error) {
+			attemptMu.Lock()
+			defer attemptMu.Unlock()
+			checkedCandidate = update.Candidate{}
+			enabled, err := readMachineAutoUpdate()
+			if err != nil {
+				return false, err
+			}
+			registration, err := inventory.Installed(ctx)
+			if err != nil {
+				return false, err
+			}
+			marker, err := readMachineProductMarker()
+			if err != nil {
+				return false, err
+			}
+			installed, err := installedProductSnapshot(registration, marker)
+			if err != nil {
+				return false, err
+			}
+			engine := engines[installed.SKU]
+			if engine == nil {
+				return false, ErrUnauthorizedCandidate
+			}
+			state, err := discoveryStore.Load(ctx, installed.SKU)
+			if err != nil {
+				return false, err
+			}
+			committed, err := replayStore.Load(ctx, installed.SKU)
+			if err != nil {
+				return false, err
+			}
+			result, checkErr := engine.Check(ctx, update.CheckRequest{
+				Enabled:          enabled,
+				State:            update.CheckState{LastAttemptAt: state.LastAttemptAt, LastSuccessAt: state.LastSuccessAt, NextAttemptAt: state.NextAttemptAt, Failures: state.Failures},
+				InstalledVersion: installed.PackageVersion, Installed: installed.Contained,
+				Accepted: state.Accepted, Committed: committed,
+				OnAttempt: func(attempt update.CheckState) error {
+					state.InstalledVersion = installed.PackageVersion
+					state.LastAttemptAt, state.NextAttemptAt = attempt.LastAttemptAt, attempt.NextAttemptAt
+					state.Result, state.CandidateVersion, state.CandidateExpiresAt = "checking", "", time.Time{}
+					return discoveryStore.Save(context.WithoutCancel(ctx), state)
+				},
+			})
+			if result.Checked {
+				state.InstalledVersion = installed.PackageVersion
+				state.LastAttemptAt, state.LastSuccessAt, state.NextAttemptAt, state.Failures = result.State.LastAttemptAt, result.State.LastSuccessAt, result.State.NextAttemptAt, result.State.Failures
+				state.CandidateVersion = ""
+				state.CandidateExpiresAt = time.Time{}
+				if checkErr != nil {
+					state.Result = "rejected"
+				} else {
+					state.Accepted, state.CandidateExpiresAt = result.Accepted, result.ExpiresAt
+					state.Result = "no-update"
+					if result.Available {
+						state.Result = "available"
+						state.CandidateVersion = result.Candidate.Payload().Version
+					}
+				}
+				if saveErr := discoveryStore.Save(context.WithoutCancel(ctx), state); saveErr != nil {
+					return false, errors.Join(checkErr, saveErr)
+				}
+				statusMu.Lock()
+				discoveryState = state
+				statusMu.Unlock()
+			}
+			if err := publish(ctx); err != nil {
+				return false, errors.Join(checkErr, err)
+			}
+			if checkErr != nil || !result.Checked || !result.Available {
+				return false, checkErr
+			}
+			current, stillEnabled, observeErr := observeMachineForUpdate(ctx, inventory)
+			if observeErr != nil || !stillEnabled || !sameProduct(current, installed) {
+				return false, errors.Join(ErrStateConflict, observeErr)
+			}
+			checkedCandidate, checkedSKU = result.Candidate, installed.SKU
+			return true, nil
+		}
+	}
+	var installCheck func(context.Context) error
+	if len(coordinators) != 0 {
+		installCheck = func(ctx context.Context) error {
+			attemptMu.Lock()
+			defer attemptMu.Unlock()
+			engine, coordinator := engines[checkedSKU], coordinators[checkedSKU]
+			if engine == nil || coordinator == nil || checkedCandidate.Release().Namespace() != string(checkedSKU) {
+				return ErrUnauthorizedCandidate
+			}
+			candidate := checkedCandidate
+			checkedCandidate = update.Candidate{}
+			artifacts, err := NewProtectedArtifactStore(updateStorage, stateStorage)
+			if err != nil {
+				return err
+			}
+			var staged StagedArtifact
+			_, err = engine.Install(ctx, candidate, update.InstallOptions{
+				BeforePrepare: func(ctx context.Context, c update.Candidate) error {
+					if err := authorizeMachineInstaller(ctx); err != nil {
+						return err
+					}
+					eligible, err := coordinator.Eligible(ctx, c.Release())
+					if err != nil {
+						return err
+					}
+					if !eligible {
+						return ErrUnauthorizedCandidate
+					}
+					return nil
+				},
+				Stage: func(ctx context.Context, c update.Candidate, write func(io.Writer) error) (string, func(), error) {
+					var err error
+					staged, err = artifacts.StageWith(ctx, c.Release(), write)
+					if err != nil {
+						return "", nil, err
+					}
+					components := strings.Split(staged.Handle, "/")
+					path, err := updateStorage.resolve(components...)
+					if err != nil {
+						return "", func() { _ = artifacts.Discard(context.Background(), staged) }, err
+					}
+					return path, func() { _ = artifacts.Discard(context.Background(), staged) }, nil
+				},
+				Verify: (WindowsAuthenticodeVerifier{}).VerifyAuthenticode,
+				Handoff: func(ctx context.Context, prepared update.Prepared) error {
+					_, err := coordinator.InstallPrepared(ctx, prepared.Release(), staged)
+					return err
+				},
+			})
+			var next func(update.CheckState) update.CheckState
+			if err == nil {
+				next = engine.InstallSuccessState
+			} else if !errors.Is(err, ErrUnauthorizedCandidate) {
+				next = engine.InstallFailureState
+			}
+			if next != nil {
+				state, stateErr := persistMachineInstallCheckState(context.WithoutCancel(ctx), discoveryStore, checkedSKU, next)
+				if stateErr != nil {
+					return errors.Join(err, stateErr)
+				}
+				statusMu.Lock()
+				discoveryState = state
+				statusMu.Unlock()
+				if publishErr := publish(ctx); publishErr != nil {
+					return errors.Join(err, publishErr)
+				}
+			}
+			return err
+		}
+	}
+	return residentManagedSchedule(healthCheck, discoveryCheck, installCheck, heartbeat), nil
+}
+
+func observeMachineForUpdate(ctx context.Context, inventory InstallerInventory) (ProductSnapshot, bool, error) {
+	enabled, err := readMachineAutoUpdate()
+	if err != nil {
+		return ProductSnapshot{}, false, err
+	}
+	registration, err := inventory.Installed(ctx)
+	if err != nil {
+		return ProductSnapshot{}, false, err
+	}
+	marker, err := readMachineProductMarker()
+	if err != nil {
+		return ProductSnapshot{}, false, err
+	}
+	product, err := installedProductSnapshot(registration, marker)
+	return product, enabled, err
+}
+
+type productionTransactionIDs struct{}
+
+func (productionTransactionIDs) NewID() string {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(bytes[:])
+}
+
+// Both machine SKUs use the same protected installation and recovery path.
+func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage *ProtectedStorage,
+	pending *FileStateStore, replay *FileReplayStore, lastResult *FileLastResultStore,
+	inventory InstallerInventory) (*Coordinator, error) {
+	launcher, err := NewProductionDetachedRunnerLauncher(stateStorage, updateStorage)
+	if err != nil {
+		return nil, err
+	}
+	prepare, err := NewFilePreparationAuthorizer(stateStorage, func(context.Context) (machineProductMarker, bool, error) {
+		marker, err := readMachineProductMarker()
+		if err != nil {
+			return machineProductMarker{}, false, err
+		}
+		enabled, err := readMachineAutoUpdate()
+		return marker, enabled, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	observe := func(ctx context.Context) (PreparationObservation, error) {
+		enabled, err := readMachineAutoUpdate()
+		if err != nil || !enabled {
+			return PreparationObservation{}, errors.New("automatic machine update is disabled or unavailable")
+		}
+		registration, err := inventory.Installed(ctx)
+		if err != nil {
+			return PreparationObservation{}, err
+		}
+		marker, err := readMachineProductMarker()
+		if err != nil {
+			return PreparationObservation{}, err
+		}
+		product, err := installedProductSnapshot(registration, marker)
+		if err != nil || product.SKU != sku {
+			return PreparationObservation{}, errors.New("installed product SKU changed")
+		}
+		if err := verifyProductionInstalledHealth(ctx, product, registration, marker); err != nil {
+			return PreparationObservation{}, err
+		}
+		return PreparationObservation{Product: product, Marker: marker, Enabled: true}, nil
+	}
+	products := productInventoryFunc(func(ctx context.Context) ([]InstalledProduct, error) {
+		registration, err := inventory.Installed(ctx)
+		if err != nil {
+			return nil, err
+		}
+		marker, err := readMachineProductMarker()
+		if err != nil {
+			return nil, err
+		}
+		product, err := installedProductSnapshot(registration, marker)
+		if err != nil {
+			return nil, err
+		}
+		return []InstalledProduct{{Snapshot: product}}, nil
+	})
+	health := healthProbeFunc(func(ctx context.Context, product ProductSnapshot) (bool, error) {
+		observation, err := observe(ctx)
+		return err == nil && sameProduct(observation.Product, product), err
+	})
+	return NewCoordinator(Config{SKU: sku, MaxInstallerBusyRetries: 3}, Dependencies{
+		Inventory: products,
+		Launcher:  launcher, RetryGate: productionRetryGate{}, Health: health,
+		Processes: WindowsProcessProbe{}, InstallerServer: WindowsInstallerServerProbe{},
+		Pending: pending, Replay: replay, LastResult: lastResult,
+		Events: discardEvents{}, Clock: wallClock{}, Boot: WindowsBootIdentity{},
+		IDs:                productionTransactionIDs{},
+		PreparationEnabled: func(context.Context) (bool, error) { return readMachineAutoUpdate() },
+		ObservePreparation: observe, PrepareAuthorization: prepare,
+	})
 }
 
 func reconcileProductionPending(ctx context.Context, inventory InstallerInventory, pending PendingStore, replay ReplayStore, lastResult LastResultStore, stateStorage, updateStorage *ProtectedStorage, transaction PendingV1) (Outcome, error) {
@@ -184,9 +540,6 @@ func reconcileProductionPending(ctx context.Context, inventory InstallerInventor
 			return false, err
 		}
 		if err := verifyProductionInstalledHealth(ctx, actual, reg, marker); err != nil {
-			return false, err
-		}
-		if err := verifyProductionSignatures(ctx, actual); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -283,50 +636,6 @@ func verifyProductionInstalledHealth(ctx context.Context, snapshot ProductSnapsh
 	return nil
 }
 
-// Windows checks the installed binaries' Authenticode signatures. Structural
-// health stays separately observable even when Windows cannot verify trust.
-func verifyProductionSignatures(ctx context.Context, snapshot ProductSnapshot) error {
-	programFiles, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFilesX64, windows.KF_FLAG_DEFAULT)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrVerificationUnavailable, err)
-	}
-	paths := []string{
-		filepath.Join(programFiles, "go-mapi", "service", "go-mapi-service.exe"),
-		filepath.Join(programFiles, "go-mapi", "interceptor", "x86", "go-mapi.dll"),
-		filepath.Join(programFiles, "go-mapi", "interceptor", "AMD64", "go-mapi.dll"),
-	}
-	if snapshot.SKU == update.Suite {
-		paths = append(paths, filepath.Join(programFiles, "go-mapi", "user", "go-mapi.exe"))
-	}
-	verifier := WindowsAuthenticodeVerifier{}
-	for _, path := range paths {
-		if err := verifier.VerifyAuthenticode(ctx, path); err != nil {
-			if windowsTrustUnavailable(err) {
-				return fmt.Errorf("%w: Windows could not check signature revocation: %v", ErrVerificationUnavailable, err)
-			}
-			return fmt.Errorf("installed component signature: %w", err)
-		}
-	}
-	return nil
-}
-
-// These WinVerifyTrust results mean Windows could not complete its own
-// revocation check. They do not establish an invalid signature. Every other
-// nonzero result remains a failed trust decision.
-func windowsTrustUnavailable(err error) bool {
-	for _, code := range []syscall.Errno{
-		0x80092011, // CRYPT_E_NO_REVOCATION_DLL
-		0x80092012, // CRYPT_E_NO_REVOCATION_CHECK
-		0x80092013, // CRYPT_E_REVOCATION_OFFLINE
-		0x800B010E, // CERT_E_REVOCATION_FAILURE
-	} {
-		if errors.Is(err, code) {
-			return true
-		}
-	}
-	return false
-}
-
 func verifyResidentServiceConfiguration(executable string) error {
 	manager, err := mgr.Connect()
 	if err != nil {
@@ -421,6 +730,31 @@ func authorizeMachineInstaller(context.Context) error {
 		return errors.New("machine automatic update setting does not authorize installation")
 	}
 	return nil
+}
+
+// The detached runner makes this final observation after creating msiexec
+// suspended. A changed installation or disabled setting cannot resume that
+// child, even if the coordinator's earlier pending write was valid.
+func authorizePendingMachineInstaller(ctx context.Context, pending PendingV1) error {
+	if err := authorizeMachineInstaller(ctx); err != nil {
+		return err
+	}
+	registration, err := NewWindowsInstallerInventory().Installed(ctx)
+	if err != nil {
+		return err
+	}
+	marker, err := readMachineProductMarker()
+	if err != nil {
+		return err
+	}
+	installed, err := installedProductSnapshot(registration, marker)
+	if err != nil {
+		return err
+	}
+	if err := authorizePendingProductSnapshot(pending, installed); err != nil {
+		return err
+	}
+	return authorizeMachineInstaller(ctx)
 }
 
 type productionRetryGate struct{}

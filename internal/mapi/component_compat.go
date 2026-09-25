@@ -77,7 +77,8 @@ func EvaluateCompatibility(installed string, required CounterpartRequirement, ac
 // compatibilityCoordinate compares a publishable odd-major development build
 // at the coordinate it will occupy after promotion. Its prerelease ordering is
 // retained, so 3.1.0-beta.1 is still below stable 4.1.0 while satisfying a
-// broad >=4.0.0,<5.0.0 compatibility range.
+// broad >=4.0.0,<5.0.0 compatibility range. A 5.x development build maps
+// to a 6.x prerelease and needs an exclusive bound above that line.
 func compatibilityCoordinate(version semVersion) semVersion {
 	if version.major%2 == 1 && len(version.pre) > 0 && version.major < ^uint64(0) {
 		switch version.pre[0] {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +22,9 @@ const (
 	winHTTPFlagSecure               = 0x00800000
 
 	winHTTPOptionDisableFeature  = 63
+	winHTTPDisableCookies        = 0x00000001
 	winHTTPDisableRedirects      = 0x00000002
+	winHTTPDisableAuthentication = 0x00000004
 	winHTTPOptionAutologonPolicy = 77
 	winHTTPAutologonSecurityHigh = 2
 
@@ -47,8 +50,8 @@ var (
 )
 
 // NewMachineHTTPClient uses WinHTTP's machine context and automatic proxy
-// resolver. It deliberately does not consult net/http's environment proxy,
-// WinINet/browser state, interactive credentials, or a user profile.
+// resolver. It does not use net/http's environment proxy, impersonate a
+// signed-in user, load a user profile, or supply interactive credentials.
 func NewMachineHTTPClient() (*http.Client, error) {
 	if err := winHTTP.Load(); err != nil {
 		return nil, ErrMachineHTTPUnavailable
@@ -118,8 +121,8 @@ func (machineWinHTTPTransport) RoundTrip(request *http.Request) (*http.Response,
 		return fail(ErrMachineHTTPFailure)
 	}
 	owner.request = requestHandle
-	disableRedirects := uint32(winHTTPDisableRedirects)
-	if !winHTTPBool(procWinHTTPSetOption.Call(requestHandle, winHTTPOptionDisableFeature, uintptr(unsafe.Pointer(&disableRedirects)), unsafe.Sizeof(disableRedirects))) {
+	disabledFeatures := uint32(winHTTPDisableRedirects | winHTTPDisableAuthentication | winHTTPDisableCookies)
+	if !winHTTPBool(procWinHTTPSetOption.Call(requestHandle, winHTTPOptionDisableFeature, uintptr(unsafe.Pointer(&disabledFeatures)), unsafe.Sizeof(disabledFeatures))) {
 		return fail(ErrMachineHTTPFailure)
 	}
 	autologon := uint32(winHTTPAutologonSecurityHigh)
@@ -127,7 +130,23 @@ func (machineWinHTTPTransport) RoundTrip(request *http.Request) (*http.Response,
 		return fail(ErrMachineHTTPFailure)
 	}
 	owner.watchCancellation()
-	if !winHTTPBool(procWinHTTPSendRequest.Call(requestHandle, 0, 0, 0, 0, 0, 0)) {
+	forwarded, err := machineHTTPForwardHeader(request, MachineReleaseMetadataOrigin)
+	if err != nil {
+		return fail(err)
+	}
+	var headerPointer uintptr
+	var headerUTF16 *uint16
+	if forwarded != "" {
+		utf16, encodeErr := windows.UTF16PtrFromString(forwarded)
+		if encodeErr != nil {
+			return fail(ErrMachineHTTPInvalidRequest)
+		}
+		headerUTF16 = utf16
+		headerPointer = uintptr(unsafe.Pointer(utf16))
+	}
+	sent, _, sendErr := procWinHTTPSendRequest.Call(requestHandle, headerPointer, uintptr(len(forwarded)), 0, 0, 0, 0)
+	runtime.KeepAlive(headerUTF16)
+	if !winHTTPBool(sent, 0, sendErr) {
 		return fail(machineHTTPContextError(request.Context()))
 	}
 	if !winHTTPBool(procWinHTTPReceiveResponse.Call(requestHandle, 0)) {

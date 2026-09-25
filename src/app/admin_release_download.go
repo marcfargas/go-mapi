@@ -1,91 +1,79 @@
 package main
 
-// This file is deliberately limited to verification and staging. It neither
-// invokes msiexec nor requests elevation: callers get verified bytes and must
-// make a separate, explicit install decision.
-
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
-// adminReleaseReplayStore persists only the highest accepted sequence and the
-// digest that bound it. Accept takes an advisory, process-wide file lock before
-// reading and replacement-atomically writing, so independent app processes
-// cannot each accept a different candidate from the same prior state.
-type adminReleaseReplayStore struct{ Path string }
+// adminReleaseSequenceStore protects the highest accepted plain metadata
+// sequence across elevated repair attempts.
+type adminReleaseSequenceStore struct{ Path string }
 
-func (s adminReleaseReplayStore) Load() (adminReleaseReplayState, error) {
+func (s adminReleaseSequenceStore) Load() (update.ReplayState, error) {
 	if s.Path == "" {
-		return adminReleaseReplayState{}, errors.New("admin release replay state path is empty")
+		return update.ReplayState{}, errors.New("admin release sequence path is empty")
 	}
 	data, err := os.ReadFile(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return adminReleaseReplayState{}, nil
+		return update.ReplayState{}, nil
 	}
 	if err != nil {
-		return adminReleaseReplayState{}, fmt.Errorf("read admin release replay state: %w", err)
+		return update.ReplayState{}, fmt.Errorf("read admin release sequence: %w", err)
 	}
-	var state adminReleaseReplayState
-	if err := decodeAdminReleaseJSON(data, &state); err != nil || !validAdminReleaseReplayState(state) {
-		return adminReleaseReplayState{}, errors.New("invalid admin release replay state")
+	var state update.ReplayState
+	if err := update.DecodeJSON(data, &state); err != nil || !validAdminReleaseSequence(state) {
+		return update.ReplayState{}, errors.New("invalid admin release sequence")
 	}
 	return state, nil
 }
 
-func (s adminReleaseReplayStore) Accept(candidate authorizedAdminRelease) error {
+func (s adminReleaseSequenceStore) Accept(release update.Release) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0700); err != nil {
-		return fmt.Errorf("create admin release replay state directory: %w", err)
+		return fmt.Errorf("create admin release sequence directory: %w", err)
 	}
-	return withAdminReleaseReplayLock(s.Path+".lock", func() error {
+	return withAdminReleaseSequenceLock(s.Path+".lock", func() error {
 		previous, err := s.Load()
 		if err != nil {
 			return err
 		}
-		next, err := acceptAdminReleaseSequence(previous, candidate)
+		next, err := update.AcceptReplay(previous, release)
 		if err != nil {
 			return err
 		}
 		data, err := json.Marshal(next)
 		if err != nil {
-			return fmt.Errorf("encode admin release replay state: %w", err)
+			return err
 		}
-		temporary, err := os.CreateTemp(filepath.Dir(s.Path), ".admin-release-replay-*")
+		temporary, err := os.CreateTemp(filepath.Dir(s.Path), ".admin-release-sequence-*")
 		if err != nil {
-			return fmt.Errorf("create admin release replay state: %w", err)
+			return err
 		}
 		temporaryName := temporary.Name()
 		defer os.Remove(temporaryName)
 		if _, err := temporary.Write(data); err != nil {
 			temporary.Close()
-			return fmt.Errorf("write admin release replay state: %w", err)
+			return err
 		}
 		if err := temporary.Chmod(0600); err != nil {
 			temporary.Close()
-			return fmt.Errorf("protect admin release replay state: %w", err)
+			return err
 		}
 		if err := temporary.Close(); err != nil {
-			return fmt.Errorf("close admin release replay state: %w", err)
+			return err
 		}
-		if err := os.Rename(temporaryName, s.Path); err != nil {
-			return fmt.Errorf("commit admin release replay state: %w", err)
-		}
-		return nil
+		return os.Rename(temporaryName, s.Path)
 	})
 }
 
-func validAdminReleaseReplayState(state adminReleaseReplayState) bool {
+func validAdminReleaseSequence(state update.ReplayState) bool {
 	if state.Sequence == 0 && state.Digest == "" {
 		return state.Namespace == ""
 	}
@@ -95,15 +83,4 @@ func validAdminReleaseReplayState(state adminReleaseReplayState) bool {
 func isHex(value string) bool {
 	_, err := hex.DecodeString(value)
 	return err == nil
-}
-
-// downloadAuthorizedAdminRelease accepts only an already-authorized release.
-// It bounds reads at the signed size and revalidates every redirect target
-// against the same immutable origin/path rule.
-func downloadAuthorizedAdminRelease(ctx context.Context, client *http.Client, root adminReleaseRoot, release authorizedAdminRelease, now time.Time) ([]byte, error) {
-	policy, err := update.NewLegacyAdminPolicy(root)
-	if err != nil {
-		return nil, err
-	}
-	return policy.Download(ctx, client, release.trusted, now)
 }

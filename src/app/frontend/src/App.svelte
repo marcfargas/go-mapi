@@ -425,9 +425,10 @@
   </section>
 {/if}
 
-{#if updateState && updateState.updateAvailable}
+{#if updateState && (updateState.updateAvailable || updateState.interceptorUpdateAvailable)}
   <UpdateBanner
-    latestVersion={updateState.latestVersion}
+    latestVersion={updateState.updateAvailable ? updateState.latestVersion : updateState.interceptorLatestVersion || 'new version'}
+    component={updateState.updateAvailable ? 'app' : 'system'}
     onViewUpdate={handleOpenUpdatePanel}
   />
 {/if}
@@ -481,5 +482,5 @@
 {/if}
 
 {#if showUpdatePanel && updateState}
-  <UpdatePanel update={updateState} onClose={handleCloseUpdatePanel} />
+  <UpdatePanel update={updateState} componentsHealthy={componentHealth?.healthy ?? null} onClose={handleCloseUpdatePanel} />
 {/if}

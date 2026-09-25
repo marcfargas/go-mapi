@@ -32,13 +32,9 @@ vi.mock('../wailsjs/go/main/App', () => ({
     enabled: true,
   }),
   CheckForUpdatesNow: vi.fn().mockResolvedValue(undefined),
+  OpenUpdateAction: vi.fn().mockResolvedValue(undefined),
   StartAdminRepair: vi.fn().mockResolvedValue(undefined),
 }));
-
-// Track calls to BrowserOpenURL so tests can assert that update links route
-// through Wails' system-browser helper instead of anchor hrefs (WebView2
-// would try to navigate inside the app window otherwise).
-const browserOpenURL = vi.fn();
 
 // Track EventsOn registrations so tests can fire events manually.
 const eventHandlers: Record<string, ((...args: unknown[]) => void)[]> = {};
@@ -50,9 +46,6 @@ vi.mock('../wailsjs/runtime/runtime', () => ({
       eventHandlers[event] = eventHandlers[event].filter((h) => h !== handler);
     };
   }),
-  // Update links open via Wails' BrowserOpenURL — stub it so tests can assert
-  // the panel actions routed through it (instead of a plain <a href>).
-  BrowserOpenURL: (url: string) => browserOpenURL(url),
 }));
 
 // Mock settings module
@@ -115,7 +108,7 @@ import App from './App.svelte';
 import { fetchSettingsState, setMode, openDefaultAppsSettings, dismissDefaultAppsPrompt, fetchStartupState, setAutostartEnabled } from './lib/settings';
 import { fetchQueue, subscribeQueue } from './lib/queue';
 import { fetchAuthStatus } from './lib/auth';
-import { GetAdminInstallState, GetComponentHealth, StartAdminRepair } from '../wailsjs/go/main/App';
+import { GetAdminInstallState, GetComponentHealth, OpenUpdateAction, StartAdminRepair } from '../wailsjs/go/main/App';
 
 beforeEach(() => {
   // Reset all event handler maps between tests to prevent cross-test bleed.
@@ -333,6 +326,10 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
     latestReleaseUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
     installerUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
     updateAvailable: true,
+    distributionChannel: 'standalone',
+    updateActionUrl: 'https://go-mapi.app/downloads/app/3.0.1/x64',
+    updateActionLabel: 'Open download page',
+    lastSuccessfulAt: '2026-04-21T12:00:00Z',
     lastCheckedAt: '2026-04-21T12:00:00Z',
     enabled: true,
   };
@@ -364,6 +361,17 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
     expect(queryByRole('region', { name: /update available/i })).toBeNull();
   });
 
+  it('shows an interceptor-only notice without a per-user installer action', async () => {
+    const { fetchUpdateState } = await import('./lib/settings');
+    vi.mocked(fetchUpdateState).mockResolvedValueOnce({ ...noUpdateState, interceptorLatestVersion: '4.0.1', interceptorUpdateAvailable: true, distributionChannel: 'standalone' });
+    const { findByRole, queryByRole } = render(App);
+    const banner = await findByRole('region', { name: /update available/i });
+    expect(banner).toHaveTextContent(/system component update available/i);
+    await fireEvent.click(await findByRole('button', { name: /view update/i }));
+    expect(await findByRole('heading', { name: /system component update available/i })).toBeInTheDocument();
+    expect(queryByRole('button', { name: /open download page/i })).toBeNull();
+  });
+
   it('re-renders when update-state-changed event fires (no page reload)', async () => {
     const { fetchUpdateState } = await import('./lib/settings');
     vi.mocked(fetchUpdateState).mockResolvedValueOnce(noUpdateState);
@@ -391,7 +399,7 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
     expect(queryByText(/release notes|release page/i)).toBeNull();
   });
 
-  it('clicking the download link opens the validated first-party route', async () => {
+  it('clicking the download button invokes the validated backend action', async () => {
     const { fetchUpdateState } = await import('./lib/settings');
     vi.mocked(fetchUpdateState).mockResolvedValueOnce(availableState);
     const { findByRole, findByText } = render(App);
@@ -399,8 +407,7 @@ describe('App.svelte — update UX (Phase 11-03)', () => {
     await fireEvent.click(openPanelBtn);
 
     await fireEvent.click(await findByText(/open download page/i));
-    expect(browserOpenURL).toHaveBeenCalledOnce();
-    expect(browserOpenURL).toHaveBeenCalledWith(availableState.installerUrl);
+    expect(OpenUpdateAction).toHaveBeenCalledOnce();
   });
 
   it('panel shows current version and last checked timestamp (D-07)', async () => {

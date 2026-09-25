@@ -69,7 +69,7 @@ func TestPendingV1RejectsUnknownOrInvalidRecoveryData(t *testing.T) {
 
 func validPending(now time.Time) PendingV1 {
 	return PendingV1{
-		Schema:         PendingSchemaV1,
+		Schema:         PendingSchemaV2,
 		TransactionID:  "tx-123",
 		SKU:            update.System,
 		Old:            ProductSnapshot{SKU: update.System, PackageVersion: "4.0.1", ProductVersion: "4.0.1", ProductCode: "OLD", Contained: map[string]string{"service": "4.0.1"}},

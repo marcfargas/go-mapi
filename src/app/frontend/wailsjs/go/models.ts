@@ -88,6 +88,12 @@ export namespace main {
 	    installerUrl: string;
 	    updateAvailable: boolean;
 	    lastCheckedAt: string;
+	    lastSuccessfulAt?: string;
+	    distributionChannel?: string;
+	    updateGuidance?: string;
+	    managedSystemUpdate?: boolean;
+	    updateActionUrl?: string;
+	    updateActionLabel?: string;
 	    enabled: boolean;
 	    interceptorLatestVersion?: string;
 	    interceptorUpdateAvailable?: boolean;
@@ -105,6 +111,12 @@ export namespace main {
 	        this.installerUrl = source["installerUrl"];
 	        this.updateAvailable = source["updateAvailable"];
 	        this.lastCheckedAt = source["lastCheckedAt"];
+	        this.lastSuccessfulAt = source["lastSuccessfulAt"];
+	        this.distributionChannel = source["distributionChannel"];
+	        this.updateGuidance = source["updateGuidance"];
+	        this.managedSystemUpdate = source["managedSystemUpdate"];
+	        this.updateActionUrl = source["updateActionUrl"];
+	        this.updateActionLabel = source["updateActionLabel"];
 	        this.enabled = source["enabled"];
 	        this.interceptorLatestVersion = source["interceptorLatestVersion"];
 	        this.interceptorUpdateAvailable = source["interceptorUpdateAvailable"];

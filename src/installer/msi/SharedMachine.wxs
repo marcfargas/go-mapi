@@ -50,6 +50,7 @@
   </Fragment>
   <Fragment>
     <Binary Id="AdminCustomActions" SourceFile="$(var.CustomActionBinary)" />
+    <CustomAction Id="ValidateMachineTransaction" BinaryRef="AdminCustomActions" DllEntry="ValidateMachineTransaction" Execute="immediate" Return="check" />
     <CustomAction Id="ResolveAutoUpdateChoice" BinaryRef="AdminCustomActions" DllEntry="ResolveAutoUpdateChoice" Execute="immediate" Return="check" />
     <CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />
     <CustomAction Id="RollbackAdminMigration" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminMigration" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />

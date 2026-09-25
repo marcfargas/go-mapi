@@ -21,9 +21,9 @@ var (
 	msiCloseHandle      = msiDatabaseDLL.NewProc("MsiCloseHandle")
 )
 
-// The signed file, already pinned against writes/deletion by the runner, must
-// name the exact product authorized in protected pending state. MSI signatures
-// alone do not bind a package to its intended SKU or release.
+// The prepared file, pinned against writes and deletion by the runner, must
+// name the exact product authorized in protected pending state. Its hash and
+// Windows signature decision precede this recovery-time identity check.
 func verifyStagedMSIIdentity(ctx context.Context, path string, pending PendingV1) error {
 	if err := ctx.Err(); err != nil {
 		return err

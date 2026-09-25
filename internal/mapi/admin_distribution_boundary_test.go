@@ -2,6 +2,7 @@ package mapi
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,7 @@ import (
 
 func TestAdminMsiOwnsOnlyDualBitnessInterceptor(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	wxs := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "Package.wxs") +
+	wxs := readMachinePackageAuthoring(t, repoRoot, "Package.wxs") +
 		readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs") +
 		readAdminContractFile(t, repoRoot, "src", "installer", "msi", "GoMapi.AdminInstaller.wixproj")
 	wxs += readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "GoMapi.AdminCustomActions.csproj")
@@ -37,7 +38,7 @@ func TestAdminMsiOwnsOnlyDualBitnessInterceptor(t *testing.T) {
 
 func TestAdminMsiCleanupAndRollbackAreMandatory(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	wxs := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "Package.wxs") +
+	wxs := readMachinePackageAuthoring(t, repoRoot, "Package.wxs") +
 		readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
 	customAction := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
 	for _, want := range []string{
@@ -106,7 +107,7 @@ func TestMachineMsiOwnsAndPreservesAutomaticUpdateChoice(t *testing.T) {
 		t.Fatal("machine MSI does not own the 64-bit DWORD update choice")
 	}
 	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
-		entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", filename)
+		entry := readMachinePackageAuthoring(t, repoRoot, filename)
 		if !strings.Contains(entry, `<Property Id="GOMAPI_AUTO_UPDATE" Secure="yes" />`) {
 			t.Errorf("%s does not accept the administrator update choice", filename)
 		}
@@ -143,7 +144,7 @@ func TestSystemMsiBuildUsesTypedInputsAndProductionIdentity(t *testing.T) {
 func TestSuiteMsiUsesSharedMachineResourcesAndMachineApp(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	project := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "GoMapi.SuiteInstaller.wixproj")
-	entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuitePackage.wxs")
+	entry := readMachinePackageAuthoring(t, repoRoot, "SuitePackage.wxs")
 	user := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuiteUser.wxs")
 	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
 	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")
@@ -189,7 +190,7 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 	build := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "build.ps1")
 	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
 	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
-		entry := readAdminContractFile(t, repoRoot, "src", "installer", "msi", filename)
+		entry := readMachinePackageAuthoring(t, repoRoot, filename)
 		for _, want := range []string{
 			`<Upgrade Id="$(var.ForeignUpgradeCode)">`,
 			`Minimum="0.0.0" IncludeMinimum="yes"`,
@@ -269,7 +270,7 @@ func TestInstalledAdminManifestMatchesVersionGateContract(t *testing.T) {
 	customAction := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
 	for _, want := range []string{
 		"go-mapi-installed-interceptor-v1", "queue-v1", "minInclusive", "peProductVersion",
-		`x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256", "GOMAPI_COMPONENT_VERSION",
+        `x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256", "GoMapiComponentVersion",
 	} {
 		if !strings.Contains(schema, want) && !strings.Contains(customAction, want) {
 			t.Errorf("installed component contract missing %q", want)
@@ -320,14 +321,14 @@ func TestMachineValidationKeepsLegacyPublicationAndFailsClosed(t *testing.T) {
 	legacy, machine := parts[0], parts[1]
 	for _, want := range []string{
 		"tags: ['admin-v*']", "if: github.event_name == 'push' || inputs.sku == 'admin'",
-		"ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64", "Publish GitHub admin release",
+		"admin-targets.json", "Publish GitHub admin release",
 	} {
 		if !strings.Contains(legacy, want) {
 			t.Errorf("legacy explicit-repair release lost %q", want)
 		}
 	}
 	for _, want := range []string{
-		"inputs.sku != 'admin'", "inputs.publish", "Machine publication is disabled",
+		"inputs.sku != 'admin'", "inputs.publish", "Machine publication remains gated",
 		"go run ./internal/mapi/cmd/machine-package", "go-mapi-machine-signed-input-v1",
 		"src/service/VERSION", "src/interceptor/interceptor-version.txt",
 		"src/app/VERSION", "inputs.sku == 'suite'", "-MachineDistribution",
@@ -356,4 +357,30 @@ func readAdminContractFile(t *testing.T, root string, parts ...string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+// WiX expands this one shared include inside each SKU Package. Inspecting the
+// effective source keeps contract checks anchored to the authoring WiX compiles.
+func readMachinePackageAuthoring(t *testing.T, root, entryName string) string {
+	t.Helper()
+	entry := readAdminContractFile(t, root, "src", "installer", "msi", entryName)
+	const include = "<?include MachinePackage.wxi ?>"
+	if strings.Count(entry, include) != 1 {
+		t.Fatalf("%s must expand exactly one shared machine package include", entryName)
+	}
+	shared := readAdminContractFile(t, root, "src", "installer", "msi", "MachinePackage.wxi")
+	for name, source := range map[string]string{entryName: entry, "MachinePackage.wxi": shared} {
+		var document struct{ XMLName xml.Name }
+		if err := xml.Unmarshal([]byte(source), &document); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		want := "Wix"
+		if name == "MachinePackage.wxi" {
+			want = "Include"
+		}
+		if document.XMLName.Local != want {
+			t.Fatalf("%s root = %s, want %s", name, document.XMLName.Local, want)
+		}
+	}
+	return strings.Replace(entry, include, shared, 1)
 }

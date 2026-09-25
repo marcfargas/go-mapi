@@ -17,6 +17,8 @@ type MachineSKU string
 const (
 	MachineSKUSystem MachineSKU = "system"
 	MachineSKUSuite  MachineSKU = "suite"
+	SystemUpgradeCode = "B3C97B33-3F10-47CA-9FA7-24EE3B75E325"
+	SuiteUpgradeCode = "2E050A24-94A2-4FC9-B176-C5CCC1225FE6"
 )
 
 const machineProductCodeNamespace = "4D8E30F8-83CF-4A0E-9410-746D75A35705"

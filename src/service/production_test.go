@@ -16,29 +16,57 @@ func TestProductionResidentSchedulePerformsInstalledHealthCheck(t *testing.T) {
 	}
 }
 
+func TestManagedAttemptRequiresFreshDiscoveryAndGivesInstallOwnDeadline(t *testing.T) {
+	ctx := context.Background()
+	installs := 0
+	install := func(ctx context.Context) error {
+		installs++
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < 29*time.Minute {
+			t.Fatal("installer inherited the one-minute metadata deadline")
+		}
+		return nil
+	}
+	for _, fresh := range []bool{false, true} {
+		err := runResidentManagedAttempt(ctx, func(ctx context.Context) (bool, error) {
+			deadline, ok := ctx.Deadline()
+			if !ok || time.Until(deadline) > time.Minute {
+				t.Fatal("metadata attempt lacks its one-minute deadline")
+			}
+			return fresh, nil
+		}, install)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if installs != 1 {
+		t.Fatalf("installs=%d, want one fresh install", installs)
+	}
+}
+
 func TestActiveRebootStatusDoesNotFalselyRequireRepair(t *testing.T) {
 	pending := PendingV1{Candidate: ProductSnapshot{
 		PackageVersion: "5.0.1-alpha.2",
 		Contained:      map[string]string{"service": "5.0.1-alpha.2", "interceptor": "5.0.1-alpha.1"},
 	}}
-	newStatus := func() PublicStatusV1 {
-		return PublicStatusV1{Schema: PublicStatusSchemaV1, SKU: "system", Updates: "enabled", Health: "repair-required", Code: EventRepairNeeded, UpdatedAt: time.Now().UTC()}
+	newStatus := func() residentStatus {
+		return residentStatus{SKU: "system", Updates: "enabled", Health: "repair-required", Code: EventRepairNeeded, UpdatedAt: time.Now().UTC()}
 	}
 	reboot := newStatus()
 	applyActiveOutcomeStatus(&reboot, pending, OutcomeRebootPending)
-	if reboot.Code != EventRebootPending || reboot.Health != "healthy" || reboot.Signature != "verified" ||
+	if reboot.Code != EventRebootPending || reboot.Health != "healthy" ||
 		reboot.PackageVersion != "5.0.1-alpha.2" || reboot.ServiceVersion != "5.0.1-alpha.2" ||
-		reboot.InterceptorVersion != "5.0.1-alpha.1" || !validPublicStatus(reboot) {
-		t.Fatalf("reboot status is not a healthy verified candidate needing reboot: %#v", reboot)
+		reboot.InterceptorVersion != "5.0.1-alpha.1" {
+		t.Fatalf("reboot status is not a healthy candidate needing reboot: %#v", reboot)
 	}
 	running := newStatus()
 	applyActiveOutcomeStatus(&running, pending, OutcomeStillRunning)
-	if running.Code != EventStillRunning || running.Health != "" || running.Signature != "" || !validPublicStatus(running) {
+	if running.Code != EventStillRunning || running.Health != "" {
 		t.Fatalf("in-flight status falsely classifies health: %#v", running)
 	}
 	repair := newStatus()
 	applyActiveOutcomeStatus(&repair, pending, OutcomeRepairRequired)
-	if repair.Code != EventRepairNeeded || repair.Health != "repair-required" || !validPublicStatus(repair) {
+	if repair.Code != EventRepairNeeded || repair.Health != "repair-required" {
 		t.Fatalf("repair status missing required action: %#v", repair)
 	}
 }

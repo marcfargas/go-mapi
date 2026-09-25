@@ -119,7 +119,6 @@ func TestFileStoresRoundTripStrictBoundedState(t *testing.T) {
 	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
 	stateStore, _ := NewFileStateStore(storage)
 	replayStore, _ := NewFileReplayStore(storage)
-	statusStore, _ := NewFileStatusStore(storage)
 	pending := validPending(time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC))
 	if err := stateStore.Save(context.Background(), pending); err != nil {
 		t.Fatal(err)
@@ -135,16 +134,7 @@ func TestFileStoresRoundTripStrictBoundedState(t *testing.T) {
 	if got, err := replayStore.Load(context.Background(), update.System); err != nil || got != replay {
 		t.Fatalf("replay = %#v, %v", got, err)
 	}
-	status := ServiceStatus{ConsecutiveFailures: 2, NextCheckAt: time.Now().UTC(), LastCode: StatusOffline}
-	if err := statusStore.Save(context.Background(), status); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := statusStore.Load(context.Background()); err != nil || !reflect.DeepEqual(got, status) {
-		t.Fatalf("status = %#v, %v", got, err)
-	}
-	if err := statusStore.Save(context.Background(), ServiceStatus{LastCode: `proxy http://user:secret@example.test`}); err == nil {
-		t.Fatal("accepted unbounded public detail in internal status code")
-	}
+
 }
 
 func TestFileTerminalStoresRejectReplayRollbackAndKeepLastResult(t *testing.T) {
@@ -249,17 +239,17 @@ func TestPublicStatusAllowsOnlyBoundedRedactedCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := PublicStatusV1{Schema: PublicStatusSchemaV1, SKU: update.System, Updates: "unknown", Code: EventOffline, UpdatedAt: time.Now().UTC()}
+	status := mapi.PublicStatusV2{Schema: mapi.PublicStatusSchemaV2, SKU: "system", Updates: "unknown", Code: "offline", Capability: "unavailable", Checker: "unavailable", UpdatedAt: time.Now().UTC()}
 	if err := store.Save(context.Background(), status); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := store.Load(context.Background())
-	if err != nil || loaded != status {
-		t.Fatalf("public status = %#v, %v", loaded, err)
-	}
-	data, err := storage.Read([]string{"status-v1.json"}, maxStatusBytes)
+	data, err := storage.Read([]string{"status-v2.json"}, maxStatusBytes)
 	if err != nil {
 		t.Fatal(err)
+	}
+	loaded, err := mapi.DecodePublicStatusV2(data)
+	if err != nil || loaded != status {
+		t.Fatalf("public status = %#v, %v", loaded, err)
 	}
 	text := string(data)
 	for _, forbidden := range []string{"http://", "https://", "\\", "password", "proxy", "transactionId"} {
@@ -267,7 +257,7 @@ func TestPublicStatusAllowsOnlyBoundedRedactedCodes(t *testing.T) {
 			t.Fatalf("public status leaked %q: %s", forbidden, text)
 		}
 	}
-	if err := store.Save(context.Background(), PublicStatusV1{Schema: PublicStatusSchemaV1, SKU: update.System, Updates: "unknown", Code: EventCode("proxy-auth user:secret"), UpdatedAt: time.Now()}); err == nil {
+	if err := store.Save(context.Background(), mapi.PublicStatusV2{Schema: mapi.PublicStatusSchemaV2, SKU: "system", Updates: "unknown", Code: "proxy-auth user:secret", Capability: "unavailable", Checker: "unavailable", UpdatedAt: time.Now()}); err == nil {
 		t.Fatal("accepted arbitrary public status detail")
 	}
 }
@@ -319,17 +309,11 @@ func TestProtectedArtifactStoreStreamsToFixedReleasePath(t *testing.T) {
 	payload := release.Payload()
 	body := []byte("verified installer")
 	storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
-	store, err := NewProtectedArtifactStore(storage, func(_ context.Context, got update.Release, destination io.Writer) error {
-		if got.Digest() != release.Digest() {
-			return errors.New("wrong release")
-		}
-		_, err := destination.Write(body)
-		return err
-	})
+	store, err := NewProtectedArtifactStore(storage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifact, err := store.Stage(context.Background(), release)
+	artifact, err := store.StageWith(context.Background(), release, func(destination io.Writer) error { _, err := destination.Write(body); return err })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,26 +332,26 @@ func TestProtectedArtifactStoreRejectsBadDownloadWithoutReplacingArtifact(t *tes
 	good := []byte("verified installer")
 	for _, test := range []struct {
 		name     string
-		download ArtifactDownload
+		download func(io.Writer) error
 		wantErr  error
 	}{
-		{"short", func(_ context.Context, _ update.Release, destination io.Writer) error {
+		{"short", func(destination io.Writer) error {
 			_, err := destination.Write(good[:len(good)-1])
 			return err
 		}, nil},
-		{"overlong", func(_ context.Context, _ update.Release, destination io.Writer) error {
+		{"overlong", func(destination io.Writer) error {
 			_, err := destination.Write(append(append([]byte(nil), good...), '!'))
 			return err
 		}, nil},
-		{"wrong hash", func(_ context.Context, _ update.Release, destination io.Writer) error {
+		{"wrong hash", func(destination io.Writer) error {
 			_, err := destination.Write(bytes.Repeat([]byte("x"), len(good)))
 			return err
 		}, nil},
-		{"download error", func(_ context.Context, _ update.Release, destination io.Writer) error {
+		{"download error", func(destination io.Writer) error {
 			_, _ = destination.Write(good)
 			return io.ErrUnexpectedEOF
 		}, io.ErrUnexpectedEOF},
-		{"ignored overlong write", func(_ context.Context, _ update.Release, destination io.Writer) error {
+		{"ignored overlong write", func(destination io.Writer) error {
 			_, _ = destination.Write(good)
 			_, _ = destination.Write([]byte("extra"))
 			return nil
@@ -375,21 +359,18 @@ func TestProtectedArtifactStoreRejectsBadDownloadWithoutReplacingArtifact(t *tes
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := mustStorage(t, testStorageRoot(t, "updates"), privateStorage)
-			initial, err := NewProtectedArtifactStore(storage, func(_ context.Context, _ update.Release, destination io.Writer) error {
-				_, err := destination.Write(good)
-				return err
-			})
+			initial, err := NewProtectedArtifactStore(storage)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := initial.Stage(context.Background(), release); err != nil {
+			if _, err := initial.StageWith(context.Background(), release, func(destination io.Writer) error { _, err := destination.Write(good); return err }); err != nil {
 				t.Fatal(err)
 			}
-			store, err := NewProtectedArtifactStore(storage, test.download)
+			store, err := NewProtectedArtifactStore(storage)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.Stage(context.Background(), release); err == nil || test.wantErr != nil && !errors.Is(err, test.wantErr) {
+			if _, err := store.StageWith(context.Background(), release, test.download); err == nil || test.wantErr != nil && !errors.Is(err, test.wantErr) {
 				t.Fatalf("Stage error = %v, want failure matching %v", err, test.wantErr)
 			}
 			components, err := StagingComponents(release)

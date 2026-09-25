@@ -33,7 +33,7 @@
       "requires": {
         "component": "app",
         "minInclusive": "4.0.0",
-        "maxExclusive": "5.0.0"
+        "maxExclusive": "7.0.0"
       }
     }
   },

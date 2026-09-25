@@ -14,10 +14,6 @@ import (
 
 const stagedRunnerName = "go-mapi-update-runner.exe"
 
-type AuthenticodeVerifier interface {
-	VerifyAuthenticode(context.Context, string) error
-}
-
 type DetachedProcessSpawner interface {
 	SpawnDetached(string, string) (ProcessIdentity, error)
 }
@@ -58,24 +54,22 @@ func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStor
 	}
 }
 
-// DetachedRunnerLauncher copies the signed installed service executable into
-// a unique protected transaction directory, re-verifies both its bytes and
-// Authenticode trust, then creates an unregistered detached one-shot process.
+// DetachedRunnerLauncher copies the installed service executable into a unique
+// protected transaction directory, checks its bytes, then starts the runner.
 type DetachedRunnerLauncher struct {
-	storage      *ProtectedStorage
-	ready        RunnerReadyStore
-	integrity    FileIntegrityVerifier
-	authenticode AuthenticodeVerifier
-	spawner      DetachedProcessSpawner
-	awaiter      ReadyAwaiter
-	source       string
+	storage   *ProtectedStorage
+	ready     RunnerReadyStore
+	integrity FileIntegrityVerifier
+	spawner   DetachedProcessSpawner
+	awaiter   ReadyAwaiter
+	source    string
 }
 
-func NewDetachedRunnerLauncher(storage *ProtectedStorage, ready RunnerReadyStore, authenticode AuthenticodeVerifier, spawner DetachedProcessSpawner, awaiter ReadyAwaiter, source string) (*DetachedRunnerLauncher, error) {
-	if storage == nil || storage.access != privateStorage || ready == nil || authenticode == nil || spawner == nil || awaiter == nil || source == "" {
+func NewDetachedRunnerLauncher(storage *ProtectedStorage, ready RunnerReadyStore, spawner DetachedProcessSpawner, awaiter ReadyAwaiter, source string) (*DetachedRunnerLauncher, error) {
+	if storage == nil || storage.access != privateStorage || ready == nil || spawner == nil || awaiter == nil || source == "" {
 		return nil, errors.New("detached runner launcher dependencies are incomplete")
 	}
-	return &DetachedRunnerLauncher{storage: storage, ready: ready, integrity: SHA256FileVerifier{}, authenticode: authenticode, spawner: spawner, awaiter: awaiter, source: source}, nil
+	return &DetachedRunnerLauncher{storage: storage, ready: ready, integrity: SHA256FileVerifier{}, spawner: spawner, awaiter: awaiter, source: source}, nil
 }
 
 func (launcher *DetachedRunnerLauncher) Launch(ctx context.Context, request HandoffRequest) (HandoffReceipt, error) {
@@ -124,9 +118,6 @@ func (launcher *DetachedRunnerLauncher) stageRunner(ctx context.Context, transac
 		return "", nil, err
 	}
 	defer releaseSource()
-	if err := launcher.authenticode.VerifyAuthenticode(ctx, launcher.source); err != nil {
-		return "", nil, fmt.Errorf("verify installed service Authenticode: %w", err)
-	}
 	source, err := os.Open(launcher.source)
 	if err != nil {
 		return "", nil, err
@@ -169,10 +160,6 @@ func (launcher *DetachedRunnerLauncher) stageRunner(ctx context.Context, transac
 	if err := launcher.integrity.VerifySHA256(ctx, path, digest); err != nil {
 		releaseRunner()
 		return "", nil, fmt.Errorf("reverify staged runner hash: %w", err)
-	}
-	if err := launcher.authenticode.VerifyAuthenticode(ctx, path); err != nil {
-		releaseRunner()
-		return "", nil, fmt.Errorf("reverify staged runner Authenticode: %w", err)
 	}
 	return path, releaseRunner, nil
 }

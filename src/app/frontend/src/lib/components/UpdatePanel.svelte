@@ -3,11 +3,8 @@
 
   Design:
   - Opened from UpdateBanner "View update" action in the root shell.
-  - Exposes the validated, versioned go-mapi.app download route returned by
-    the backend. It redirects to the signed GitHub artifact and routes through
-    Wails' BrowserOpenURL — we must NOT use a plain
-    <a href> because WebView2 would open the URL inside the app window
-    rather than the user's system browser.
+  - Invokes the Go update action binding. The backend keeps the validated
+    browser or Store candidate and opens it through the system shell.
   - Shows current version and last checked timestamp (D-07).
   - Includes exactly one "update checks are enabled by default" callout
     (D-08). This is the only place that callout appears in the UI so
@@ -19,22 +16,22 @@
     dedicated route/settings page (phase D-05 keeps it lightweight).
   - D-04 silent-failure rule: the manual check wrapper swallows errors;
     we never render a red "check failed" state from the UI.
-  - Copy is v3-focused and manual-install oriented (D-03): no "Quit and
-    install", no staged installer helper.
+  - Channel guidance is explicit; no staged installer helper.
 -->
 <script lang="ts">
-  import { BrowserOpenURL } from '../../../wailsjs/runtime/runtime';
+  import { OpenUpdateAction } from '../../../wailsjs/go/main/App';
   import { checkForUpdatesNow, type UpdateState } from '../settings';
 
   interface Props {
     update: UpdateState;
+    componentsHealthy?: boolean | null;
     onClose: () => void;
   }
   // Note: the prop is named `update` (not `state`) because Svelte 5 runes
   // mode treats `state` as a reserved identifier in reactive contexts; a
   // prop destructured as `state` collides with the `$state` rune and the
   // compiler raises `store_invalid_shape` at runtime.
-  let { update, onClose }: Props = $props();
+  let { update, componentsHealthy = null, onClose }: Props = $props();
 
   let checking = $state(false);
 
@@ -52,8 +49,8 @@
     }
   }
 
-  function openInstaller() {
-    if (update.installerUrl) BrowserOpenURL(update.installerUrl);
+  function openUpdateAction() {
+    if (update.updateActionUrl && update.updateAvailable) void OpenUpdateAction();
   }
 
   async function handleCheckNow() {
@@ -72,38 +69,54 @@
   <div class="panel">
     <header>
       <h2 id="update-panel-title">
-        {#if update.updateAvailable}
+        {#if update.updateGuidance}
+          Update guidance
+        {:else if update.updateAvailable}
           Update available
+        {:else if update.interceptorUpdateAvailable}
+          System component update available
+        {:else if update.lastSuccessfulAt}
+          No update available
         {:else}
-          go-mapi is up to date
+          Update status unavailable
         {/if}
       </h2>
       <button type="button" class="close" aria-label="Close" onclick={onClose}>×</button>
     </header>
 
     <section class="body">
-      {#if update.updateAvailable}
+      {#if update.updateGuidance}
+        <p class="lede">{update.updateGuidance}</p>
+      {:else if update.updateAvailable}
         <p class="lede">
           A newer release is available:
           <strong>go-mapi {update.latestVersion}</strong>.
         </p>
-        <p>
-          Download and run the installer manually to update — go-mapi does not
-          install updates automatically in v3.0.
-        </p>
+        {#if update.distributionChannel === 'store'}
+          <p>Use Microsoft Store to update this installation.</p>
+        {:else}
+          <p>Open the download page and start the installer when you're ready.</p>
+        {/if}
+        {#if update.updateActionUrl}
         <div class="actions">
           <button
             type="button"
             class="primary link"
-            onclick={openInstaller}
+            onclick={openUpdateAction}
           >
-            Open download page
+            {update.updateActionLabel || 'Open update channel'}
           </button>
         </div>
-      {:else}
+        {/if}
+      {:else if update.interceptorUpdateAvailable}
+        <p class="lede">A newer go-mapi system component is available{update.interceptorLatestVersion ? ` (${update.interceptorLatestVersion})` : ''}.</p>
+        <p>Ask your administrator to install the system component update. Compatibility and repair guidance remains available in the main window.</p>
+      {:else if update.lastSuccessfulAt}
         <p class="lede">
-          You're running the latest release.
+          No newer app release was reported at the last successful check.
         </p>
+      {:else}
+        <p class="lede">No verified update result is available yet.</p>
       {/if}
 
       <dl class="status">
@@ -113,21 +126,38 @@
         <dd>{lastCheckedLabel}</dd>
         <dt>Interceptor</dt>
         <dd>
-          {#if update.interceptorUpdateAvailable}
+          {#if update.managedSystemUpdate}
+            Managed automatically by the machine service
+          {:else if update.distributionChannel === 'machine' || update.distributionChannel === 'unknown'}
+            Ask your administrator
+          {:else if update.interceptorUpdateAvailable}
             Update available{update.interceptorLatestVersion ? ` (${update.interceptorLatestVersion})` : ''}
+          {:else if !update.lastSuccessfulAt}
+            Not checked
           {:else}
             {update.interceptorLatestVersion || 'No update reported'}
           {/if}
         </dd>
-        <dt>Components</dt>
-        <dd>{update.compatibility || 'unknown'}</dd>
+        <dt>Installed components</dt>
+        <dd>
+          {#if componentsHealthy === true}
+            Healthy
+          {:else if componentsHealthy === false}
+            Need attention — see the main window
+          {:else}
+            Status unavailable
+          {/if}
+        </dd>
       </dl>
 
+      {#if update.distributionChannel !== 'machine' && update.distributionChannel !== 'unknown'}
       <p class="default-note">
         Background update checks are <strong>enabled by default</strong>.
         You can turn them off from the tray menu.
       </p>
+      {/if}
 
+      {#if update.distributionChannel !== 'machine' && update.distributionChannel !== 'unknown'}
       <div class="manual">
         <button
           type="button"
@@ -138,6 +168,7 @@
           {checking ? 'Checking…' : 'Check for updates now'}
         </button>
       </div>
+      {/if}
     </section>
   </div>
 </div>

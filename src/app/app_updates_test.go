@@ -6,12 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi"
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
 // tempSettingsEnv redirects %APPDATA% so AppSettings writes land in a
@@ -21,6 +27,66 @@ func tempSettingsEnv(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("GOMAPI_APPDATA_DIR", dir)
 	return dir
+}
+
+func TestStatusRefreshRestoresCachedSystemNoticeWithoutNetworkCheck(t *testing.T) {
+	tempSettingsEnv(t)
+	writeInitialSettings(t, appDataDir(), AppSettings{Mode: "manual", UpdateChecksEnabled: true})
+	fetcher := &countingFetcher{}
+	app := newAppForUpdateTests(t, fetcher, "4.0.0")
+	raw := UpdateState{CurrentVersion: "4.0.0", InterceptorUpdateAvailable: true, InterceptorLatestVersion: "4.0.1", Enabled: true}
+	app.updateState.Store(&raw)
+
+	now := time.Now().UTC()
+	status := mapi.PublicStatusV2{Schema: mapi.PublicStatusSchemaV2, SKU: "system", PackageVersion: "4.0.0", InterceptorVersion: "4.0.0",
+		Health: "healthy", Updates: "enabled", Capability: "automatic", Code: "pending",
+		Checker: "no-update", UpdatedAt: now, HealthObservedAt: now, LastSuccessAt: now,
+		CandidateExpiresAt: now.Add(time.Hour), NextAttemptAt: now.Add(30 * time.Minute)}
+	identity := mapi.InstalledStatusIdentity{SKU: "system", PackageVersion: "4.0.0", InterceptorVersion: "4.0.0"}
+	var running atomic.Bool
+	running.Store(true)
+	project := func(raw UpdateState) UpdateState {
+		return effectiveUpdateState(raw, "standalone", publicMachineStatus{Status: status, Identity: identity, ServiceRunning: running.Load(), Trusted: true})
+	}
+	emitted := make(chan UpdateState, 16)
+	app.updateStateEmitter = func(s UpdateState) {
+		select {
+		case emitted <- s:
+		default:
+		}
+	}
+	app.startUpdateSchedulerWithProjection(project, 10*time.Millisecond)
+	t.Cleanup(app.updateSchedulerStop)
+	await := func(wantManaged bool) {
+		t.Helper()
+		deadline := time.After(time.Second)
+		for {
+			select {
+			case state := <-emitted:
+				if state.ManagedSystemUpdate == wantManaged && state.InterceptorUpdateAvailable == !wantManaged {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("no status-refresh emission with managed=%v", wantManaged)
+			}
+		}
+	}
+	await(true)
+	running.Store(false)
+	await(false)
+	if fetcher.callCount() != 0 || !app.updateState.Load().InterceptorUpdateAvailable {
+		t.Fatal("status refresh fetched metadata or erased raw cached availability")
+	}
+	stale := status
+	stale.UpdatedAt = now.Add(-10 * time.Minute)
+	staleProjected := false
+	app.refreshUpdatePresentation(func(raw UpdateState) UpdateState {
+		staleProjected = true
+		return effectiveUpdateState(raw, "standalone", publicMachineStatus{Status: stale, Identity: identity, ServiceRunning: true, Trusted: true})
+	})
+	if !staleProjected || effectiveUpdateState(raw, "standalone", publicMachineStatus{Status: stale, Identity: identity, ServiceRunning: true, Trusted: true}).ManagedSystemUpdate {
+		t.Fatal("expired status continued to suppress cached system advice")
+	}
 }
 
 // writeInitialSettings bootstraps a settings.json for the App to load
@@ -40,8 +106,22 @@ func writeInitialSettings(t *testing.T, dir string, s AppSettings) {
 	}
 }
 
-// countingFetcher is a releaseFetcher stub that tracks call counts
-// and can be swapped to return a release, nil, or an error.
+type latestRelease struct {
+	Version                    string
+	ReleaseURL                 string
+	DistributionChannel        string
+	InterceptorVersion         string
+	InterceptorUpdateAvailable bool
+	Compatibility              string
+}
+
+func appUpdateDownloadURL(version string) string {
+	return "https://go-mapi.app/downloads/app/" + version + "/x64"
+}
+
+func allowedUpdateURL(value string) bool { return validFixedAppRoute(value) }
+
+// countingFetcher is the app wire endpoint used by the shared Engine in tests.
 type countingFetcher struct {
 	mu      sync.Mutex
 	calls   int
@@ -49,14 +129,35 @@ type countingFetcher struct {
 	err     error
 }
 
-func (c *countingFetcher) FetchLatestRelease(ctx context.Context) (*latestRelease, error) {
+func (c *countingFetcher) RoundTrip(request *http.Request) (*http.Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
 	if c.err != nil {
 		return nil, c.err
 	}
-	return c.release, nil
+	var sent struct {
+		AppVersion         string `json:"appVersion"`
+		InterceptorVersion string `json:"interceptorVersion"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&sent); err != nil {
+		return nil, err
+	}
+	version, available := "", false
+	interceptor, interceptorAvailable, compatibility := "", false, "unknown"
+	if c.release != nil {
+		version, available = c.release.Version, c.release.Version != ""
+		interceptor, interceptorAvailable = c.release.InterceptorVersion, c.release.InterceptorUpdateAvailable
+		if c.release.Compatibility != "" {
+			compatibility = c.release.Compatibility
+		}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"schema": "go-mapi-update-check-v1", "compatibility": compatibility,
+		"app":         map[string]any{"installedVersion": sent.AppVersion, "latestVersion": version, "updateAvailable": available},
+		"interceptor": map[string]any{"installedVersion": sent.InterceptorVersion, "latestVersion": interceptor, "updateAvailable": interceptorAvailable},
+	})
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Cache-Control": []string{"no-store"}}, Body: io.NopCloser(strings.NewReader(string(data))), Request: request}, nil
 }
 
 func (c *countingFetcher) callCount() int {
@@ -72,11 +173,21 @@ func (c *countingFetcher) callCount() int {
 //
 // Caller is responsible for driving startup-update / manual-check /
 // scheduler paths directly via exported App hooks.
-func newAppForUpdateTests(t *testing.T, fetcher releaseFetcher, version string) *App {
+func newAppForUpdateTests(t *testing.T, fetcher *countingFetcher, version string) *App {
 	t.Helper()
 	app := NewApp()
 	app.settings = loadSettings().Settings
-	app.updates = newUpdateService(version, fetcher, nopLogger)
+	engine, err := update.NewEngine(update.Config{SKU: update.App, MetadataOrigin: "https://go-mapi.app", Client: &http.Client{Transport: fetcher}, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.updates = engine
+	app.updateVersion = version
+	app.updateObservation = func() (string, string) { return "standalone", "absent" }
+	if last, err := time.Parse(time.RFC3339, app.settings.LastUpdateCheck); err == nil {
+		app.updateCheckState.LastAttemptAt = last
+		app.updateCheckState.NextAttemptAt = last.Add(updateCheckWindow)
+	}
 	app.updateState.Store(&UpdateState{
 		CurrentVersion: version,
 		Enabled:        app.settings.UpdateChecksEnabled,
@@ -286,6 +397,9 @@ func TestManualCheckFailurePreservesPriorState(t *testing.T) {
 	}
 	if state.LatestVersion != "3.0.0" {
 		t.Errorf("prior LatestVersion must survive failure, got %q", state.LatestVersion)
+	}
+	if state.InstallerURL != appUpdateDownloadURL("3.0.0") {
+		t.Errorf("prior installer route must survive failure, got %q", state.InstallerURL)
 	}
 }
 

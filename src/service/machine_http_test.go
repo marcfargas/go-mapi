@@ -36,6 +36,48 @@ func TestMachineHTTPRequestBoundaryRejectsUserAndInteractiveInputs(t *testing.T)
 	}
 }
 
+func TestMachineHTTPForwardsOnlyCanonicalInstalledVersionHint(t *testing.T) {
+	const origin = "https://updates.example.test"
+	for _, version := range []string{"4.0.1", "5.0.1-alpha.2"} {
+		request, _ := http.NewRequest(http.MethodGet, origin+"/machine/system/targets.json", nil)
+		request.Header.Set("X-Go-Mapi-Installed-Version", version)
+		header, err := machineHTTPForwardHeader(request, origin)
+		if err != nil || header != "X-Go-Mapi-Installed-Version: "+version+"\r\n" {
+			t.Fatalf("version %q: header=%q error=%v", version, header, err)
+		}
+	}
+	for _, values := range []http.Header{
+		{"X-Go-Mapi-Installed-Version": []string{"4.0.0\r\nAuthorization: secret"}},
+		{"X-Go-Mapi-Installed-Version": []string{"5.0.1-alpha.0"}},
+		{"X-Go-Mapi-Installed-Version": []string{"4.0.0", "5.0.1-alpha.1"}},
+		{"X-Go-Mapi-Installed-Version": []string{"4.0.0"}, "Cookie": []string{"secret=value"}},
+		{"Authorization": []string{"Bearer secret"}},
+	} {
+		request, _ := http.NewRequest(http.MethodGet, origin+"/machine/system/targets.json", nil)
+		request.Header = values
+		if _, err := machineHTTPForwardHeader(request, origin); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
+			t.Fatalf("accepted privileged header %#v: %v", values, err)
+		}
+	}
+	for _, raw := range []string{
+		"https://github.com/marcfargas/go-mapi/releases/download/system-v4.0.1/go-mapi-system-4.0.1-x64.msi",
+		origin + "/machine/system/targets.json?track=stable",
+		origin + "/machine/system/targets.json/extra",
+		"https://other.example.test/machine/system/targets.json",
+	} {
+		request, _ := http.NewRequest(http.MethodGet, raw, nil)
+		request.Header.Set("X-Go-Mapi-Installed-Version", "4.0.0")
+		if _, err := machineHTTPForwardHeader(request, origin); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
+			t.Fatalf("forwarded installed release to %s: %v", raw, err)
+		}
+	}
+	request, _ := http.NewRequest(http.MethodHead, origin+"/machine/system/targets.json", nil)
+	request.Header.Set("X-Go-Mapi-Installed-Version", "4.0.0")
+	if _, err := machineHTTPForwardHeader(request, origin); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
+		t.Fatalf("forwarded installed release on HEAD: %v", err)
+	}
+}
+
 func TestMachineHTTPErrorsAreBoundedAndRedacted(t *testing.T) {
 	for _, err := range []error{ErrMachineHTTPUnavailable, ErrMachineHTTPFailure, ErrMachineProxyAuthentication, ErrMachineHTTPInvalidRequest} {
 		text := strings.ToLower(err.Error())

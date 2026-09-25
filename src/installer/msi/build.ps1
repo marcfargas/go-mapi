@@ -29,11 +29,11 @@ function Get-ExactProperty($Object, [string[]]$Names, [string]$Label) {
     $expected = @($Names | Sort-Object)
     if (($actual -join ',') -ne ($expected -join ',')) { Fail "$Label fields are '$($actual -join ',')', expected '$($expected -join ',')'" }
 }
-
 $manifestPath = [IO.Path]::GetFullPath($SignedInputManifest)
 if (-not (Test-Path -LiteralPath $manifestPath)) { Fail "missing signed-input manifest $manifestPath" }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-Get-ExactProperty $manifest @('schema','sku','packageRelease','commit','components') 'manifest'
+$expectedManifestFields = if ($SKU -eq 'suite') { @('schema','sku','packageRelease','commit','components','appBuild') } else { @('schema','sku','packageRelease','commit','components') }
+Get-ExactProperty $manifest $expectedManifestFields 'manifest'
 if ($manifest.schema -ne 'go-mapi-machine-signed-input-v1' -or $manifest.sku -ne $SKU) { Fail 'manifest schema or SKU does not match the explicit build' }
 if ($manifest.commit -notmatch '^[0-9a-f]{40}$') { Fail 'manifest commit must be a full lowercase Git commit SHA' }
 
@@ -67,6 +67,40 @@ if ($componentMap.interceptor.Artifacts.Count -ne 2 -or -not $componentMap.inter
 if ($SKU -eq 'system' -and $componentMap.Count -ne 2) { Fail 'system input must not contain a user app' }
 if ($SKU -eq 'suite' -and ($componentMap.Count -ne 3 -or $componentMap.app.Artifacts.Count -ne 1 -or -not $componentMap.app.Artifacts.x64 -or $componentMap.app.Artifacts.x64 -notmatch 'go-mapi-machine\.exe$')) { Fail 'suite input requires a distinct machine-distributed x64 app executable' }
 
+if ($SKU -eq 'suite') {
+    Get-ExactProperty $manifest.appBuild @('manifest','sha256','unsignedSha256') 'suite app build evidence'
+    if ($manifest.appBuild.manifest -ne 'app-artifacts.json' -or
+        $manifest.appBuild.sha256 -notmatch '^[0-9a-f]{64}$' -or
+        $manifest.appBuild.unsignedSha256 -notmatch '^[0-9a-f]{64}$') { Fail 'suite app build evidence fields are invalid' }
+    $appManifestPath = Join-Path $manifestRoot 'app-artifacts.json'
+    if (-not (Test-Path -LiteralPath $appManifestPath -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $appManifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.appBuild.sha256) { Fail 'suite app build manifest is missing or its hash differs' }
+    $appBuild = Get-Content -LiteralPath $appManifestPath -Raw | ConvertFrom-Json
+    Get-ExactProperty $appBuild @('schema','component','version','queueProtocol','requires','artifact','source','build','distribution') 'suite app build manifest'
+    Get-ExactProperty $appBuild.source @('commit') 'suite app source'
+    Get-ExactProperty $appBuild.build @('command','go','wails','node','npm') 'suite app build command'
+    Get-ExactProperty $appBuild.artifact @('filename','sha256','peProductVersion') 'suite unsigned app artifact'
+    if ($appBuild.schema -ne 'go-mapi-app-artifacts-v2' -or $appBuild.component -ne 'app' -or
+        $appBuild.distribution -ne 'machine' -or $appBuild.artifact.filename -ne 'go-mapi-machine.exe' -or
+        $appBuild.artifact.sha256 -ne $manifest.appBuild.unsignedSha256 -or
+        $appBuild.version -ne $componentMap.app.Version -or $appBuild.artifact.peProductVersion -ne $componentMap.app.Version -or
+        $appBuild.source.commit -ne $manifest.commit -or
+        $appBuild.build.command -ne 'scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials') {
+        Fail 'suite app source, distribution, version, or unsigned hash provenance differs from signed inputs'
+    }
+    foreach ($tool in @('go','wails','node','npm')) {
+        if ([string]::IsNullOrWhiteSpace($appBuild.build.$tool)) { Fail "suite app $tool build tool version is missing" }
+    }
+    $appContract = (Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json).components.app
+    if ($appBuild.queueProtocol -ne $appContract.queueProtocol -or
+        $appBuild.requires.component -ne $appContract.requires.component -or
+        $appBuild.requires.minInclusive -ne $appContract.requires.minInclusive -or
+        [string]$appBuild.requires.maxExclusive -ne [string]$appContract.requires.maxExclusive) { Fail 'suite app compatibility declaration differs from source contract' }
+    $signedVersion = (Get-Item -LiteralPath $componentMap.app.Artifacts.x64).VersionInfo
+    if ([string]$signedVersion.ProductVersion -ne $componentMap.app.Version -or
+        [string]$signedVersion.FileVersion -ne $componentMap.app.Version) { Fail 'signed suite app PE version differs from source build' }
+}
+
 $components = Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json
 $contract = $components.machinePackages.$SKU
 $expectedUpgradeCode = if ($SKU -eq 'system') { 'B3C97B33-3F10-47CA-9FA7-24EE3B75E325' } else { '2E050A24-94A2-4FC9-B176-C5CCC1225FE6' }
@@ -77,6 +111,7 @@ $expectedComponents = if ($SKU -eq 'system') { 'service,interceptor' } else { 's
 if ($contract.upgradeCode -ne $expectedUpgradeCode -or ($contract.includedComponents -join ',') -ne $expectedComponents) { Fail "components.json $SKU package contract is invalid" }
 if ($foreignContract.upgradeCode -ne $expectedForeignUpgradeCode) { Fail "components.json $foreignSKU package contract is invalid" }
 $requiredAppMin = [string]$components.components.interceptor.requires.minInclusive
+$requiredAppMax = [string]$components.components.interceptor.requires.maxExclusive
 
 $customProject = Join-Path $msiRoot 'customaction\GoMapi.AdminCustomActions.csproj'
 dotnet build $customProject --configuration Release
@@ -91,7 +126,7 @@ $arguments = @('build', $project, '--configuration', 'Release',
     "-p:ProductCode=$($identity.productCode)", "-p:UpgradeCode=$($contract.upgradeCode)",
     "-p:ForeignUpgradeCode=$($foreignContract.upgradeCode)",
     "-p:ServiceVersion=$($componentMap.service.Version)", "-p:InterceptorVersion=$($componentMap.interceptor.Version)",
-    "-p:RequiredAppMin=$requiredAppMin", "-p:SourceService=$($componentMap.service.Artifacts.x64)",
+    "-p:RequiredAppMin=$requiredAppMin", "-p:RequiredAppMax=$requiredAppMax", "-p:SourceService=$($componentMap.service.Artifacts.x64)",
     "-p:SourceX64=$($componentMap.interceptor.Artifacts.x64)", "-p:SourceX86=$($componentMap.interceptor.Artifacts.x86)",
     "-p:CustomActionBinary=$customBinary", "-p:OutputName=$([IO.Path]::GetFileNameWithoutExtension($identity.assetName))",
     "-p:OutputPath=$OutputDirectory")

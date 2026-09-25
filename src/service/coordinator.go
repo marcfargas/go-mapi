@@ -13,11 +13,10 @@ import (
 )
 
 var (
-	ErrBusy                    = errors.New("service update coordinator is busy")
-	ErrOffline                 = errors.New("release source is offline")
-	ErrUnauthorizedCandidate   = errors.New("release candidate does not belong to installed SKU")
-	ErrStateConflict           = errors.New("pending update state changed concurrently")
-	ErrVerificationUnavailable = errors.New("complete installed-product verification is unavailable")
+	ErrBusy                  = errors.New("service update coordinator is busy")
+	ErrOffline               = errors.New("release source is offline")
+	ErrUnauthorizedCandidate = errors.New("release candidate does not belong to installed SKU")
+	ErrStateConflict         = errors.New("pending update state changed concurrently")
 )
 
 type Outcome string
@@ -34,11 +33,6 @@ const (
 	OutcomeOutcomeUnconfirmed Outcome = "outcome-unconfirmed"
 )
 
-const (
-	StatusOffline = "offline"
-	StatusReady   = "ready"
-)
-
 type EventCode string
 
 const (
@@ -50,7 +44,6 @@ const (
 	EventRolledBack    EventCode = "rolled-back"
 	EventRebootPending EventCode = "reboot-pending"
 	EventRepairNeeded  EventCode = "repair-required"
-	EventUnverified    EventCode = "unverified"
 	EventPending       EventCode = "pending"
 )
 
@@ -64,12 +57,6 @@ type Event struct {
 type Config struct {
 	SKU                     update.SKU
 	MaxInstallerBusyRetries uint
-}
-
-type DiscoveryRequest struct {
-	SKU       update.SKU
-	Installed ProductSnapshot
-	Replay    update.ReplayState
 }
 
 type InstalledProduct struct {
@@ -95,20 +82,6 @@ type HandoffReceipt struct {
 	Runner    ProcessIdentity
 	Installer ProcessIdentity
 	Ready     bool
-}
-
-type ServiceStatus struct {
-	ConsecutiveFailures uint
-	NextCheckAt         time.Time
-	LastCode            string
-}
-
-type ReleaseSource interface {
-	Discover(context.Context, DiscoveryRequest) (update.Release, error)
-}
-
-type ArtifactStore interface {
-	Stage(context.Context, update.Release) (StagedArtifact, error)
 }
 
 type ProductInventory interface {
@@ -155,11 +128,6 @@ type LastResultStore interface {
 	Save(context.Context, LastResultV1) error
 }
 
-type StatusStore interface {
-	Load(context.Context) (ServiceStatus, error)
-	Save(context.Context, ServiceStatus) error
-}
-
 type EventSink interface {
 	Record(context.Context, Event)
 }
@@ -171,27 +139,25 @@ type Clock interface{ Now() time.Time }
 type BootIdentity interface {
 	CurrentBootID(context.Context) (string, error)
 }
-type Backoff interface{ Delay(uint) time.Duration }
 type IDGenerator interface{ NewID() string }
 
 type Dependencies struct {
-	ReleaseSource   ReleaseSource
-	Artifacts       ArtifactStore
-	Inventory       ProductInventory
-	Launcher        RunnerLauncher
-	RetryGate       RetryGate
-	Health          HealthProbe
-	Processes       ProcessProbe
-	InstallerServer InstallerServerProbe
-	Pending         PendingStore
-	Replay          ReplayStore
-	LastResult      LastResultStore
-	Status          StatusStore
-	Events          EventSink
-	Clock           Clock
-	Boot            BootIdentity
-	Backoff         Backoff
-	IDs             IDGenerator
+	PreparationEnabled   func(context.Context) (bool, error)
+	ObservePreparation   func(context.Context) (PreparationObservation, error)
+	PrepareAuthorization PreparationAuthorizer
+	Inventory            ProductInventory
+	Launcher             RunnerLauncher
+	RetryGate            RetryGate
+	Health               HealthProbe
+	Processes            ProcessProbe
+	InstallerServer      InstallerServerProbe
+	Pending              PendingStore
+	Replay               ReplayStore
+	LastResult           LastResultStore
+	Events               EventSink
+	Clock                Clock
+	Boot                 BootIdentity
+	IDs                  IDGenerator
 }
 
 type Coordinator struct {
@@ -204,15 +170,14 @@ func NewCoordinator(config Config, deps Dependencies) (*Coordinator, error) {
 	if err := validateReconcileDependencies(config, deps); err != nil {
 		return nil, err
 	}
-	if anyNil(deps.ReleaseSource, deps.Artifacts, deps.Launcher, deps.Status, deps.Backoff, deps.IDs) {
-		return nil, errors.New("coordinator discovery dependencies are incomplete")
+	if anyNil(deps.Launcher, deps.IDs) {
+		return nil, errors.New("coordinator installation dependencies are incomplete")
 	}
 	return &Coordinator{config: config, deps: deps}, nil
 }
 
-// NewReconciler composes the recovery-only resident caller before release
-// discovery exists. It cannot start an installation because it has no source,
-// artifact store or launcher; CheckAndStart rejects that incomplete mode.
+// NewReconciler composes the recovery-only resident caller. It cannot start
+// an installation without a prepared artifact and launcher.
 func NewReconciler(config Config, deps Dependencies) (*Coordinator, error) {
 	if err := validateReconcileDependencies(config, deps); err != nil {
 		return nil, err
@@ -233,134 +198,126 @@ func validateReconcileDependencies(config Config, deps Dependencies) error {
 	return nil
 }
 
-func (coordinator *Coordinator) CheckAndStart(ctx context.Context) (Outcome, error) {
-	if anyNil(coordinator.deps.ReleaseSource, coordinator.deps.Artifacts, coordinator.deps.Launcher, coordinator.deps.Status, coordinator.deps.Backoff, coordinator.deps.IDs) {
-		return "", errors.New("release discovery is not configured")
+// Eligible checks local installation gates before the shared engine downloads
+// an offered artifact. The same gates are repeated immediately before the
+// pending transaction is recorded.
+func (coordinator *Coordinator) Eligible(ctx context.Context, release update.Release) (bool, error) {
+	if !coordinator.mu.TryLock() {
+		return false, ErrBusy
 	}
+	defer coordinator.mu.Unlock()
+	_, _, _, eligible, err := coordinator.installationEligibility(ctx, release)
+	return eligible, err
+}
+
+func (coordinator *Coordinator) installationEligibility(ctx context.Context, release update.Release) (ProductSnapshot, ProductSnapshot, update.ReplayState, bool, error) {
+	if release.Namespace() != string(coordinator.config.SKU) {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, ErrUnauthorizedCandidate
+	}
+	if coordinator.deps.PreparationEnabled != nil {
+		enabled, err := coordinator.deps.PreparationEnabled(ctx)
+		if err != nil || !enabled {
+			return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+		}
+	}
+	pending, err := coordinator.deps.Pending.Load(ctx)
+	if err != nil || pending != nil {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	products, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	if len(products) != 1 || products[0].Snapshot.SKU != coordinator.config.SKU {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, ErrUnauthorizedCandidate
+	}
+	installed := products[0].Snapshot
+	healthy, err := coordinator.deps.Health.Healthy(ctx, installed)
+	if err != nil || !healthy {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	candidate, err := productFromRelease(release)
+	if err != nil || candidate.SKU != coordinator.config.SKU {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, ErrUnauthorizedCandidate
+	}
+	committed, err := coordinator.deps.Replay.Load(ctx, coordinator.config.SKU)
+	if err != nil {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	next, err := update.AcceptReplay(committed, release)
+	if err != nil {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	last, err := coordinator.deps.LastResult.Load(ctx)
+	if err != nil {
+		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
+	}
+	now := coordinator.deps.Clock.Now()
+	if last != nil && (last.Result == ResultRolledBack || last.Result == ResultBusyExhausted) && last.SKU == coordinator.config.SKU && last.Digest == next.Digest &&
+		(now.Before(last.FinishedAt) || now.Sub(last.FinishedAt) < 24*time.Hour) {
+		return installed, candidate, next, false, nil
+	}
+	return installed, candidate, next, installed.ProductCode != candidate.ProductCode, nil
+}
+
+// InstallPrepared records the durable transaction and starts the detached
+// installer for bytes already downloaded and verified by the shared engine.
+func (coordinator *Coordinator) InstallPrepared(ctx context.Context, release update.Release, artifact StagedArtifact) (Outcome, error) {
 	if !coordinator.mu.TryLock() {
 		return "", ErrBusy
 	}
 	defer coordinator.mu.Unlock()
-
-	now := coordinator.deps.Clock.Now()
-	status, err := coordinator.deps.Status.Load(ctx)
+	installed, candidate, nextReplay, eligible, err := coordinator.installationEligibility(ctx, release)
 	if err != nil {
-		return "", fmt.Errorf("load service status: %w", err)
-	}
-	pending, err := coordinator.deps.Pending.Load(ctx)
-	if err != nil {
-		return "", fmt.Errorf("load pending update: %w", err)
-	}
-	if pending != nil {
-		if pending.Phase == PhaseRolledBack && pending.Result == ResultRetryScheduled {
-			return coordinator.retryInstaller(ctx, *pending, now)
-		}
-		if pending.Schema == PendingSchemaV2 && pending.Phase == PhasePrepared && pending.Attempt > 1 {
-			return coordinator.resumePreparedRetry(ctx, *pending, now)
-		}
-		return OutcomeStillRunning, nil
-	}
-	if !status.NextCheckAt.IsZero() && now.Before(status.NextCheckAt) {
-		return OutcomeBackoff, nil
-	}
-
-	products, err := coordinator.deps.Inventory.Products(ctx)
-	if err != nil {
-		return "", fmt.Errorf("enumerate installed product: %w", err)
-	}
-	if len(products) != 1 || products[0].Snapshot.SKU != coordinator.config.SKU {
-		return OutcomeRepairRequired, nil
-	}
-	installed := products[0].Snapshot
-	healthy, err := coordinator.deps.Health.Healthy(ctx, installed)
-	if err != nil {
-		return "", fmt.Errorf("check installed product health: %w", err)
-	}
-	if !healthy {
-		return OutcomeRepairRequired, nil
-	}
-	previousReplay, err := coordinator.deps.Replay.Load(ctx, coordinator.config.SKU)
-	if err != nil {
-		return "", fmt.Errorf("load release replay state: %w", err)
-	}
-	release, err := coordinator.deps.ReleaseSource.Discover(ctx, DiscoveryRequest{SKU: coordinator.config.SKU, Installed: installed, Replay: previousReplay})
-	if err != nil {
-		if errors.Is(err, ErrOffline) {
-			return coordinator.backoffOffline(ctx, status, now)
-		}
-		return "", fmt.Errorf("discover authorized release: %w", err)
-	}
-	candidate, err := productFromRelease(release)
-	if err != nil || candidate.SKU != coordinator.config.SKU || release.Namespace() != string(coordinator.config.SKU) {
-		return "", ErrUnauthorizedCandidate
-	}
-	nextReplay, err := update.AcceptReplay(previousReplay, release)
-	if err != nil {
-		return "", fmt.Errorf("authorize replay state: %w", err)
-	}
-	last, err := coordinator.deps.LastResult.Load(ctx)
-	if err != nil {
-		return "", fmt.Errorf("load last transaction result: %w", err)
-	}
-	if last != nil && (last.Result == ResultRolledBack || last.Result == ResultBusyExhausted) && last.SKU == coordinator.config.SKU && last.Digest == nextReplay.Digest &&
-		(now.Before(last.FinishedAt) || now.Sub(last.FinishedAt) < 24*time.Hour) {
-		return OutcomeNoUpdate, nil
-	}
-	if installed.ProductCode == candidate.ProductCode {
-		return OutcomeNoUpdate, nil
-	}
-
-	artifact, err := coordinator.deps.Artifacts.Stage(ctx, release)
-	if err != nil {
-		if errors.Is(err, ErrOffline) {
-			return coordinator.backoffOffline(ctx, status, now)
-		}
-		return "", fmt.Errorf("stage authenticated artifact: %w", err)
-	}
-	if artifact.Handle == "" || artifact.SHA256 != release.Payload().Artifact.SHA256 {
-		return "", errors.New("artifact store returned an unverified handle")
-	}
-	if err := ctx.Err(); err != nil {
 		return "", err
 	}
+	if !eligible {
+		return OutcomeNoUpdate, ErrStateConflict
+	}
+	if artifact.Handle == "" || artifact.SHA256 != release.Payload().Artifact.SHA256 {
+		return "", errors.New("prepared artifact does not match candidate")
+	}
+	now := coordinator.deps.Clock.Now()
 	retryDeadline := now.Add(10 * time.Minute)
-	pending = &PendingV1{
+	pending := PendingV1{
 		Schema: PendingSchemaV2, TransactionID: coordinator.deps.IDs.NewID(), SKU: coordinator.config.SKU,
 		Old: installed, Candidate: candidate, Replay: nextReplay, ArtifactSHA256: artifact.SHA256,
 		Phase: PhasePrepared, PreparedAt: now, UpdatedAt: now, Attempt: 1, RetryDeadline: &retryDeadline,
 	}
-	pending.LaunchBootID, err = coordinator.deps.Boot.CurrentBootID(ctx)
-	if err != nil {
+	handoffCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	pending.LaunchBootID, err = coordinator.deps.Boot.CurrentBootID(handoffCtx)
+	if err != nil || pending.LaunchBootID == "" {
 		return "", fmt.Errorf("read launch boot identity: %w", err)
 	}
-	if pending.LaunchBootID == "" {
-		return "", errors.New("launch boot identity is empty")
+	if coordinator.deps.PrepareAuthorization != nil {
+		if coordinator.deps.ObservePreparation == nil {
+			return "", errors.New("preparation observation is unavailable")
+		}
+		observation, observeErr := coordinator.deps.ObservePreparation(handoffCtx)
+		if observeErr != nil || !observation.Enabled || !sameProduct(observation.Product, installed) {
+			return "", fmt.Errorf("installed product changed before preparation: %w", errors.Join(ErrStateConflict, observeErr))
+		}
+		err = coordinator.deps.PrepareAuthorization.AuthorizeAndSave(handoffCtx, PreparationDecision{Observation: observation, Release: release, Pending: pending, CurrentTime: coordinator.deps.Clock.Now})
+	} else {
+		err = coordinator.deps.Pending.CompareAndSave(handoffCtx, nil, pending)
 	}
-	if err := coordinator.deps.Pending.CompareAndSave(ctx, nil, *pending); err != nil {
+	if err != nil {
 		return "", fmt.Errorf("persist prepared transaction: %w", err)
 	}
 	coordinator.deps.Events.Record(ctx, Event{Code: EventPrepared, TransactionID: pending.TransactionID})
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	receipt, err := coordinator.deps.Launcher.Launch(ctx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
+	receipt, err := coordinator.deps.Launcher.Launch(handoffCtx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
 	if err != nil {
 		return "", fmt.Errorf("launch detached update runner: %w", err)
 	}
 	if !receipt.Ready || validateProcessIdentity(&receipt.Runner) != nil || validateProcessIdentity(&receipt.Installer) != nil {
 		return "", errors.New("detached runner did not provide durable ready evidence")
 	}
-	// The runner owns the post-launch record. Reload rather than saving the
-	// stale prepared value: a fast installer may already have written exit
-	// evidence while the old service is returning from the ready wait.
 	durable, err := coordinator.deps.Pending.Load(context.WithoutCancel(ctx))
-	if err != nil {
-		return "", fmt.Errorf("reload durable handoff evidence: %w", err)
-	}
-	if durable == nil || durable.TransactionID != pending.TransactionID || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
+	if err != nil || durable == nil || durable.TransactionID != pending.TransactionID || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) ||
+		durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
 		return "", errors.New("runner readiness does not match durable transaction evidence")
 	}
-	_ = coordinator.deps.Status.Save(context.WithoutCancel(ctx), ServiceStatus{LastCode: StatusReady})
 	coordinator.deps.Events.Record(context.WithoutCancel(ctx), Event{Code: EventHandedOff, TransactionID: pending.TransactionID})
 	return OutcomeHandedOff, nil
 }
@@ -384,17 +341,6 @@ func (coordinator *Coordinator) ResumePreparedRetry(ctx context.Context) (Outcom
 		return OutcomeNoUpdate, nil
 	}
 	return coordinator.resumePreparedRetry(ctx, *pending, coordinator.deps.Clock.Now())
-}
-
-func (coordinator *Coordinator) backoffOffline(ctx context.Context, status ServiceStatus, now time.Time) (Outcome, error) {
-	status.ConsecutiveFailures++
-	status.NextCheckAt = now.Add(coordinator.deps.Backoff.Delay(status.ConsecutiveFailures))
-	status.LastCode = StatusOffline
-	if err := coordinator.deps.Status.Save(ctx, status); err != nil {
-		return "", fmt.Errorf("persist offline backoff: %w", err)
-	}
-	coordinator.deps.Events.Record(ctx, Event{Code: EventOffline})
-	return OutcomeBackoff, nil
 }
 
 func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) {
@@ -428,7 +374,7 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	}
 	observed := *pending
 	savePending := func() error { return coordinator.deps.Pending.CompareAndSave(ctx, &observed, *pending) }
-	// A scheduled 1618 retry is consumed only by CheckAndStart. Reconciliation
+	// A scheduled 1618 retry is consumed by the explicit recovery entrypoint. Reconciliation
 	// must not slide its durable deadline on every service poll.
 	if pending.Phase == PhaseRolledBack && pending.Result == ResultRetryScheduled && pending.NextAttemptAt != nil {
 		if pending.RetryDeadline != nil && !coordinator.deps.Clock.Now().Before(*pending.RetryDeadline) {

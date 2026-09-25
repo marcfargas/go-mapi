@@ -8,6 +8,8 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32;
 using Newtonsoft.Json;
 using WixToolset.Dtf.WindowsInstaller;
@@ -25,6 +27,90 @@ namespace GoMapi.AdminCustomActions
         private const string ActiveDllPath = @"%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll";
         private const string UninstallCleanupKey = @"SOFTWARE\go-mapi\UninstallCleanup";
         private const string VolatileBootKey = @"SOFTWARE\go-mapi\MachineProduct\ServiceBoot";
+        private const string SystemUpgradeCode = "{B3C97B33-3F10-47CA-9FA7-24EE3B75E325}";
+        private const string SuiteUpgradeCode = "{2E050A24-94A2-4FC9-B176-C5CCC1225FE6}";
+        private const uint ErrorNoMoreItems = 259;
+        private const uint MachineContext = 4;
+
+        [DllImport("msi.dll", EntryPoint = "MsiEnumRelatedProductsW", CharSet = CharSet.Unicode)]
+        private static extern uint EnumRelatedProducts(string upgradeCode, uint reserved, uint index, StringBuilder productCode);
+
+        [DllImport("msi.dll", EntryPoint = "MsiEnumProductsExW", CharSet = CharSet.Unicode)]
+        private static extern uint EnumMachineProduct(string productCode, string userSid, uint context, uint index,
+            StringBuilder installedProductCode, out uint installedContext, IntPtr sid, IntPtr sidLength);
+
+        [DllImport("msi.dll", EntryPoint = "MsiGetProductInfoExW", CharSet = CharSet.Unicode)]
+        private static extern uint GetMachineProductInfo(string productCode, string userSid, uint context,
+            string property, StringBuilder value, ref uint valueLength);
+
+        private static List<string> RelatedMachineProducts(string upgradeCode)
+        {
+            var products = new List<string>();
+            for (uint index = 0; index < 128; index++)
+            {
+                var code = new StringBuilder(39);
+                var result = EnumRelatedProducts(upgradeCode, 0, index, code);
+                if (result == ErrorNoMoreItems) return products;
+                if (result != 0) throw new InvalidOperationException("Related-product inventory failed: " + result);
+                var installed = new StringBuilder(39);
+                uint context;
+                result = EnumMachineProduct(code.ToString(), null, MachineContext, 0, installed, out context, IntPtr.Zero, IntPtr.Zero);
+                if (result != 0 || context != MachineContext ||
+                    !string.Equals(code.ToString(), installed.ToString(), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Related product has ambiguous or non-machine installation context: " + code);
+                // Both enumeration APIs include advertised products. An advertised
+                // registration is not an installed source that can be migrated.
+                var state = new StringBuilder(16);
+                uint stateLength = 16;
+                result = GetMachineProductInfo(code.ToString(), null, MachineContext, "State", state, ref stateLength);
+                if (result != 0 || state.ToString() != "5")
+                    throw new InvalidOperationException("Related machine product is not installed or its state is ambiguous: " + code);
+                products.Add(code.ToString().ToUpperInvariant());
+            }
+            throw new InvalidOperationException("Related-product inventory exceeded its bound");
+        }
+
+        [CustomAction]
+        public static ActionResult ValidateMachineTransaction(Session session)
+        {
+            return Guard(session, "validate-machine-transaction", () =>
+            {
+                if (!session.GetMode(InstallRunMode.RollbackEnabled) ||
+                    !string.IsNullOrEmpty(session["RollbackDisabled"]))
+                    throw new InvalidOperationException("Machine transaction requires Windows Installer rollback support");
+
+                var sku = session["GoMapiSku"];
+                if (sku != "system" && sku != "suite")
+                    throw new InvalidDataException("Machine SKU is not fixed by the package");
+                var foreign = RelatedMachineProducts(sku == "system" ? SuiteUpgradeCode : SystemUpgradeCode);
+                var own = RelatedMachineProducts(sku == "system" ? SystemUpgradeCode : SuiteUpgradeCode);
+                if (foreign.Count > 1 || own.Count > 1)
+                    throw new InvalidOperationException("Ambiguous machine product inventory");
+
+                // Windows Installer may set REMOVE=ALL only after InstallValidate.
+                // A nested old-product removal is part of the outer transaction.
+                var finalRemoval = string.Equals(session["REMOVE"], "ALL", StringComparison.OrdinalIgnoreCase);
+                if (finalRemoval) return;
+
+                if (!string.IsNullOrEmpty(session["Installed"]))
+                {
+                    if (foreign.Count != 0)
+                        throw new InvalidOperationException("Repair cannot coexist with another machine SKU");
+                    return;
+                }
+                var removalList = (session["GOMAPI_FOREIGN_PRODUCT"] ?? "").Split(new[] { ';' },
+                    StringSplitOptions.RemoveEmptyEntries).Select(code => code.ToUpperInvariant()).ToArray();
+                if (foreign.Count == 0)
+                {
+                    if (removalList.Length != 0)
+                        throw new InvalidOperationException("Foreign removal list has no matching machine product");
+                    return;
+                }
+                if (session["GOMAPI_MIGRATE_SKU"] != "1" || removalList.Length != 1 ||
+                    !string.Equals(removalList[0], foreign[0], StringComparison.Ordinal))
+                    throw new InvalidOperationException("Explicit SKU migration and exact foreign removal list are required");
+            });
+        }
 
         // MSI's rollback of ServiceInstall recreates the service, but does not
         // replay MsiServiceConfig or WiX Util's failure-action custom action.
@@ -140,7 +226,7 @@ namespace GoMapi.AdminCustomActions
                 var journal = new MigrationJournal
                 {
                     Schema = JournalSchema,
-                    ProductVersion = session["GOMAPI_COMPONENT_VERSION"],
+                    ProductVersion = session["GoMapiComponentVersion"],
                     CreatedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     State = "prepared",
                     PreviousProviders = keepOriginal
@@ -170,8 +256,9 @@ namespace GoMapi.AdminCustomActions
                 {
                     ["JournalPath"] = paths.JournalPath,
                     ["InstallRoot"] = paths.InstallRoot,
-                    ["Version"] = session["GOMAPI_COMPONENT_VERSION"],
-                    ["RequiredAppMin"] = session["GOMAPI_REQUIRED_APP_MIN"],
+                    ["Version"] = session["GoMapiComponentVersion"],
+                    ["RequiredAppMin"] = session["GoMapiRequiredAppMin"],
+                    ["RequiredAppMax"] = session["GoMapiRequiredAppMax"],
                     ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
                     ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
                     ["HadInstalledManifest"] = hadInstalledManifest ? "1" : "0",
@@ -218,8 +305,11 @@ namespace GoMapi.AdminCustomActions
                 var installRoot = data["InstallRoot"];
                 var version = data["Version"];
                 var requiredAppMin = data["RequiredAppMin"];
+                var requiredAppMax = data["RequiredAppMax"];
                 if (string.IsNullOrWhiteSpace(requiredAppMin))
                     throw new InvalidDataException("Required app minimum version is absent");
+                if (string.IsNullOrWhiteSpace(requiredAppMax))
+                    throw new InvalidDataException("Required app maximum version is absent");
                 var x86 = Path.Combine(installRoot, "x86", "go-mapi.dll");
                 var x64 = Path.Combine(installRoot, "AMD64", "go-mapi.dll");
 
@@ -237,6 +327,7 @@ namespace GoMapi.AdminCustomActions
                     {
                         Component = "app",
                         MinInclusive = requiredAppMin,
+                        MaxExclusive = requiredAppMax,
                     },
                     Artifacts = new[]
                     {
@@ -306,6 +397,7 @@ namespace GoMapi.AdminCustomActions
                     ["InstallRoot"] = paths.InstallRoot,
                     ["WasActive64"] = IsGoMapiActive(RegistryView.Registry64) ? "1" : "0",
                     ["WasActive32"] = IsGoMapiActive(RegistryView.Registry32) ? "1" : "0",
+                    ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
                 }.ToString();
                 session["RollbackAdminUninstall"] = data;
                 session["FinalizeAdminUninstall"] = data;
@@ -361,6 +453,7 @@ namespace GoMapi.AdminCustomActions
                     journal.State = "uninstalled";
                     SaveJournal(data["JournalPath"], journal);
                 }
+                MaybeFail(data, "after-uninstall-finalize");
             });
         }
 
@@ -414,6 +507,12 @@ namespace GoMapi.AdminCustomActions
                     SetActiveProvider(RegistryView.Registry64, ProductName);
                 if (data["WasActive32"] == "1")
                     SetActiveProvider(RegistryView.Registry32, ProductName);
+                var journal = LoadJournal(data["JournalPath"]);
+                if (journal != null && journal.State == "uninstalled")
+                {
+                    journal.State = "committed";
+                    SaveJournal(data["JournalPath"], journal);
+                }
             });
         }
 
@@ -944,6 +1043,8 @@ namespace GoMapi.AdminCustomActions
             public string Component { get; set; }
             [JsonProperty("minInclusive")]
             public string MinInclusive { get; set; }
+            [JsonProperty("maxExclusive")]
+            public string MaxExclusive { get; set; }
         }
 
         private sealed class InstalledArtifact

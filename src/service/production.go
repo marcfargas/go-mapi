@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,6 +31,58 @@ func residentHealthSchedule(check func(context.Context) error) Schedule {
 		periodic.Check(ctx)
 		periodic.Run(ctx)
 	})
+}
+
+// residentManagedSchedule retains the accepted immediate recovery/health
+// observation. Metadata starts after two minutes; a one-minute heartbeat
+// publishes liveness independently of the bounded network attempt.
+func residentManagedSchedule(health func(context.Context) error, discovery func(context.Context) (bool, error), install func(context.Context) error, heartbeat func(context.Context) error) Schedule {
+	return ScheduleFunc(func(ctx context.Context) {
+		if err := health(ctx); err != nil {
+			log.Printf("go-mapi resident health check: %v", err)
+		}
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		start := time.Now()
+		lastHealth := start
+		var inflight atomic.Bool
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := heartbeat(ctx); err != nil {
+					log.Printf("go-mapi resident status heartbeat: %v", err)
+				}
+				if now.Sub(lastHealth) >= residentInterval {
+					if err := health(ctx); err != nil {
+						log.Printf("go-mapi resident health check: %v", err)
+					}
+					lastHealth = now
+				}
+				if discovery != nil && now.Sub(start) >= residentInitialDelay && inflight.CompareAndSwap(false, true) {
+					go func() {
+						defer inflight.Store(false)
+						if err := runResidentManagedAttempt(ctx, discovery, install); err != nil {
+							log.Printf("go-mapi resident discovery: %v", err)
+						}
+					}()
+				}
+			}
+		}
+	})
+}
+
+func runResidentManagedAttempt(ctx context.Context, discovery func(context.Context) (bool, error), install func(context.Context) error) error {
+	metadataCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	fresh, err := discovery(metadataCtx)
+	cancel()
+	if err != nil || !fresh || install == nil {
+		return err
+	}
+	installCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	return install(installCtx)
 }
 
 // A completed installer first writes a terminal pending record, then retires
@@ -101,9 +154,9 @@ func publicEventForOutcome(outcome Outcome) EventCode {
 }
 
 // An active transaction is not a broken installation by default. A reboot
-// outcome follows a completed installed-product health and signature probe,
-// so report that verified candidate and the still-required reboot together.
-func applyActiveOutcomeStatus(status *PublicStatusV1, pending PendingV1, outcome Outcome) {
+// outcome follows a completed installed-product health probe, so report that
+// candidate and the still-required reboot together.
+func applyActiveOutcomeStatus(status *residentStatus, pending PendingV1, outcome Outcome) {
 	status.Code = publicEventForOutcome(outcome)
 	switch outcome {
 	case OutcomeRebootPending:
@@ -112,7 +165,6 @@ func applyActiveOutcomeStatus(status *PublicStatusV1, pending PendingV1, outcome
 		status.InterceptorVersion = pending.Candidate.Contained["interceptor"]
 		status.AppVersion = pending.Candidate.Contained["app"]
 		status.Health = "healthy"
-		status.Signature = "verified"
 	case OutcomeRepairRequired:
 		status.Health = "repair-required"
 	default:

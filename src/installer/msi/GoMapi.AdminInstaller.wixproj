@@ -15,6 +15,7 @@
       ServiceVersion=$(ServiceVersion);
       InterceptorVersion=$(InterceptorVersion);
       RequiredAppMin=$(RequiredAppMin);
+      RequiredAppMax=$(RequiredAppMax);
       SourceX64=$(SourceX64);
       SourceX86=$(SourceX86);
       SourceService=$(SourceService);

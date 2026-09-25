@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -15,12 +16,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-type productionAdminAuthenticodeInspector struct{}
-
-func (productionAdminAuthenticodeInspector) InspectAdminMSI(_ context.Context, path string) (adminAuthenticodeIdentity, error) {
-	identity, err := update.InspectAuthenticode(path)
-	return adminAuthenticodeIdentity(identity), err
-}
+func verifyAdminMSI(_ context.Context, path string) error { return update.VerifyAuthenticode(path) }
 
 type shellExecuteInfo struct {
 	cbSize                                    uint32
@@ -58,8 +54,8 @@ func trustedMSIExecPath() (string, error) {
 	return path, nil
 }
 
-func handoffAuthorizedAdminMSI(_ context.Context, candidate authorizedAdminMSICandidate) error {
-	msi, err := filepath.Abs(candidate.Path)
+func handoffAdminMSI(_ context.Context, candidate update.Prepared) error {
+	msi, err := filepath.Abs(candidate.Path())
 	if err != nil {
 		return err
 	}
@@ -68,7 +64,7 @@ func handoffAuthorizedAdminMSI(_ context.Context, candidate authorizedAdminMSICa
 		return fmt.Errorf("reopen staged admin MSI: %w", err)
 	}
 	defer file.Close()
-	if err := candidate.Release.trusted.VerifyReader(file); err != nil {
+	if err := candidate.Release().VerifyReader(file); err != nil {
 		return errors.New("staged admin MSI changed before elevation")
 	}
 	msiexec, err := trustedMSIExecPath()
@@ -128,7 +124,7 @@ func launchElevatedAdminHelper() (bool, error) {
 	}()
 }
 
-func stagePrivilegedAuthorizedAdminMSI(ctx context.Context, release authorizedAdminRelease, contents []byte) (string, func(), error) {
+func stagePrivilegedAdminMSI(ctx context.Context, candidate update.Candidate, write func(io.Writer) error) (string, func(), error) {
 	var raw *uint16
 	hr, _, _ := procSHGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&folderIDProgramData)), 0, 0, uintptr(unsafe.Pointer(&raw)))
 	if int32(hr) < 0 || raw == nil {
@@ -140,10 +136,10 @@ func stagePrivilegedAuthorizedAdminMSI(ctx context.Context, release authorizedAd
 	if err != nil {
 		return "", nil, err
 	}
-	if _, err := secureAdminStageTree(base, "go-mapi", "admin-installer", release.Payload.Version); err != nil {
+	if _, err := secureAdminStageTree(base, "go-mapi", "admin-installer", candidate.Payload().Version); err != nil {
 		return "", nil, err
 	}
-	return stageAdminMSIAt(ctx, root, release, contents)
+	return stageAdminMSIAt(ctx, root, candidate, write)
 }
 
 func secureAdminStageTree(base string, components ...string) (string, error) {

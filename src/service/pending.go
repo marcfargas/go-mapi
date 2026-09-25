@@ -12,7 +12,6 @@ import (
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
-const PendingSchemaV1 = "go-mapi-service-pending-v1"
 const PendingSchemaV2 = "go-mapi-service-pending-v2"
 
 type Phase string
@@ -123,7 +122,7 @@ func UnmarshalPending(encoded []byte) (PendingV1, error) {
 }
 
 func (pending PendingV1) Validate() error {
-	if pending.Schema != PendingSchemaV1 && pending.Schema != PendingSchemaV2 {
+	if pending.Schema != PendingSchemaV2 {
 		return errors.New("unsupported pending update schema")
 	}
 	if !transactionIDPattern.MatchString(pending.TransactionID) {
@@ -159,9 +158,7 @@ func (pending PendingV1) Validate() error {
 	if err := validateProcessIdentity(pending.InstallerThread); err != nil {
 		return fmt.Errorf("invalid installer thread identity: %w", err)
 	}
-	if pending.Schema == PendingSchemaV1 && (pending.InstallerThread != nil || pending.Phase == PhaseChildRecorded || pending.Phase == PhaseResumeAuthorized || pending.Phase == PhaseRunning) {
-		return errors.New("v1 pending record contains v2 execution state")
-	}
+
 	if pending.Schema == PendingSchemaV2 && (pending.Phase == PhaseChildRecorded || pending.Phase == PhaseResumeAuthorized || pending.Phase == PhaseRunning) && (pending.Runner == nil || pending.Installer == nil || pending.InstallerThread == nil) {
 		return errors.New("v2 running transaction lacks process and thread identities")
 	}

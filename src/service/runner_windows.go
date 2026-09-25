@@ -7,7 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -19,19 +23,46 @@ const runnerProcessAccess = windows.PROCESS_QUERY_LIMITED_INFORMATION | windows.
 
 type WindowsAuthenticodeVerifier struct{}
 
-func (WindowsAuthenticodeVerifier) VerifyAuthenticode(_ context.Context, path string) error {
+// WinVerifyTrustEx has no cancellation API. Run the single Windows trust
+// decision in a child of this executable so a stalled trust provider cannot
+// outlive the caller's deadline as an orphaned goroutine in the service.
+func (WindowsAuthenticodeVerifier) VerifyAuthenticode(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, self, "--verify-authenticode", path)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+	result, err := cmd.Output()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		return nil
+	}
+	if code, parseErr := strconv.ParseUint(strings.TrimSpace(string(result)), 10, 32); parseErr == nil {
+		return syscall.Errno(code)
+	}
+	return fmt.Errorf("Windows Authenticode probe: %w", err)
+}
+
+// RunAuthenticodeProbe is the short-lived child mode. The caller owns its
+// lifetime; Windows owns the signature and certificate trust decision.
+func RunAuthenticodeProbe(path string) error {
 	return update.VerifyAuthenticode(path)
 }
 
-// ProductionInstallerVerifier requires both the authenticated target digest
-// and Windows' built-in signature check before handing bytes to Installer.
+// ProductionInstallerVerifier checks the prepared artifact against its pinned
+// digest when it is reopened for installation or recovery.
 type ProductionInstallerVerifier struct{}
 
 func (ProductionInstallerVerifier) VerifySHA256(ctx context.Context, path, digest string) error {
-	if err := (SHA256FileVerifier{}).VerifySHA256(ctx, path, digest); err != nil {
-		return err
-	}
-	return (WindowsAuthenticodeVerifier{}).VerifyAuthenticode(ctx, path)
+	return (SHA256FileVerifier{}).VerifySHA256(ctx, path, digest)
 }
 
 type WindowsDetachedProcessSpawner struct{}
@@ -370,13 +401,6 @@ func RecoverAuthorizedInstaller(stateStorage *ProtectedStorage) error {
 func quoteWindowsArgument(value string) string { return `"` + value + `"` }
 
 func RunProductionUpdateRunner(transactionID string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	if err := (WindowsAuthenticodeVerifier{}).VerifyAuthenticode(context.Background(), self); err != nil {
-		return fmt.Errorf("verify update runner signature: %w", err)
-	}
 	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
 	if err != nil {
 		return err
@@ -410,7 +434,7 @@ func RunProductionUpdateRunner(transactionID string) error {
 	if err != nil {
 		return err
 	}
-	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: ProductionInstallerVerifier{}, VerifyIdentity: verifyStagedMSIIdentity, Runtime: WindowsRunnerRuntime{storage: updateStorage}, Clock: systemClock{}, Authorize: authorizeMachineInstaller}).Run(context.Background(), transactionID)
+	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: ProductionInstallerVerifier{}, VerifyIdentity: verifyStagedMSIIdentity, Runtime: WindowsRunnerRuntime{storage: updateStorage}, Clock: systemClock{}, AuthorizePending: authorizePendingMachineInstaller}).Run(context.Background(), transactionID)
 }
 
 func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedStorage) (*DetachedRunnerLauncher, error) {
@@ -422,12 +446,11 @@ func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedS
 	if err != nil {
 		return nil, err
 	}
-	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsAuthenticodeVerifier{}, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: 30 * time.Second}, executable)
+	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: 30 * time.Second}, executable)
 	if err != nil {
 		return nil, err
 	}
-	// The handoff checks the digest and Windows signature before spawning; the
-	// runner repeats the check before invoking Windows Installer.
+	// Recovery rechecks the pinned digest before invoking Windows Installer.
 	launcher.integrity = ProductionInstallerVerifier{}
 	return launcher, nil
 }

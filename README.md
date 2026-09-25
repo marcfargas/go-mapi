@@ -38,16 +38,18 @@ requires administrator consent for its initial installation. The **user
 component** is the tray app and Gmail client; each Windows user keeps their own
 settings, queue, and Gmail sign-in.
 
-The matrix below describes the intended v4 release behavior. The MSI install
-paths and user-level update checks work in the current release candidate;
-service-managed downloads/installs and conditional suppression of the app's
-system-update notice are still being implemented.
+The matrix below describes the v4 package and update design. Source builds
+currently identify as `0.0.0-dev`; there is no public v4 release candidate.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for release-track rules. The resident
+service can check authenticated metadata and publish discovery status when a
+complete trusted root is embedded. Automatic machine installation and public
+first-party release endpoints remain separate delivery work.
 
 | Install method | What it installs | Update behavior |
 | --- | --- | --- |
-| System-component MSI | System component and one resident updater service | When enabled, the service silently updates only the system component. Use this with a separate user-level user component. |
-| Suite MSI | System component, all-users user component, and the same one resident updater service | When enabled, the service silently updates both components together from the suite release track. |
-| User-level user-component package | User component for one Windows user; no updater service | The app automatically checks for user-component updates and offers an explicit Store, package-manager, or installer update. It also checks system-component compatibility and, unless the system service manages automatic system updates, reports available system-component updates. |
+| System-component MSI | System component and one resident service | The service checks only the installed system release track when enabled and trusted metadata is configured. Optional silent installation is planned separately. Use a separate user-level user component. |
+| Suite MSI | System component, all-users user component, and the same resident service | The service checks only the installed suite release track. Optional automatic installation will replace the bundle together, after that capability is delivered. |
+| User-level user-component package | User component for one Windows user; no updater service | The app automatically checks supported distribution channels and offers a user-initiated Store, package-manager, or installer action. It retains system compatibility and repair guidance and system availability advice until verified automatic service maintenance is operational. |
 
 The two MSIs are alternative machine-wide installs, not packages to install
 side by side. A change between them requires an explicit administrator-approved
@@ -79,10 +81,13 @@ to repair it. A disabled setting does not stop service health and status. A
 full Windows **Restart** may be needed to verify an interrupted installation;
 signing and end-to-end update delivery remain under validation.
 
-During the v4 release-candidate period, use the selected test distribution.
-The service-managed update path and signed publication are still being
-validated; final stable download locations will be published here after that
-end-to-end verification.
+During v4 development, use only a selected test distribution. Machine release
+checking waits two minutes after service startup, uses a six-hour successful
+cadence and bounded persistent retry delays. The per-user app checks on startup
+when its previous attempt is at least 24 hours old, then checks daily while
+enabled. System, suite and user packages have independent release cadences;
+one package's availability does not imply another is ready. The service can
+start and report local health even when metadata or the network is unavailable.
 
 After installing the needed components, start go-mapi and sign in with your
 Gmail or Google Workspace account when prompted.
@@ -108,14 +113,15 @@ in your inbox. Switch between modes in the go-mapi window.
 
 ## Updates
 
-For the managed v4 release, when enabled, the resident service installs
-compatible updates silently and without a signed-in user, but only for the
-installed MSI's release track:
-system-only or suite. The separate user-level package checks automatically but
-does not install its own updates in the background; you choose when to replace
-it. Its system-component update prompt is omitted when the service is managing
-those updates, while compatibility checks remain. Initial system installation
-and explicit repair can still require administrator consent.
+The v4 resident service checks the installed MSI's authenticated system or
+suite release track without a signed-in user. This discovery step identifies
+an immutable candidate but never runs an installer. Optional silent machine
+installation is a later capability. The separate user-level package checks
+automatically but only the user can start its Store, package-manager or
+installer action. Compatibility and repair guidance remains visible; system
+availability advice is hidden only when fresh trusted status proves automatic
+machine maintenance is actually working. Initial machine installation and
+explicit repair require administrator consent.
 
 Update checks contact `go-mapi.app` and report only
 the app version, distribution channel, operating system, and coarse
