@@ -57,8 +57,7 @@ func verifyInstalledInterceptor(ctx context.Context, root, version, appVersion s
 	}
 	if manifest.Schema != "go-mapi-installed-interceptor-v1" || manifest.Component != "interceptor" ||
 		manifest.Version != version || manifest.QueueProtocol != "queue-v1" || len(manifest.Artifacts) != 2 ||
-		manifest.Requires.Component != "app" || !mapi.IsStrictReleaseVersion(manifest.Requires.MinInclusive) ||
-		manifest.Requires.MaxExclusive != "" {
+		manifest.Requires.Component != "app" || !mapi.IsValidCounterpartRequirement(manifest.Requires) {
 		return errors.New("installed interceptor manifest facts do not match machine product")
 	}
 	if appVersion != "" && mapi.EvaluateCompatibility(appVersion, manifest.Requires, "").Status != mapi.CompatibilityCompatible {

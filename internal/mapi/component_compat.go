@@ -32,6 +32,23 @@ type CompatibilityResult struct {
 	Action           string                 `json:"action"`
 }
 
+// IsValidCounterpartRequirement checks that an optional upper bound follows
+// the minimum in SemVer order, independently of any installed counterpart.
+func IsValidCounterpartRequirement(required CounterpartRequirement) bool {
+	if required.Component == "" || !IsStrictReleaseVersion(required.MinInclusive) {
+		return false
+	}
+	if required.MaxExclusive == "" {
+		return true
+	}
+	if !IsStrictReleaseVersion(required.MaxExclusive) {
+		return false
+	}
+	minimum, _ := parseStrictSemVer(required.MinInclusive)
+	maximum, _ := parseStrictSemVer(required.MaxExclusive)
+	return minimum.compare(maximum) < 0
+}
+
 // EvaluateCompatibility applies canonical SemVer 2.0 precedence to structured
 // bounds. Build metadata is retained for diagnostics and ignored for ordering.
 func EvaluateCompatibility(installed string, required CounterpartRequirement, action string) CompatibilityResult {

@@ -34,7 +34,7 @@ func TestVerifyInstalledInterceptor(t *testing.T) {
 	manifest := map[string]any{
 		"schema": "go-mapi-installed-interceptor-v1", "component": "interceptor",
 		"version": "4.0.2", "queueProtocol": "queue-v1",
-		"requires":  map[string]string{"component": "app", "minInclusive": "4.0.0"},
+		"requires":  map[string]string{"component": "app", "minInclusive": "4.0.0", "maxExclusive": "7.0.0"},
 		"artifacts": artifacts,
 	}
 	writeManifest := func() {
@@ -47,15 +47,24 @@ func TestVerifyInstalledInterceptor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	check := func(wantError bool) {
+	checkAt := func(appVersion string, wantError bool) {
 		t.Helper()
 		writeManifest()
-		err := verifyInstalledInterceptor(context.Background(), root, "4.0.2", "4.0.1")
+		err := verifyInstalledInterceptor(context.Background(), root, "4.0.2", appVersion)
 		if (err != nil) != wantError {
 			t.Fatalf("health error=%v, want error=%v", err, wantError)
 		}
 	}
+	check := func(wantError bool) { checkAt("4.0.1", wantError) }
 	check(false)
+	checkAt("", false)              // The system package has no contained app.
+	checkAt("5.0.0-alpha.1", false) // The suite app is inside [4.0.0, 7.0.0).
+	checkAt("7.0.0", true)          // The upper bound remains exclusive for suite.
+	for _, upper := range []string{"4.0.0", "3.9.9", "garbage", "v7.0.0"} {
+		manifest["requires"] = map[string]string{"component": "app", "minInclusive": "4.0.0", "maxExclusive": upper}
+		checkAt("", true) // Invalid bounds fail even without an installed app.
+	}
+	manifest["requires"] = map[string]string{"component": "app", "minInclusive": "4.0.0", "maxExclusive": "7.0.0"}
 
 	manifest["version"] = "4.0.3"
 	check(true)
