@@ -491,7 +491,7 @@ jobs:
             } elseif ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON)) {
               $env:MACHINE_RELEASE_TARGET_SPEC_JSON
             } else { $env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON }
-            $spec = $specJson | ConvertFrom-Json
+            $spec = $specJson | ConvertFrom-Json -DateKind String
             if ($spec.sku -cne $sku -or $spec.packageRelease -cne $release) { throw 'Machine target spec SKU/release mismatch' }
             $expectedContained = @($manifest.components | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
             $specifiedContained = @($spec.contained | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
