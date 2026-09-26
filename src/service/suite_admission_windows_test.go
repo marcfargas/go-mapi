@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func testSuiteGate(t *testing.T) *SuiteAdmission {
@@ -18,6 +21,29 @@ func testSuiteGate(t *testing.T) *SuiteAdmission {
 	}
 	gate, err := NewSuiteAdmission(storage)
 	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := gate.path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The hosted test runs as an administrator, while the production writer runs
+	// as SYSTEM. Create the real file with that owner and the protected parent's
+	// inherited DACL before exercising the production gate checks.
+	descriptor, err := windows.SecurityDescriptorFromString("O:SY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	security := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: descriptor}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, &security, windows.CREATE_NEW, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.CloseHandle(handle); err != nil {
 		t.Fatal(err)
 	}
 	if err := gate.Close(context.Background()); err != nil {
