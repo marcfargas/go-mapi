@@ -240,12 +240,17 @@ jobs:
         with:
           name: go-mapi-machine-app
           path: ci-input/app
-      - name: Use runner LLVM resource compiler
+      - name: Install dual-bitness MinGW clang toolchain
         shell: pwsh
         run: |
-          $bin = Join-Path $env:ProgramFiles 'LLVM\bin'
-          if (-not (Test-Path -LiteralPath (Join-Path $bin 'llvm-rc.exe'))) { throw "Missing llvm-rc.exe in runner LLVM at $bin" }
-          $bin | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
+          scoop install mingw-mstorsjo-llvm-ucrt
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
+          $windres = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin\x86_64-w64-mingw32-windres.exe"
+          if (-not (Test-Path -LiteralPath $windres -PathType Leaf)) { throw "Missing service windres at $windres" }
+          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Prepare current system and suite MSI fixtures
         shell: pwsh
         run: |
