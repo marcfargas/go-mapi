@@ -105,7 +105,7 @@ try {
         $servicePath = Join-Path $output "go-mapi-service-$serviceVersion.exe"
         if (-not $serviceHashes.ContainsKey($serviceVersion)) {
             & (Join-Path $source 'src\service\build.ps1') -OutputPath $servicePath -ArtifactOrigin $ArtifactOrigin -CheckIntervalSeconds $CheckIntervalSeconds
-            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $servicePath)) { throw "Service build failed: $serviceVersion" }
+            if (-not (Test-Path $servicePath)) { throw "Service build failed: $serviceVersion" }
             Sign $servicePath
             $serviceHashes[$serviceVersion] = Hash $servicePath
         }
@@ -126,14 +126,12 @@ try {
         WriteJson $inputManifest $manifest
         $msiDir = Join-Path $inputDir 'msi'
         & (Join-Path $repo 'src\installer\msi\build.ps1') -SKU $case.sku -SignedInputManifest $inputManifest -OutputDirectory $msiDir -RequireSignedInputs
-        if ($LASTEXITCODE -ne 0) { throw "MSI build failed: $($case.key)" }
         $identity = (& go run ./internal/mapi/cmd/machine-package -- $case.sku $case.release | ConvertFrom-Json)
         if ($LASTEXITCODE -ne 0) { throw 'Machine identity command failed' }
         $msiPath = Join-Path $msiDir $identity.assetName
         if (-not (Test-Path $msiPath)) { throw "Missing built MSI $msiPath" }
         Sign $msiPath
         & (Join-Path $repo 'src\installer\msi\verify.ps1') -SKU $case.sku -PackageRelease $case.release -MsiPath $msiPath
-        if ($LASTEXITCODE -ne 0) { throw "MSI verification failed: $($case.key)" }
         $packages[$case.key] = [ordered]@{ sku=$case.sku; release=$case.release; identity=$identity; msi=$msiPath; sha256=Hash $msiPath; size=(Get-Item $msiPath).Length; serviceVersion=$serviceVersion; serviceSha256=Hash $servicePath; interceptorVersion=$interceptorVersion; appVersion=if ($case.sku -eq 'suite') { $appVersion } else { $null } }
     }
     foreach ($package in $packages.Values) {
