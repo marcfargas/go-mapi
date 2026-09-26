@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <windows.h>
 #include <tlhelp32.h>
 #include "../test_utils.h"
 
