@@ -240,15 +240,14 @@ jobs:
         with:
           name: go-mapi-machine-app
           path: ci-input/app
-      - name: Install service resource compiler
+      - name: Use runner LLVM resource tools
         shell: pwsh
         run: |
-          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
-          scoop install mingw-mstorsjo-llvm-ucrt
-          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
-          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          $bin = Join-Path $env:ProgramFiles 'LLVM\bin'
+          foreach ($exe in @('llvm-rc.exe', 'llvm-cvtres.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $bin $exe))) { throw "Missing $exe in runner LLVM at $bin" }
+          }
+          $bin | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Prepare current system and suite MSI fixtures
         shell: pwsh
         run: |
