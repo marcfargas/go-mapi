@@ -24,9 +24,9 @@ if ($Mode -eq 'Cleanup') {
     if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return }
     $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
     if ($state.schema -ne 'go-mapi-azure-test-root-fixture-v1' -or $state.certificateSha256 -cne $rootHash -or
-        $state.store -cne 'CurrentUser/Root') { throw 'Invalid test-root cleanup state' }
+        $state.store -cne 'LocalMachine/Root') { throw 'Invalid test-root cleanup state' }
     if ($state.importAttempted -and -not $state.preexisting) {
-        $path = "Cert:\CurrentUser\Root\$($state.thumbprint)"
+        $path = "Cert:\LocalMachine\Root\$($state.thumbprint)"
         if (Test-Path -LiteralPath $path) {
             $certificate = Get-Item -LiteralPath $path -ErrorAction Stop
             $sha256 = [Security.Cryptography.SHA256]::Create()
@@ -35,7 +35,7 @@ if ($Mode -eq 'Cleanup') {
             if ($hash -cne $rootHash) { throw 'Owned test root changed before cleanup' }
             Remove-Item -LiteralPath $path -Force
             if (Test-Path -LiteralPath $path) { throw 'Owned test root remains after cleanup' }
-            Write-Host "Removed owned Azure TEST ONLY root $($state.thumbprint) from CurrentUser Root"
+            Write-Host "Removed owned Azure TEST ONLY root $($state.thumbprint) from LocalMachine Root"
         }
     }
     return
@@ -53,22 +53,22 @@ try {
     Write-Host 'Azure TEST trust pinned Microsoft root SHA-256 matched'
     $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($tempCert)
     if ($certificate.Subject -cne $certificate.Issuer -or -not $certificate.Subject.Contains($rootCommonName)) { throw 'Unexpected Azure TEST root identity' }
-    $storePath = "Cert:\CurrentUser\Root\$($certificate.Thumbprint)"
+    $storePath = "Cert:\LocalMachine\Root\$($certificate.Thumbprint)"
     $alreadyTrusted = Test-Path -LiteralPath $storePath
     $shouldImport = @($baseline | Where-Object status -ne 'Valid').Count -gt 0 -and -not $alreadyTrusted
     $state = [ordered]@{ schema='go-mapi-azure-test-root-fixture-v1'; source=$rootUrl; certificateSha256=$rootHash;
-        thumbprint=$certificate.Thumbprint; store='CurrentUser/Root'; preexisting=$alreadyTrusted; importAttempted=$shouldImport;
+        thumbprint=$certificate.Thumbprint; store='LocalMachine/Root'; preexisting=$alreadyTrusted; importAttempted=$shouldImport;
         imported=$false; baseline=$baseline }
     # Save cleanup ownership before changing the certificate store. If import
     # fails after adding the cert, the job's always() cleanup can still remove it.
     [IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
     if ($shouldImport) {
-        Write-Host 'Azure TEST trust owned CurrentUser Root import starting'
-        Import-Certificate -FilePath $tempCert -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+        Write-Host 'Azure TEST trust owned LocalMachine Root import starting'
+        Import-Certificate -FilePath $tempCert -CertStoreLocation 'Cert:\LocalMachine\Root' | Out-Null
         if (-not (Test-Path -LiteralPath $storePath)) { throw 'Azure TEST root import did not persist' }
         $state.imported = $true
         [IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
-        Write-Host 'Azure TEST trust owned CurrentUser Root import finished'
+        Write-Host 'Azure TEST trust owned LocalMachine Root import finished'
     } else {
         Write-Host 'Azure TEST trust root import skipped; preserving existing store state'
     }

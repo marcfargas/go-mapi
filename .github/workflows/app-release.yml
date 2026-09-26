@@ -296,7 +296,7 @@ jobs:
           if os.environ['TRACK'] == 'development':
               assert signatures['testTrust']['schema'] == 'go-mapi-azure-test-root-fixture-v1'
               assert signatures['testTrust']['certificateSha256'] == '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
-              assert signatures['testTrust']['store'] == 'CurrentUser/Root' and len(signatures['testTrust']['baseline']) == 1
+              assert signatures['testTrust']['store'] == 'LocalMachine/Root' and len(signatures['testTrust']['baseline']) == 1
           winget = sorted(Path('release/winget').glob('*.yaml'))
           assert len(winget) == 3
           installer_manifest = Path('release/winget/MarcFargas.go-mapi.installer.yaml').read_text()

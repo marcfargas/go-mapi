@@ -643,7 +643,7 @@ jobs:
           assert target['sku'] == sku and target['artifact'] == {'url': f'https://github.com/marcfargas/go-mapi/releases/download/{tag}/{asset}', 'size': proof['msi']['size'], 'sha256': proof['msi']['sha256']}
           assert proof['testTrust']['schema'] == 'go-mapi-azure-test-root-fixture-v1'
           assert proof['testTrust']['certificateSha256'] == '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
-          assert proof['testTrust']['store'] == 'CurrentUser/Root' and len(proof['testTrust']['baseline']) == (4 if sku == 'suite' else 3)
+          assert proof['testTrust']['store'] == 'LocalMachine/Root' and len(proof['testTrust']['baseline']) == (4 if sku == 'suite' else 3)
           assert len(proof['signatures']) == (5 if sku == 'suite' else 4)
           assert all(s['status'] == 'Valid' and s['signerThumbprint'] and s['timestampThumbprint'] for s in proof['signatures'])
           if sku == 'suite':
