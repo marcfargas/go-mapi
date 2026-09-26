@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/pkg/browser"
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Keyring service+user coordinates per CONTEXT D-11.
@@ -471,6 +471,11 @@ func (a *App) GetAuthStatus() AuthStatus {
 // Plan 04 adds the event emission in the OnStartup path and refresh failures;
 // the SignIn success emission is added here so the frontend refreshes.
 func (a *App) SignIn() error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if a.auth == nil {
 		return errors.New("auth manager not initialized")
 	}
@@ -726,6 +731,11 @@ func (a *App) emitAuthChanged() {
 // creating buttons while signing out, so no other caller can contend for
 // this mutex; holding it across revoke prevents any partial-state window.
 func (a *App) SignOut() error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if a.auth == nil {
 		return errors.New("auth manager not initialized")
 	}
@@ -737,10 +747,13 @@ func (a *App) SignOut() error {
 	}
 	a.auth.refresh.Lock()
 	a.auth.revokeRefreshToken(ctx) // best-effort; logs on failure; 5s bounded
+	if err := a.auth.keyring.Delete(keyringService, keyringUser); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		a.auth.refresh.Unlock()
+		return fmt.Errorf("clear saved identity: %w", err)
+	}
 	a.auth.tokens = nil
 	a.auth.email = ""
 	a.auth.name = ""
-	_ = a.auth.keyring.Delete(keyringService, keyringUser) // ignore ErrNotFound
 	a.auth.refresh.Unlock()
 
 	a.emitAuthChanged()
@@ -765,6 +778,17 @@ func (a *App) SignOut() error {
 // and wait with a timeout select instead of relying on process-exit timing.
 func (a *App) bootstrapAuth() <-chan struct{} {
 	done := make(chan struct{})
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		close(done)
+		return done
+	}
+	async := false
+	defer func() {
+		if !async {
+			finish()
+		}
+	}()
 	if a.auth == nil {
 		close(done)
 		return done
@@ -785,7 +809,7 @@ func (a *App) bootstrapAuth() <-chan struct{} {
 	}
 	// Proactive refresh if within 5 minutes of expiry.
 	a.auth.refresh.Lock()
-	err := a.auth.refreshIfNeededLocked(a.ctx)
+	err = a.auth.refreshIfNeededLocked(a.ctx)
 	a.auth.refresh.Unlock()
 	if errors.Is(err, ErrInvalidGrant) {
 		logInfo("oauth bootstrap: invalid_grant — prompting re-sign-in")
@@ -809,12 +833,18 @@ func (a *App) bootstrapAuth() <-chan struct{} {
 	// frontend renders the queue view from the initial GetAuthStatus() pull
 	// on mount, and updates email/name via this single async emit.
 	// The returned done channel is closed when the goroutine completes (WR-02).
+	userinfoCtx := a.ctx
+	if userinfoCtx == nil {
+		userinfoCtx = context.Background()
+	}
+	async = true
 	go func() {
 		defer close(done)
+		defer finish()
 		a.auth.refresh.Lock()
-		a.auth.fetchUserInfoLocked(a.ctx)
+		a.auth.fetchUserInfoLocked(userinfoCtx)
 		a.auth.refresh.Unlock()
-		a.emitAuthChanged()    // single emission, email/name populated
+		a.emitAuthChanged()   // single emission, email/name populated
 		a.signalTrayRefresh() // tray reads SignedIn from auth.Status() — refresh after auth settles
 	}()
 	return done

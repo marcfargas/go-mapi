@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/marcfargas/go-mapi/internal/mapi"
+
 	"github.com/pkg/browser"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -79,6 +81,13 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if AppDistribution == "machine" {
+		open, err := mapi.MachineAdmissionOpen(context.Background())
+		if err != nil || !open {
+			logInfo("machine suite admission closed; startup deferred")
+			return
+		}
 	}
 	if err := prepareStoreTargetHandoff(context.Background()); err != nil {
 		println("Error:", err.Error())

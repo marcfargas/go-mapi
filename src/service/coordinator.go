@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,7 @@ const (
 	OutcomeRolledBack         Outcome = "rolled-back"
 	OutcomeRebootPending      Outcome = "reboot-pending"
 	OutcomeRepairRequired     Outcome = "repair-required"
+	OutcomeRepairRetired      Outcome = "repair-retired"
 	OutcomeBackoff            Outcome = "backoff"
 	OutcomeOutcomeUnconfirmed Outcome = "outcome-unconfirmed"
 )
@@ -158,6 +160,8 @@ type Dependencies struct {
 	Clock                Clock
 	Boot                 BootIdentity
 	IDs                  IDGenerator
+	RecoveryLock         func() (func(), error)
+	RetireRepair         func(context.Context, PendingV1, ProductSnapshot) error
 }
 
 type Coordinator struct {
@@ -401,7 +405,7 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	case PhaseRolledBack:
 		return coordinator.retireTerminal(ctx, *pending, OutcomeRolledBack)
 	case PhaseRepairRequired:
-		return OutcomeRepairRequired, nil
+		return coordinator.retireProvedRepair(ctx, *pending, bootID)
 	case PhaseOutcomeUnconfirmed:
 		// A missing exit can leave a healthy candidate waiting for a full
 		// restart. Once the volatile boot identity changes, re-observe the
@@ -562,6 +566,102 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		return outcome, nil
 	}
 	return coordinator.requireRepair(ctx, pending)
+}
+
+// retireProvedRepair records the historical ambiguity without replaying or
+// converting a failed MSI exit into installation success.
+func (coordinator *Coordinator) retireProvedRepair(ctx context.Context, pending PendingV1, bootID string) (Outcome, error) {
+	if coordinator.config.SKU != update.Suite || pending.SKU != update.Suite || pending.Result != ResultAmbiguous ||
+		coordinator.deps.RecoveryLock == nil || coordinator.deps.RetireRepair == nil {
+		return OutcomeRepairRequired, nil
+	}
+	unlock, err := coordinator.deps.RecoveryLock()
+	if err != nil {
+		return OutcomeRepairRequired, nil
+	}
+	defer unlock()
+	latest, err := coordinator.deps.Pending.Load(ctx)
+	if err != nil {
+		return "", err
+	}
+	if latest == nil {
+		return OutcomeRepairRequired, nil
+	}
+	expected, err := MarshalPending(pending)
+	if err != nil {
+		return "", err
+	}
+	actual, err := MarshalPending(*latest)
+	if err != nil {
+		return "", err
+	}
+	if !bytes.Equal(expected, actual) {
+		return OutcomeRepairRequired, nil
+	}
+	for _, identity := range []*ProcessIdentity{pending.Runner, pending.Installer} {
+		if identity == nil {
+			continue
+		}
+		alive, err := coordinator.deps.Processes.Alive(ctx, *identity)
+		if err != nil {
+			return "", err
+		}
+		if alive {
+			return OutcomeRepairRequired, nil
+		}
+	}
+	if pending.Exit != nil && (pending.Exit.Code == 3010 || pending.Exit.Code == 1641) &&
+		(pending.LaunchBootID == "" || pending.LaunchBootID == bootID) {
+		return OutcomeRepairRequired, nil
+	}
+	idle, err := coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	if !idle {
+		return OutcomeRepairRequired, nil
+	}
+	products, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(products) != 1 || products[0].Snapshot.SKU != pending.SKU {
+		return OutcomeRepairRequired, nil
+	}
+	installed := products[0].Snapshot
+	old := sameProduct(installed, pending.Old)
+	candidate := sameProduct(installed, pending.Candidate)
+	if !old && !candidate {
+		return OutcomeRepairRequired, nil
+	}
+	if pending.Exit == nil && candidate && (pending.LaunchBootID == "" || pending.LaunchBootID == bootID) {
+		return OutcomeRepairRequired, nil
+	}
+	healthy, err := coordinator.deps.Health.Healthy(ctx, installed)
+	if err != nil {
+		return "", err
+	}
+	if !healthy {
+		return OutcomeRepairRequired, nil
+	}
+	idle, err = coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	if !idle {
+		return OutcomeRepairRequired, nil
+	}
+	confirmed, err := coordinator.deps.Inventory.Products(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, installed) {
+		return OutcomeRepairRequired, nil
+	}
+	if err := coordinator.deps.RetireRepair(ctx, pending, installed); err != nil {
+		return "", err
+	}
+	return OutcomeRepairRetired, nil
 }
 
 func (coordinator *Coordinator) retryInstaller(ctx context.Context, pending PendingV1, now time.Time) (Outcome, error) {

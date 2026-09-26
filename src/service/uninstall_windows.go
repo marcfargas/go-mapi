@@ -35,6 +35,17 @@ func RunFinalUninstallFence(mode ExecutableMode) error {
 			return err
 		}
 		defer runnerLock.Close()
+		statusStorage, err := NewPublicStatusStorage(paths.Status)
+		if err != nil {
+			return err
+		}
+		gate, err := NewSuiteAdmission(statusStorage)
+		if err != nil {
+			return err
+		}
+		if err := gate.Close(context.Background()); err != nil {
+			return err
+		}
 		return state.BeginFinalUninstall(context.Background())
 	case ModeRollbackFinalUninstall:
 		return state.RollbackFinalUninstall()

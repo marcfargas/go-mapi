@@ -38,11 +38,16 @@ func (a *App) GetStartupState() StartupState {
 // Windows denies the operation. The returned state then exposes the mismatch
 // and remediation instead of silently pretending registration succeeded.
 func (a *App) SetAutostartEnabled(enabled bool) (StartupState, error) {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return StartupState{}, err
+	}
+	defer finish()
 	a.settingsMu.RLock()
 	s := a.settings
 	a.settingsMu.RUnlock()
 	s.AutostartEnabled = enabled
-	if err := a.SaveSettings(s); err != nil {
+	if err := a.saveSettingsAdmitted(s); err != nil {
 		return StartupState{}, fmt.Errorf("save autostart preference: %w", err)
 	}
 	ctx := a.ctx

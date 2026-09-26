@@ -51,3 +51,14 @@ func TestPublicStatusV2DecoderRequiresFieldsAndRejectsUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicStatusAcceptsHistoricalAmbiguityWithHealthyPresent(t *testing.T) {
+	status := PublicStatusV2{Schema: PublicStatusSchemaV2, SKU: "suite", Health: "healthy", Updates: "enabled", Code: "pending", Capability: "automatic", Checker: "unavailable", LastResult: "ambiguous", LastResultAt: time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 9, 26, 8, 0, 0, 0, time.UTC)}
+	if err := ValidatePublicStatusV2(status); err != nil {
+		t.Fatal(err)
+	}
+	status.LastResultAt = time.Time{}
+	if err := ValidatePublicStatusV2(status); err == nil {
+		t.Fatal("accepted ambiguous history without its original timestamp")
+	}
+}

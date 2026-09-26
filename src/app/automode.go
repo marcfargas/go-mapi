@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -140,6 +141,11 @@ func (m *automode) release(id string) {
 // Privacy: logs only the 8-char id prefix + error category (QUAL-03).
 // Never logs subject / body / recipient. T-9-09 compliance.
 func (m *automode) draftOne(e mapi.EmailWithId) error {
+	finish, admissionErr := m.app.beginMachineOperation(context.Background())
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer finish()
 	// T-9-06: per-call timeout. 30s chosen per RESEARCH §4; Gmail p95 is ~1-3s.
 	// shutdownCtx ensures app quit cancels in-flight calls.
 	ctx, cancel := context.WithTimeout(m.app.shutdownCtx, 30*time.Second)
@@ -185,9 +191,11 @@ func (m *automode) draftOne(e mapi.EmailWithId) error {
 	}
 
 	if err := m.app.watcher.MarkProcessed(e.Id); err != nil {
-		// MarkProcessed is idempotent (Task 1) — a non-nil error here is unexpected.
-		// Log and let the row linger; the queue-update event will refresh the UI.
 		logError("automode: MarkProcessed %s: %v", safeIDPrefix(e.Id), err)
+		m.emit("auto-draft-result", map[string]any{
+			"emailId": e.Id, "success": false, "errorCategory": "queue", "reason": err.Error(),
+		})
+		return fmt.Errorf("queue acknowledgement: %w", err)
 	}
 	// Draft-success toast: only fires when window is hidden (D-11). Subject safe per
 	// UI-SPEC copywriting; no body text / recipient email exposed (QUAL-03).

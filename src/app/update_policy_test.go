@@ -66,3 +66,26 @@ func TestUpdatePolicySuppressesOnlyVerifiedAutomaticManagement(t *testing.T) {
 		}
 	}
 }
+
+func TestMachineGuidanceUsesCurrentHealthOverHistoricalAmbiguity(t *testing.T) {
+	now := time.Now().UTC()
+	status := mapi.PublicStatusV2{
+		Schema: mapi.PublicStatusSchemaV2, SKU: "suite", PackageVersion: "4.0.1", InterceptorVersion: "4.0.0",
+		Health: "healthy", Updates: "enabled", Capability: "automatic", Code: "pending", Checker: "no-update",
+		LastResult: "ambiguous", LastResultAt: now.Add(-time.Hour), UpdatedAt: now, HealthObservedAt: now,
+		LastSuccessAt: now, CandidateExpiresAt: now.Add(time.Hour), NextAttemptAt: now.Add(time.Hour),
+	}
+	machine := publicMachineStatus{Status: status, Identity: mapi.InstalledStatusIdentity{SKU: "suite", PackageVersion: "4.0.1", InterceptorVersion: "4.0.0"}, ServiceRunning: true, Trusted: true}
+	if got := effectiveUpdateState(UpdateState{}, "machine", machine); !got.ManagedSystemUpdate || got.UpdateGuidance != "This machine installation is maintained automatically." {
+		t.Fatalf("healthy repaired suite guidance: %+v", got)
+	}
+	machine.Status.Code = "repair-required"
+	if got := effectiveUpdateState(UpdateState{}, "machine", machine); got.ManagedSystemUpdate || got.UpdateGuidance != "The machine installation needs repair. Contact your administrator." {
+		t.Fatalf("unresolved repair guidance: %+v", got)
+	}
+	machine.Status.Code = "pending"
+	machine.Status.Updates = "disabled"
+	if got := effectiveUpdateState(UpdateState{}, "machine", machine); got.ManagedSystemUpdate || got.UpdateGuidance != "Automatic machine updates are disabled. Contact your administrator for updates." {
+		t.Fatalf("disabled guidance: %+v", got)
+	}
+}

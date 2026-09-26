@@ -85,8 +85,9 @@ verify-system-package *args:
 verify-suite-package *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite {{args}}
 
+[positional-arguments]
 build-machine-test-packages *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-machine-test-packages.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-machine-test-packages.ps1 "$@"
 
 [positional-arguments]
 machine-update-integration *args:

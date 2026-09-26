@@ -15,7 +15,9 @@
       ? 'Signed out'
       : category === 'network'
         ? 'Network error'
-        : 'Gmail error',
+        : category === 'queue'
+          ? 'Queue acknowledgement failed'
+          : 'Gmail error',
   );
 
   // Compose a tooltip that includes the raw reason when present so the user

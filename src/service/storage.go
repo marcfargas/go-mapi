@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -449,6 +450,19 @@ func (store *FileStateStore) Load(_ context.Context) (*PendingV1, error) {
 		return nil, err
 	}
 	defer unlock()
+	return store.loadLocked()
+}
+
+func (store *FileStateStore) LoadBounded(ctx context.Context) (*PendingV1, error) {
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return store.loadLocked()
+}
+
+func (store *FileStateStore) loadLocked() (*PendingV1, error) {
 	data, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -515,6 +529,42 @@ func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *Pendi
 	return err
 }
 
+// SaveSuiteDrainDeadline is the short admission -> state.lock transaction
+// after C has been flushed. The caller samples closedAt before waiting here.
+func (store *FileStateStore) SaveSuiteDrainDeadline(ctx context.Context, expected PendingV1, closedAt time.Time) (PendingV1, error) {
+	prior, err := MarshalPending(expected)
+	if err != nil {
+		return PendingV1{}, err
+	}
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
+	if err != nil {
+		return PendingV1{}, err
+	}
+	defer unlock()
+	current, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
+	if err != nil {
+		return PendingV1{}, err
+	}
+	if !bytes.Equal(current, prior) {
+		return PendingV1{}, ErrStateConflict
+	}
+	if expected.AppDrainDeadline != nil {
+		return expected, nil
+	}
+	next := expected
+	deadline := closedAt.Add(suiteGraceDuration).UTC()
+	next.AppDrainDeadline = &deadline
+	next.UpdatedAt = closedAt.UTC()
+	encoded, err := MarshalPending(next)
+	if err != nil {
+		return PendingV1{}, err
+	}
+	if _, err := store.storage.WriteAtomic(ctx, []string{"pending-v2.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), ""); err != nil {
+		return PendingV1{}, err
+	}
+	return next, nil
+}
+
 // BeginFinalUninstall shares state.lock with new transaction preparation.
 // A pending transaction is never discarded to make uninstall appear safe.
 func (store *FileStateStore) BeginFinalUninstall(ctx context.Context) error {
@@ -559,6 +609,10 @@ func (store *FileStateStore) CompareAndClear(_ context.Context, expected Pending
 		return err
 	}
 	defer unlock()
+	return store.compareAndClearLocked(prior)
+}
+
+func (store *FileStateStore) compareAndClearLocked(prior []byte) error {
 	current, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
 	if err != nil {
 		return err
@@ -567,6 +621,72 @@ func (store *FileStateStore) CompareAndClear(_ context.Context, expected Pending
 		return ErrStateConflict
 	}
 	return store.storage.Remove("pending-v2.json")
+}
+
+// CompareAndRetireRepair is the state.lock finalizer. The witness is flushed
+// before the byte-exact pending record is removed.
+func (store *FileStateStore) CompareAndRetireRepair(ctx context.Context, expected PendingV1, witness *FileLastResultStore, checks ...func() error) error {
+	if expected.SKU != update.Suite || expected.Phase != PhaseRepairRequired || expected.Result != ResultAmbiguous || witness == nil || witness.storage != store.storage {
+		return errors.New("invalid suite repair retirement")
+	}
+	prior, err := MarshalPending(expected)
+	if err != nil {
+		return err
+	}
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := store.storage.Read([]string{finalUninstallFenceName}, 64); err == nil {
+		return ErrFinalUninstallFenced
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	current, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, prior) {
+		return ErrStateConflict
+	}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	if err := witness.saveLocked(ctx, lastResultFromPending(expected)); err != nil {
+		return err
+	}
+	return store.compareAndClearLocked(prior)
+}
+
+// PublishSuiteOpen holds state.lock while the service flushes O.
+func (store *FileStateStore) PublishSuiteOpen(ctx context.Context, write func(byte) error, checks ...func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, err := store.storage.Read([]string{finalUninstallFenceName}, 64); err == nil {
+		return ErrFinalUninstallFenced
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := store.storage.Read([]string{"pending-v2.json"}, maxStateBytes); err == nil {
+		return ErrStateConflict
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return write('O')
 }
 
 type FileReplayStore struct {
@@ -681,6 +801,13 @@ func (store *FileLastResultStore) Save(ctx context.Context, result LastResultV1)
 		return err
 	}
 	defer unlock()
+	return store.saveLocked(ctx, result)
+}
+
+func (store *FileLastResultStore) saveLocked(ctx context.Context, result LastResultV1) error {
+	if err := result.Validate(); err != nil {
+		return err
+	}
 	previous, err := store.storage.Read([]string{"last-result-v1.json"}, maxStateBytes)
 	if err == nil {
 		var old LastResultV1
@@ -695,7 +822,7 @@ func (store *FileLastResultStore) Save(ctx context.Context, result LastResultV1)
 			return ErrStateConflict
 		}
 		if old.TransactionID == result.TransactionID {
-			if old != result {
+			if !reflect.DeepEqual(old, result) {
 				return ErrStateConflict
 			}
 			return nil

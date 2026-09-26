@@ -3,6 +3,12 @@ import { render } from '@testing-library/svelte';
 import AutoDraftErrorBadge from './AutoDraftErrorBadge.svelte';
 
 describe('AutoDraftErrorBadge', () => {
+  it('identifies a queue acknowledgement failure without claiming a Gmail failure', () => {
+    const { getByRole } = render(AutoDraftErrorBadge, {
+      props: { category: 'queue', reason: 'descriptor could not be removed' },
+    });
+    expect(getByRole('status').getAttribute('aria-label')).toContain('Queue acknowledgement failed');
+  });
   it('renders the `!` glyph', () => {
     const { getByText } = render(AutoDraftErrorBadge, {
       props: { category: 'signed-out' },

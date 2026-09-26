@@ -225,6 +225,7 @@ ULONG MapiImpl::MAPISendMailA(
             return MAPI_E_FAILURE;
         }
         WarnIfWailsAppUnavailable();
+		(void)FsUtils::ActivateSuiteAppAfterPublication();
         return SUCCESS_SUCCESS;
     } catch (...) {
         // Serialization and filesystem calls can throw too. Never strand
@@ -272,6 +273,7 @@ ULONG MapiImpl::MAPISendMailW(
             return MAPI_E_FAILURE;
         }
         WarnIfWailsAppUnavailable();
+		(void)FsUtils::ActivateSuiteAppAfterPublication();
         return SUCCESS_SUCCESS;
     } catch (...) {
         if (!stem.empty()) {
@@ -346,6 +348,7 @@ ULONG MapiImpl::MAPISendDocuments(
             return MAPI_E_FAILURE;
         }
         WarnIfWailsAppUnavailable();
+		(void)FsUtils::ActivateSuiteAppAfterPublication();
         return SUCCESS_SUCCESS;
     } catch (...) {
         if (!stem.empty()) {

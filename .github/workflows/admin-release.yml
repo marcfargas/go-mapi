@@ -22,6 +22,30 @@ on:
         description: 'Reserved release request; publication remains gated'
         type: boolean
         default: false
+      target_spec_json:
+        description: 'Plain machine target spec JSON; falls back to environment variable'
+        type: string
+        required: false
+      controlled_origin_fixture:
+        description: 'Explicit signed HTTPS localhost native fixture derivative; never publishable'
+        type: boolean
+        default: false
+      reuse_run_id:
+        description: 'Pinned earlier suite B validation run containing signed PE bundle (suite C only)'
+        type: string
+        required: false
+      reuse_run_attempt:
+        description: 'Pinned earlier suite B run attempt'
+        type: string
+        required: false
+      reuse_release:
+        description: 'Earlier suite B package release'
+        type: string
+        required: false
+      reuse_commit:
+        description: 'Earlier suite B full source commit'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -41,6 +65,10 @@ jobs:
     # This validation job builds machine packages but does not publish them.
     if: github.event_name == 'workflow_dispatch' && inputs.sku != 'admin'
     environment: artifact-signing
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     runs-on: windows-latest
     env:
       HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
@@ -48,6 +76,11 @@ jobs:
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
       MACHINE_RELEASE_TARGET_SPEC_JSON: ${{ vars.MACHINE_RELEASE_TARGET_SPEC_JSON }}
+      MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON: ${{ inputs.target_spec_json }}
+      REUSE_RUN_ID: ${{ inputs.reuse_run_id }}
+      REUSE_RUN_ATTEMPT: ${{ inputs.reuse_run_attempt }}
+      REUSE_RELEASE: ${{ inputs.reuse_release }}
+      REUSE_COMMIT: ${{ inputs.reuse_commit }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,6 +101,13 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $identity.sku -ne $sku -or $identity.tag -ne "$sku-v$release") { throw 'Invalid machine package identity' }
           if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne '${{ github.sha }}') { throw 'Checkout does not match the triggering commit' }
           if ((git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Machine release checkout is dirty before build' }
+          $reuse = $env:REUSE_RUN_ID -ne ''
+          if ($reuse -and ($sku -ne 'suite' -or '${{ inputs.sign }}' -ne 'true' -or '${{ inputs.controlled_origin_fixture }}' -ne 'true' -or
+              $env:REUSE_RUN_ID -notmatch '^[1-9][0-9]*$' -or $env:REUSE_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$' -or
+              $env:REUSE_RELEASE -notmatch '^5\.[0-9]+\.[0-9]+-(alpha|beta|nightly)\.[1-9][0-9]*$' -or
+              $env:REUSE_COMMIT -notmatch '^[0-9a-f]{40}$')) { throw 'Suite C reuse requires pinned signed fixture B identity' }
+          if (-not $reuse -and ($env:REUSE_RUN_ATTEMPT -ne '' -or $env:REUSE_RELEASE -ne '' -or $env:REUSE_COMMIT -ne '')) { throw 'Incomplete prior bundle selector' }
+          if ('${{ inputs.controlled_origin_fixture }}' -eq 'true' -and '${{ inputs.sign }}' -ne 'true') { throw 'Controlled-origin derivative requires signed validation' }
           $versions = [ordered]@{
             service = (Get-Content src/service/VERSION -Raw).Trim()
             interceptor = (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim()
@@ -83,12 +123,69 @@ jobs:
           "asset=$($identity.assetName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
           "manifest=$($identity.manifestName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
 
+      - name: Download pinned prior suite signed PE bundle
+        if: inputs.reuse_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-suite-${{ inputs.reuse_release }}-signed-inputs
+          path: reuse-input
+          run-id: ${{ inputs.reuse_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify and import exact prior signed PEs
+        if: inputs.reuse_run_id != ''
+        shell: pwsh
+        run: |
+          $old = Get-Content reuse-input/reuse-provenance.json -Raw | ConvertFrom-Json
+          $input = Get-Content reuse-input/signed-input.json -Raw | ConvertFrom-Json
+          $hashes = Get-Content reuse-input/unsigned-hashes.json -Raw | ConvertFrom-Json
+          if ($old.schema -ne 'go-mapi-machine-validation-provenance-v1' -or $old.publishable -ne $false -or
+              $old.repository -cne '${{ github.repository }}' -or $old.workflow -cne 'Validate machine package' -or
+              [string]$old.runId -cne $env:REUSE_RUN_ID -or [string]$old.runAttempt -cne $env:REUSE_RUN_ATTEMPT -or
+              $old.commit -cne $env:REUSE_COMMIT -or $old.sku -cne 'suite' -or
+              $old.packageRelease -cne $env:REUSE_RELEASE -or $old.msi.signed -ne $true -or
+              $old.derivative.kind -cne 'https-localhost-native-fixture' -or
+              $old.derivative.metadataOrigin -cne 'https://localhost:18453' -or
+              $old.derivative.artifactOrigin -cne 'https://localhost:18453/releases/download/' -or
+              $old.derivative.checkIntervalSeconds -ne 60 -or
+              $input.schema -cne 'go-mapi-machine-signed-input-v1' -or $input.sku -cne 'suite' -or
+              $input.commit -cne $old.commit -or $input.packageRelease -cne $old.packageRelease) { throw 'Prior bundle provenance is not the pinned signed fixture B' }
+          $contained = @($input.components | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
+          $recorded = @($old.contained | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
+          if (($contained -join ',') -cne ($recorded -join ',')) { throw 'Prior signed inventory differs from recorded contained versions' }
+          $identity = go run ./internal/mapi/cmd/machine-package -- suite $old.packageRelease | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $old.productCode -cne $identity.productCode -or $old.assetName -cne $identity.assetName -or
+              $old.msi.sha256 -notmatch '^[a-f0-9]{64}$') { throw 'Prior bundle package identity invalid' }
+          $parts = @($input.components | Where-Object { $_.component -in @('service','interceptor') })
+          if ($parts.Count -ne 2 -or @($input.components | Where-Object component -eq 'app').Count -ne 1) { throw 'Prior suite inventory incomplete' }
+          $names = @('go-mapi-service.exe','go-mapi-x86.dll','go-mapi-x64.dll')
+          foreach ($name in $names) {
+            $path = Join-Path reuse-input $name
+            $record = @($old.peHashes | Where-Object filename -eq $name)
+            $artifact = @($parts.artifacts | Where-Object filename -eq $name)
+            if ($record.Count -ne 1 -or $artifact.Count -ne 1 -or -not (Test-Path -LiteralPath $path -PathType Leaf) -or
+                $record[0].signedSha256 -cne $artifact[0].sha256 -or $record[0].unsignedSha256 -cne $hashes.$name -or
+                (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact[0].sha256) { throw "Prior PE hash provenance mismatch: $name" }
+            $sig = Get-AuthenticodeSignature -LiteralPath $path
+            if ($sig.Status -ne 'Valid' -or $sig.SignatureType -ne 'Authenticode' -or -not $sig.TimeStamperCertificate) { throw "Prior PE signing proof missing: $name" }
+          }
+          foreach ($component in @('service','interceptor')) {
+            $source = $old.componentSources.$component
+            if (-not $source -or $source.commit -cne $old.commit -or [string]::IsNullOrWhiteSpace($source.buildId)) { throw "Prior $component build identity missing" }
+          }
+          if ($old.componentSources.service.signedSha256 -cne @($parts | Where-Object component -eq 'service')[0].artifacts[0].sha256 -or
+              $old.componentSources.interceptor.x86SignedSha256 -cne @(@($parts | Where-Object component -eq 'interceptor')[0].artifacts | Where-Object architecture -eq 'x86')[0].sha256 -or
+              $old.componentSources.interceptor.x64SignedSha256 -cne @(@($parts | Where-Object component -eq 'interceptor')[0].artifacts | Where-Object architecture -eq 'x64')[0].sha256) { throw 'Prior component source records do not bind signed PEs' }
+          New-Item -ItemType Directory -Force release/machine-input | Out-Null
+          foreach ($name in $names) { Copy-Item -LiteralPath (Join-Path reuse-input $name) -Destination (Join-Path release/machine-input $name) }
+
       - name: Require Azure signing for machine validation
         if: inputs.sign
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Machine signing requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden' }
-          if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
+          if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -and
+              [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
 
       - name: Install dual-bitness interceptor toolchain
         shell: pwsh
@@ -101,6 +198,7 @@ jobs:
           "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Build and test contained interceptor and service
+        if: inputs.reuse_run_id == ''
         shell: pwsh
         run: |
           go test ./internal/mapi/... ./src/service/...
@@ -108,9 +206,11 @@ jobs:
           .\src\interceptor\verify-release.ps1
           if ($LASTEXITCODE -ne 0) { throw 'interceptor release verification failed' }
           New-Item -ItemType Directory -Force release/machine-input | Out-Null
-          if ('${{ inputs.sign }}' -eq 'true') { $env:MACHINE_RELEASE_METADATA_ORIGIN = 'https://go-mapi.app' }
-          $requireMachineTrust = '${{ inputs.sign }}' -eq 'true'
-          ./src/service/build.ps1 -OutputPath release/machine-input/go-mapi-service.exe -RequireMachineReleaseTrust:$requireMachineTrust
+          $fixture = '${{ inputs.controlled_origin_fixture }}' -eq 'true'
+          if ('${{ inputs.sign }}' -eq 'true') { $env:MACHINE_RELEASE_METADATA_ORIGIN = if ($fixture) { 'https://localhost:18453' } else { 'https://go-mapi.app' } }
+          $requireMachineTrust = '${{ inputs.sign }}' -eq 'true' -and -not $fixture
+          $origin = if ($fixture) { 'https://localhost:18453/releases/download/' } else { 'https://github.com/marcfargas/go-mapi/releases/download/' }
+          ./src/service/build.ps1 -OutputPath release/machine-input/go-mapi-service.exe -RequireMachineReleaseTrust:$requireMachineTrust -ArtifactOrigin $origin -CheckIntervalSeconds $(if ($fixture) { 60 } else { 21600 })
           Copy-Item release/interceptor/go-mapi-x86.dll release/machine-input/go-mapi-x86.dll
           Copy-Item release/interceptor/go-mapi-x64.dll release/machine-input/go-mapi-x64.dll
 
@@ -140,11 +240,11 @@ jobs:
         run: |
           $names = @('go-mapi-service.exe','go-mapi-x86.dll','go-mapi-x64.dll')
           if ('${{ inputs.sku }}' -eq 'suite') { $names += 'go-mapi-machine.exe' }
-          $hashes = [ordered]@{}
+          $hashes = if ($env:REUSE_RUN_ID -ne '') { Get-Content reuse-input/unsigned-hashes.json -Raw | ConvertFrom-Json -AsHashtable } else { [ordered]@{} }
           foreach ($name in $names) {
             $path = Join-Path release/machine-input $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing contained PE $name" }
-            $hashes[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($env:REUSE_RUN_ID -eq '' -or $name -eq 'go-mapi-machine.exe') { $hashes[$name] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
           }
           [IO.File]::WriteAllText('release/machine-input/unsigned-hashes.json', ($hashes | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 
@@ -157,7 +257,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sign service and both interceptor PEs
-        if: inputs.sign
+        if: inputs.sign && inputs.reuse_run_id == ''
         uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -187,10 +287,25 @@ jobs:
         shell: pwsh
         run: |
           $sku = '${{ steps.machine.outputs.sku }}'
-          $parts = @(
-            @{ component='service'; version=(Get-Content src/service/VERSION -Raw).Trim(); artifacts=@(@{ architecture='x64'; filename='go-mapi-service.exe' }) },
-            @{ component='interceptor'; version=(Get-Content src/interceptor/interceptor-version.txt -Raw).Trim(); artifacts=@(@{ architecture='x86'; filename='go-mapi-x86.dll' },@{ architecture='x64'; filename='go-mapi-x64.dll' }) }
-          )
+          $parts = if ($env:REUSE_RUN_ID -ne '') {
+            $prior = Get-Content reuse-input/signed-input.json -Raw | ConvertFrom-Json
+            $priorApp = @($prior.components | Where-Object component -eq 'app')[0]
+            $newVersion = (Get-Content src/app/VERSION -Raw).Trim()
+            if ([Management.Automation.SemanticVersion]::Parse($priorApp.version) -ge [Management.Automation.SemanticVersion]::Parse($newVersion) -or
+                (Get-FileHash reuse-input/go-mapi-service.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne @($prior.components | Where-Object component -eq 'service')[0].artifacts[0].sha256 -or
+                (Get-FileHash release/machine-input/go-mapi-machine.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $priorApp.artifacts[0].sha256) {
+              throw 'Suite C app must be higher and differ from pinned B signed app'
+            }
+            $priorIdentity = go run ./internal/mapi/cmd/machine-package -- suite $env:REUSE_RELEASE | ConvertFrom-Json
+            $currentIdentity = go run ./internal/mapi/cmd/machine-package -- suite '${{ inputs.version }}' | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $currentIdentity.sequence -le $priorIdentity.sequence) { throw 'Suite C package release must follow B' }
+            @($prior.components | Where-Object { $_.component -in @('service','interceptor') })
+          } else {
+            @(
+              @{ component='service'; version=(Get-Content src/service/VERSION -Raw).Trim(); artifacts=@(@{ architecture='x64'; filename='go-mapi-service.exe' }) },
+              @{ component='interceptor'; version=(Get-Content src/interceptor/interceptor-version.txt -Raw).Trim(); artifacts=@(@{ architecture='x86'; filename='go-mapi-x86.dll' },@{ architecture='x64'; filename='go-mapi-x64.dll' }) }
+            )
+          }
           if ($sku -eq 'suite') {
             $parts += @{ component='app'; version=(Get-Content src/app/VERSION -Raw).Trim(); distribution='machine'; artifacts=@(@{ architecture='x64'; filename='go-mapi-machine.exe' }) }
           }
@@ -259,6 +374,29 @@ jobs:
             }
           }
           $contract = (Get-Content components.json -Raw | ConvertFrom-Json).machinePackages.$sku
+          $reuse = $env:REUSE_RUN_ID -ne ''
+          $prior = if ($reuse) { Get-Content reuse-input/reuse-provenance.json -Raw | ConvertFrom-Json } else { $null }
+          $servicePart = @($manifest.components | Where-Object component -eq 'service')[0]
+          $interceptorPart = @($manifest.components | Where-Object component -eq 'interceptor')[0]
+          $componentSources = if ($reuse) {
+            [ordered]@{ service=$prior.componentSources.service; interceptor=$prior.componentSources.interceptor }
+          } else {
+            [ordered]@{
+              service=[ordered]@{ commit='${{ github.sha }}'; buildId="${{ github.run_id }}.${{ github.run_attempt }}:service"; signedSha256=$servicePart.artifacts[0].sha256 }
+              interceptor=[ordered]@{ commit='${{ github.sha }}'; buildId="${{ github.run_id }}.${{ github.run_attempt }}:interceptor";
+                x86SignedSha256=@($interceptorPart.artifacts | Where-Object architecture -eq 'x86')[0].sha256;
+                x64SignedSha256=@($interceptorPart.artifacts | Where-Object architecture -eq 'x64')[0].sha256 }
+            }
+          }
+          if ($sku -eq 'suite') {
+            $componentSources.app = [ordered]@{ commit='${{ github.sha }}'; buildId=(Get-FileHash release/machine-input/app-artifacts.json -Algorithm SHA256).Hash.ToLowerInvariant();
+              signedSha256=@($manifest.components | Where-Object component -eq 'app')[0].artifacts[0].sha256 }
+          }
+          $derivative = if ('${{ inputs.controlled_origin_fixture }}' -eq 'true') {
+            [ordered]@{ kind='https-localhost-native-fixture'; metadataOrigin='https://localhost:18453'; artifactOrigin='https://localhost:18453/releases/download/'; checkIntervalSeconds=60 }
+          } else {
+            [ordered]@{ kind='production'; metadataOrigin='https://go-mapi.app'; artifactOrigin='https://github.com/marcfargas/go-mapi/releases/download/'; checkIntervalSeconds=21600 }
+          }
           $provenance = [ordered]@{
             schema='go-mapi-machine-validation-provenance-v1'; publishable=$false
             repository='${{ github.repository }}'; commit='${{ github.sha }}'
@@ -266,6 +404,9 @@ jobs:
             sku=$sku; packageRelease=$release; tag=$identity.tag; assetName=$identity.assetName
             productCode=$identity.productCode; productVersion=$identity.productVersion; upgradeCode=$contract.upgradeCode
             contained=@($manifest.components | ForEach-Object { [ordered]@{ component=$_.component; version=$_.version } })
+            derivative=$derivative; componentSources=$componentSources
+            priorBundle=if ($reuse) { [ordered]@{ runId=$prior.runId; runAttempt=$prior.runAttempt; commit=$prior.commit; packageRelease=$prior.packageRelease;
+              provenanceSha256=(Get-FileHash reuse-input/reuse-provenance.json -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
             peHashes=$peHashes
             msi=[ordered]@{ size=(Get-Item $path).Length; sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant(); signed=('${{ inputs.sign }}' -eq 'true') }
             toolchain=[ordered]@{ go='1.25'; dotnet='8.0.x'; azureSigningAction='c7ab2a863ab5f9a846ddb8265964877ef296ee82' }
@@ -280,22 +421,32 @@ jobs:
             }
           }
           if ('${{ inputs.sign }}' -eq 'true') {
-            $spec = $env:MACHINE_RELEASE_TARGET_SPEC_JSON | ConvertFrom-Json
+            $specJson = if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON)) {
+              $env:MACHINE_RELEASE_TARGET_SPEC_JSON
+            } else { $env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON }
+            $spec = $specJson | ConvertFrom-Json
             if ($spec.sku -cne $sku -or $spec.packageRelease -cne $release) { throw 'Machine target spec SKU/release mismatch' }
             $expectedContained = @($manifest.components | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
             $specifiedContained = @($spec.contained | ForEach-Object { "$($_.component)=$($_.version)" } | Sort-Object)
             if (($expectedContained -join ',') -cne ($specifiedContained -join ',')) { throw 'Target contained versions differ from signed MSI inputs' }
+            $expectedComponents = @($manifest.components | ForEach-Object component | Sort-Object)
+            $compatibilityComponents = @($spec.compatibility | ForEach-Object component | Sort-Object)
+            if (($expectedComponents -join ',') -cne ($compatibilityComponents -join ',')) { throw 'Target compatibility set differs from signed MSI inputs' }
+            $issued = [DateTimeOffset]::ParseExact($spec.issuedAt, "yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
+            $expires = [DateTimeOffset]::ParseExact($spec.expiresAt, "yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
+            if ($issued -gt [DateTimeOffset]::UtcNow.AddMinutes(5) -or $expires -le [DateTimeOffset]::UtcNow -or
+                $expires -le $issued -or ($expires - $issued).TotalDays -gt 31) { throw 'Invalid machine target spec lifetime' }
             $specPath = Join-Path $env:RUNNER_TEMP 'machine-target-spec.json'
             $targetName = "$sku-targets.json"
             $targetPath = Join-Path release/machine $targetName
             try {
-              [IO.File]::WriteAllText($specPath, $env:MACHINE_RELEASE_TARGET_SPEC_JSON, [Text.UTF8Encoding]::new($false))
-              go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath
+              [IO.File]::WriteAllText($specPath, $specJson, [Text.UTF8Encoding]::new($false))
+              go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath --artifact-origin $derivative.artifactOrigin
               if ($LASTEXITCODE -ne 0) { throw 'Final signed machine MSI target generation failed' }
               $target = Get-Content $targetPath -Raw | ConvertFrom-Json
               if ($target.sku -cne $sku -or $target.artifact.sha256 -cne $provenance.msi.sha256 -or
                   $target.artifact.size -ne $provenance.msi.size -or
-                  $target.artifact.url -cne "https://github.com/marcfargas/go-mapi/releases/download/$($identity.tag)/$($identity.assetName)") {
+                  $target.artifact.url -cne "$($derivative.artifactOrigin)$($identity.tag)/$($identity.assetName)") {
                 throw 'Plain target does not bind exact final machine MSI'
               }
               $provenance.targets = [ordered]@{ file=$targetName; sha256=(Get-FileHash $targetPath -Algorithm SHA256).Hash.ToLowerInvariant(); sequence=$target.sequence; artifactUrl=$target.artifact.url }
@@ -303,6 +454,25 @@ jobs:
           }
           $validation = Join-Path release/machine "$sku-$release.validation.json"
           [IO.File]::WriteAllText($validation, ($provenance | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+
+      - name: Export signed suite PE bundle for a later app-only fixture
+        if: inputs.sign && inputs.sku == 'suite' && inputs.reuse_run_id == ''
+        shell: pwsh
+        run: Copy-Item -LiteralPath (Join-Path release/machine "${{ steps.machine.outputs.sku }}-${{ steps.machine.outputs.release }}.validation.json") -Destination release/machine-input/reuse-provenance.json
+
+      - name: Upload bounded signed suite PE bundle
+        if: inputs.sign && inputs.sku == 'suite' && inputs.reuse_run_id == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-suite-${{ steps.machine.outputs.release }}-signed-inputs
+          path: |
+            release/machine-input/reuse-provenance.json
+            release/machine-input/signed-input.json
+            release/machine-input/unsigned-hashes.json
+            release/machine-input/go-mapi-service.exe
+            release/machine-input/go-mapi-x86.dll
+            release/machine-input/go-mapi-x64.dll
+          if-no-files-found: error
 
       - name: Upload non-publishable machine validation artifacts
         uses: actions/upload-artifact@v4
@@ -313,3 +483,9 @@ jobs:
             release/machine/*.validation.json
             release/machine/*-targets.json
             release/machine-input/signed-input.json
+            release/machine-input/unsigned-hashes.json
+            release/machine-input/app-artifacts.json
+            release/machine-input/go-mapi-service.exe
+            release/machine-input/go-mapi-x86.dll
+            release/machine-input/go-mapi-x64.dll
+            release/machine-input/go-mapi-machine.exe

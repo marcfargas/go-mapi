@@ -16,19 +16,24 @@ import (
 
 // App is the main application struct that bridges Wails and the system tray.
 type App struct {
-	ctx              context.Context
-	trayEnd          func()
-	watcher          *mapi.EmailWatcher // initialized in startup
-	bridge           *watcherBridge     // initialized in startup
-	presence         *appPresence       // refreshes app presence for the interceptor
-	componentState   *appComponentState // versioned counterpart signal for the interceptor
-	componentHealth  componentHealthStore
-	adminInstall     *adminInstallCoordinator
-	startupService   startupService
-	auth             *AuthManager // OAuth token lifecycle
-	sessionEndCancel func()       // cancels the session-end message pump
-	shutdownCtx      context.Context
-	shutdownCancel   context.CancelFunc
+	ctx                  context.Context
+	trayEnd              func()
+	watcher              *mapi.EmailWatcher // initialized in startup
+	bridge               *watcherBridge     // initialized in startup
+	presence             *appPresence       // refreshes app presence for the interceptor
+	componentState       *appComponentState // versioned counterpart signal for the interceptor
+	componentHealth      componentHealthStore
+	adminInstall         *adminInstallCoordinator
+	startupService       startupService
+	auth                 *AuthManager // OAuth token lifecycle
+	sessionEndCancel     func()       // cancels the session-end message pump
+	shutdownCtx          context.Context
+	shutdownCancel       context.CancelFunc
+	machineOperations    machineOperations
+	machineAdmissionOpen func(context.Context) (bool, error)
+	machineDrainTicks    <-chan time.Time
+	machineQuit          func()
+	machineQuitOnce      sync.Once
 
 	// visibilityMu guards `visible`. Read by the tray goroutine (toggleWindow)
 	// and written by showWindow / hideWindow / beforeClose.
@@ -142,6 +147,10 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.shutdownCtx, a.shutdownCancel = context.WithCancel(context.Background())
+	if !a.startMachineDrain() {
+		a.requestMachineQuit()
+		return
+	}
 	// StartHidden: true → visible starts false. Mirror that here so toggleWindow
 	// will WindowShow on the first left-click.
 	a.setVisible(false)
@@ -172,6 +181,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// Open the per-user queue. The interceptor is intentionally optional here:
 	// an empty queue is a normal first-run state.
+	if !a.machineStartupCanProceed() {
+		return
+	}
 	watchDir := watcherDir()
 	consumer, watcherErr := newQueueConsumer(ctx, watchDir, func(e error) {
 		// T-07-22: log infrastructure event only, not email content.
@@ -243,6 +255,9 @@ func (a *App) startup(ctx context.Context) {
 
 	// Phase 9: start automode goroutine. Gated on mode + paused at drain time.
 	// Wire pruneBacklogSkip after every queue-update emit (D-10: backlog cleanup).
+	if !a.machineStartupCanProceed() {
+		return
+	}
 	if a.bridge != nil {
 		a.automode = newAutomode(a, a.bridge.AutomodeWake())
 		a.automode.start()
@@ -424,6 +439,11 @@ func (a *App) isPaused() bool {
 // Does NOT persist (D-15). Exposed as a Wails binding in Plan 04 via
 // PauseWatching() / ResumeWatching() wrappers.
 func (a *App) SetPaused(v bool) {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return
+	}
+	defer finish()
 	a.pauseMu.Lock()
 	changed := a.paused != v
 	a.paused = v
@@ -482,6 +502,11 @@ func (a *App) getMode() string {
 // Wails binding (UI thread) — single-writer invariant from settings.go (D-13).
 // Wakes automode so it immediately re-checks mode when switching to "auto-draft".
 func (a *App) setMode(mode string) error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if mode != "manual" && mode != "auto-draft" {
 		return fmt.Errorf("setMode: invalid mode %q", mode)
 	}
@@ -561,6 +586,11 @@ func validateEmailID(id string) error {
 // the user explicitly triggered this call; backlog-skip only applies to
 // background auto-draft attempts (D-10).
 func (a *App) CreateDraftForID(id string) error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if err := validateEmailID(id); err != nil {
 		return err
 	}
@@ -620,6 +650,12 @@ func (a *App) CreateDraftForID(id string) error {
 	}
 	if err := a.watcher.MarkProcessed(id); err != nil {
 		logError("CreateDraftForID: MarkProcessed %s: %v", safeIDPrefix(id), err)
+		if a.ctx != nil {
+			wruntime.EventsEmit(a.ctx, "auto-draft-result", map[string]any{
+				"emailId": id, "success": false, "errorCategory": "queue", "reason": err.Error(),
+			})
+		}
+		return fmt.Errorf("queue acknowledgement: %w", err)
 	}
 	// Draft-success toast: only when window is hidden (D-11). Subject is safe to
 	// include per UI-SPEC; privacy is preserved (no body text, no recipient email).
@@ -642,6 +678,11 @@ func (a *App) CreateDraftForID(id string) error {
 // watcher.Delete (Plan 03 Task 1). Emits no event — queue-update fires
 // automatically from the watcher fsnotify path.
 func (a *App) DismissEmail(id string) error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	if err := validateEmailID(id); err != nil {
 		return err
 	}
@@ -677,6 +718,15 @@ func (a *App) GetSettingsState() SettingsLoadResult {
 // Delegates to setMode for validation + wake-automode-if-mode-flipped. In
 // Phase 9 Mode is the only field; future phases may surface more here.
 func (a *App) SaveSettings(s AppSettings) error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
+	return a.saveSettingsAdmitted(s)
+}
+
+func (a *App) saveSettingsAdmitted(s AppSettings) error {
 	if s.Mode != "manual" && s.Mode != "auto-draft" {
 		return fmt.Errorf("SaveSettings: invalid mode %q", s.Mode)
 	}
@@ -800,6 +850,11 @@ func (a *App) runGatedUpdateCheck(ctx context.Context) {
 // checkUpdates is the app's sole metadata check path. The engine decides
 // cadence, validates the response, and produces the action candidate.
 func (a *App) checkUpdates(ctx context.Context, force bool) error {
+	finish, admissionErr := a.beginMachineOperation(ctx)
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer finish()
 	if a.updates == nil {
 		return errors.New("updates: engine not initialised")
 	}

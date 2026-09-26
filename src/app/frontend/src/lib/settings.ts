@@ -35,7 +35,7 @@ export type AppSettings = main.AppSettings;
 export type SettingsLoadResult = main.SettingsLoadResult;
 export type StartupState = main.StartupState;
 export type Mode = 'manual' | 'auto-draft';
-export type ErrorCategory = 'signed-out' | 'network' | 'gmail';
+export type ErrorCategory = 'signed-out' | 'network' | 'gmail' | 'queue';
 
 export interface AutoDraftResult {
   emailId: string;

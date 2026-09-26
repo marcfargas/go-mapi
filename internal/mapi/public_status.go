@@ -63,7 +63,7 @@ func ValidatePublicStatusV2(s PublicStatusV2) error {
 		s.Checker != "available" && s.CandidateVersion != "" ||
 		s.Checker == "no-update" && (s.CandidateExpiresAt.IsZero() || s.LastSuccessAt.IsZero()) ||
 		s.LastResult == "" && !s.LastResultAt.IsZero() ||
-		s.LastResult != "" && (!validStatusEnum(s.LastResult, "installed", "rolled-back", "busy-exhausted") || s.LastResultAt.IsZero()) {
+		s.LastResult != "" && (!validStatusEnum(s.LastResult, "installed", "rolled-back", "busy-exhausted", "ambiguous") || s.LastResultAt.IsZero()) {
 		return errors.New("incoherent public status")
 	}
 	return nil

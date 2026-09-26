@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync/atomic"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
 const (
@@ -96,10 +99,13 @@ func reconcileResidentTerminal(
 	reconcile func(context.Context, PendingV1) (Outcome, error),
 ) (Outcome, bool, error) {
 	outcome, err := reconcile(ctx, current)
-	if err != nil || (outcome != OutcomeCommitted && outcome != OutcomeRolledBack) {
+	if err != nil || (outcome != OutcomeCommitted && outcome != OutcomeRolledBack && outcome != OutcomeRepairRetired) {
 		return outcome, false, err
 	}
 	next, err := load(ctx)
+	if outcome == OutcomeRepairRetired {
+		return outcome, next == nil && err == nil, err
+	}
 	if err != nil || next == nil {
 		return outcome, next == nil && err == nil, err
 	}
@@ -112,6 +118,37 @@ func reconcileResidentTerminal(
 	}
 	remaining, err := load(ctx)
 	return outcome, remaining == nil && err == nil, err
+}
+
+// Reconciliation may change or retire the record observed by the health
+// check. Only the current merely-prepared record can exempt an existing O
+// from the unhealthy-health closure.
+func reconcileResidentSuitePending(
+	ctx context.Context,
+	pending PendingV1,
+	load func(context.Context) (*PendingV1, error),
+	loadBounded func(context.Context) (*PendingV1, error),
+	reconcile func(context.Context, PendingV1) (Outcome, error),
+	closeAdmission func(context.Context) error,
+) (Outcome, bool, bool, error) {
+	prepared := merelyPreparedSuitePending(&pending)
+	if pending.SKU == update.Suite && !prepared {
+		if err := closeAdmission(ctx); err != nil {
+			return "", false, false, err
+		}
+	}
+	outcome, retired, reconcileErr := reconcileResidentTerminal(ctx, pending, load, reconcile)
+	current, loadErr := loadBounded(context.WithoutCancel(ctx))
+	preparedNow := loadErr == nil && merelyPreparedSuitePending(current)
+	var closeErr error
+	if prepared && !preparedNow {
+		closeErr = closeAdmission(context.WithoutCancel(ctx))
+	}
+	return outcome, retired, preparedNow, errors.Join(reconcileErr, loadErr, closeErr)
+}
+
+func merelyPreparedSuitePending(pending *PendingV1) bool {
+	return pending != nil && pending.SKU == update.Suite && pending.Phase == PhasePrepared && pending.AppDrainDeadline == nil
 }
 
 type productInventoryFunc func(context.Context) ([]InstalledProduct, error)

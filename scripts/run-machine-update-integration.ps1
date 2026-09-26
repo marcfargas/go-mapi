@@ -4,6 +4,7 @@
 param(
     [Parameter(Mandatory)][string]$PackageManifest,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
+    [ValidateSet('system','suite')][string]$SKU = 'system',
     [ValidateSet('Hosted','PrepareNoUser','VerifyNoUser','InterruptSameBoot','PrepareReboot','VerifyReboot','Cleanup')][string]$Phase = 'Hosted',
     [int]$FixturePort = 18453,
     [int]$DeadlineMinutes = 35,
@@ -15,8 +16,26 @@ $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 $PackageManifest = [IO.Path]::GetFullPath($PackageManifest)
 $manifest = Get-Content -LiteralPath $PackageManifest -Raw | ConvertFrom-Json
+$caseA = "${SKU}A"; $caseB = "${SKU}B"; $caseC = "${SKU}C"
+if (-not $manifest.packages.$caseA -or -not $manifest.packages.$caseB -or -not $manifest.packages.$caseC) {
+    throw "Fixture manifest lacks complete $SKU A/B/C cases"
+}
 if ($manifest.schema -ne 'go-mapi-machine-test-packages-v1' -or $manifest.fixture.metadataOrigin -ne "https://localhost:$FixturePort" -or
     $manifest.fixture.artifactOrigin -ne "https://localhost:$FixturePort/releases/download/") { throw 'Fixture origin or package manifest mismatch' }
+$wrongSkuSystem = if ($manifest.PSObject.Properties['references'] -and $manifest.references.PSObject.Properties['wrongSkuSystem']) {
+    $manifest.references.wrongSkuSystem
+} else { $null }
+if ($wrongSkuSystem -and ($wrongSkuSystem.package.sku -cne 'system' -or
+    (Get-FileHash -LiteralPath $wrongSkuSystem.sourceManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $wrongSkuSystem.sourceManifestSha256 -or
+    (Get-FileHash -LiteralPath $wrongSkuSystem.package.msi -Algorithm SHA256).Hash.ToLowerInvariant() -cne $wrongSkuSystem.package.sha256)) {
+    throw 'Wrong-SKU system fixture reference changed'
+}
+$signing = if ($manifest.fixture.PSObject.Properties['signing']) { [string]$manifest.fixture.signing } elseif (
+    $manifest.fixture.signerThumbprint -and $manifest.fixture.signerPublicCertificate) { 'self-signed-disposable' } else {
+    throw 'Fixture signing provenance is missing and legacy self-signed fields are incomplete'
+}
+if ($signing -notin @('self-signed-disposable','pre-signed-Azure')) { throw 'Unknown fixture signing provenance' }
+$azureSigned = $signing -eq 'pre-signed-Azure'
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $fixture = Join-Path $evidence 'fixture'
 New-Item -ItemType Directory -Path $fixture -Force | Out-Null
@@ -39,7 +58,7 @@ function Snapshot {
     $service = Get-CimInstance Win32_Service -Filter "Name='go-mapi'" -ErrorAction SilentlyContinue
     $exe = Join-Path $env:ProgramFiles 'go-mapi\service\go-mapi-service.exe'
     $pending = ReadJson (Join-Path $stateDir 'pending-v2.json')
-    $replay = ReadJson (Join-Path $stateDir 'replay-system-v1.json')
+    $replay = ReadJson (Join-Path $stateDir "replay-$SKU-v1.json")
     $result = ReadJson (Join-Path $stateDir 'last-result-v1.json')
     [ordered]@{
         marker=if ($marker) { [ordered]@{ sku=$marker.SKU; packageRelease=$marker.PackageRelease; serviceVersion=$marker.ServiceVersion; autoUpdateEnabled=$marker.AutoUpdateEnabled } } else { $null }
@@ -51,11 +70,18 @@ function Snapshot {
 function AssertHealthy([string]$Key) {
     $snapshot = Snapshot
     $package = $manifest.packages.$Key
-    if (-not $snapshot.marker -or $snapshot.marker.sku -ne 'system' -or $snapshot.marker.packageRelease -ne $package.release -or
+    if (-not $snapshot.marker -or $snapshot.marker.sku -ne $SKU -or $snapshot.marker.packageRelease -ne $package.release -or
         $snapshot.marker.serviceVersion -ne $package.serviceVersion -or $snapshot.service.state -ne 'Running' -or
         $snapshot.service.startName -ne 'LocalSystem' -or $snapshot.service.startMode -ne 'Auto' -or
         $snapshot.service.executableSha256 -ne $package.serviceSha256 -or $snapshot.status.health -ne 'healthy' -or
         $snapshot.legacyTaskCount -ne 0) { throw "Installed $Key is not healthy" }
+    if ($SKU -eq 'suite') {
+        $dll64 = Join-Path $env:ProgramFiles 'go-mapi\interceptor\AMD64\go-mapi.dll'
+        $dll86 = Join-Path $env:ProgramFiles 'go-mapi\interceptor\x86\go-mapi.dll'
+        $app = Join-Path $env:ProgramFiles 'go-mapi\user\go-mapi.exe'
+        if ((Hash $dll64) -ne $package.x64DllSha256 -or (Hash $dll86) -ne $package.x86DllSha256 -or
+            (Hash $app) -ne $package.appSha256) { throw "Installed $Key component bytes differ" }
+    }
     $snapshot
 }
 function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes) {
@@ -70,7 +96,7 @@ function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $Deadlin
 }
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
-    $args = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart', 'MSIRMSHUTDOWN=0') + $Properties + @('/l*v', ('"' + $log + '"'))
+    $args = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart') + $(if ($SKU -eq 'suite') { @('MSIRESTARTMANAGERCONTROL=Disable') } else { @('MSIRMSHUTDOWN=0') }) + $Properties + @('/l*v', ('"' + $log + '"'))
     $process = Start-Process msiexec.exe -ArgumentList $args -PassThru
     if (-not $process.WaitForExit(600000)) {
         Record 'administrator-msi-timeout' ([ordered]@{ label=$Label; pid=$process.Id; log=$log })
@@ -79,16 +105,23 @@ function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties
     Record 'administrator-msi' ([ordered]@{ label=$Label; exitCode=$process.ExitCode; log=$log })
     if ($process.ExitCode -ne 0) { throw "$Label returned $($process.ExitCode); postboot proof is required for 3010/1641" }
 }
-function Target([string]$Key, [string]$MinimumService) {
-    $package = $manifest.packages.$Key
+function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU) {
+    $package = if ($Key -eq 'systemB' -and $SKU -eq 'suite' -and $wrongSkuSystem) {
+        $wrongSkuSystem.package
+    } else { $manifest.packages.$Key }
+    if (-not $package) { throw "Missing target fixture $Key" }
     $specPath = Join-Path $fixture "$Key-spec.json"
     $targetPath = Join-Path $fixture "$Key-targets.json"
     $spec = [ordered]@{
-        sku='system'; packageRelease=$package.release
+        sku=$TargetSKU; packageRelease=$package.release
         contained=@(@{component='service';version=$package.serviceVersion},@{component='interceptor';version=$package.interceptorVersion})
-        compatibility=@(@{component='service';minInclusive=$MinimumService;maxExclusive='5.0.2'},@{component='interceptor';minInclusive='4.0.0';maxExclusive='7.0.0'})
+        compatibility=@(@{component='service';minInclusive=$MinimumService;maxExclusive='7.0.0'},@{component='interceptor';minInclusive='4.0.0';maxExclusive='7.0.0'})
         issuedAt=[DateTime]::UtcNow.AddMinutes(-1).ToString('yyyy-MM-ddTHH:mm:ssZ')
         expiresAt=[DateTime]::UtcNow.AddDays(1).ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    if ($TargetSKU -eq 'suite') {
+        $spec.contained += @{component='app';version=$package.appVersion}
+        $spec.compatibility += @{component='app';minInclusive=$manifest.packages.$caseA.appVersion;maxExclusive='7.0.0'}
     }
     WriteJson $specPath $spec
     Push-Location $repo
@@ -99,15 +132,26 @@ function Target([string]$Key, [string]$MinimumService) {
 }
 function SelectTarget([string]$Key) {
     $next = Join-Path $fixture 'target-selection.next.json'
-    WriteJson $next ([ordered]@{ key=$Key; selectedAtUtc=[DateTime]::UtcNow.ToString('o') })
+    WriteJson $next ([ordered]@{ $SKU=$Key; selectedAtUtc=[DateTime]::UtcNow.ToString('o') })
     Move-Item -LiteralPath $next -Destination (Join-Path $fixture 'target-selection.json') -Force
     Record 'publish-target' $Key
+}
+function SelectWrongSkuTarget([string]$Key) {
+    $package = if ($Key -eq 'systemB' -and $SKU -eq 'suite' -and $wrongSkuSystem) {
+        $wrongSkuSystem.package
+    } else { $manifest.packages.$Key }
+    if (-not $package -or $package.sku -eq $SKU) { throw 'Negative target must use the other SKU' }
+    $next = Join-Path $fixture 'target-selection.next.json'
+    WriteJson $next ([ordered]@{ $SKU=$Key; negativeWrongSku=$true; selectedAtUtc=[DateTime]::UtcNow.ToString('o') })
+    Move-Item -LiteralPath $next -Destination (Join-Path $fixture 'target-selection.json') -Force
+    Record 'publish-wrong-sku-target' $Key
 }
 function RequestCount([string]$Path) {
     if (-not (Test-Path -LiteralPath (Join-Path $fixture 'requests.ndjson'))) { return 0 }
     return @(Get-Content -LiteralPath (Join-Path $fixture 'requests.ndjson') | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.path -ceq $Path -and $_.status -eq 200 }).Count
 }
 function RemoveSignerTrust {
+    if ($azureSigned) { throw 'Azure signing trust is outside fixture ownership' }
     foreach ($store in @('Root','TrustedPublisher')) {
         $path = "Cert:\LocalMachine\$store\$signer"
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
@@ -115,6 +159,7 @@ function RemoveSignerTrust {
     Record 'signer-trust-removed' $signer
 }
 function RestoreSignerTrust {
+    if ($azureSigned) { return }
     $certificate = [string]$manifest.fixture.signerPublicCertificate
     if (-not (Test-Path -LiteralPath $certificate)) { throw 'Missing owned signer public certificate' }
     $public = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
@@ -164,14 +209,23 @@ function Cleanup {
         $task = "go-mapi-ci-fixture-$($owner.runId)"
         Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
     }
-    foreach ($store in @('Root','TrustedPublisher','My')) {
-        $path = "Cert:\LocalMachine\$store\$signer"
-        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    if (-not $azureSigned) {
+        foreach ($store in @('Root','TrustedPublisher','My')) {
+            $path = "Cert:\LocalMachine\$store\$signer"
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+        foreach ($store in @('Root','TrustedPublisher','My')) {
+            if (Test-Path "Cert:\LocalMachine\$store\$signer") { throw "Owned signer remains in $store after cleanup" }
+        }
     }
-    foreach ($store in @('Root','TrustedPublisher','My')) {
-        if (Test-Path "Cert:\LocalMachine\$store\$signer") { throw "Owned signer remains in $store after cleanup" }
-    }
-    Record 'cleanup' ([ordered]@{ fixtureRemoved=$true; signerRemoved=$true })
+    Record 'cleanup' ([ordered]@{ fixtureRemoved=$true; signerRemoved=(-not $azureSigned) })
+}
+function FindOwnedPackage([string]$FamilySku, [string]$ProductCode) {
+    $matches = @($manifest.packages.PSObject.Properties | ForEach-Object Value |
+        Where-Object { $_ -and $_.sku -eq $FamilySku -and $_.identity.productCode.Trim('{}') -eq $ProductCode.Trim('{}') } |
+        Select-Object -First 1)
+    if ($matches.Count -eq 0) { return $null }
+    return $matches[0]
 }
 function InstalledTestProducts {
     $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -182,8 +236,7 @@ function InstalledTestProducts {
     )) {
         $related = @($installer.GetType().InvokeMember('RelatedProducts','GetProperty',$null,$installer,@($family.code)) | Where-Object { $_ })
         foreach ($code in $related) {
-            $package = @(@($manifest.packages.systemA,$manifest.packages.systemB,$manifest.packages.systemC,$manifest.packages.suiteA,$manifest.packages.suiteB) |
-                Where-Object { $_.sku -eq $family.sku -and $_.identity.productCode.Trim('{}') -eq ([string]$code).Trim('{}') }) | Select-Object -First 1
+            $package = FindOwnedPackage $family.sku ([string]$code)
             if (-not $package) { throw "Foreign $($family.sku) product $code exists; refusing to remove it" }
             $found += $package
         }
@@ -199,9 +252,9 @@ function RemoveInstalledTestProducts {
 function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false) {
     if (-not $record -or $record.schema -ne 'go-mapi-interruption-cleanup-deferral-v1' -or
         $record.packageManifestSha256 -ne (Hash $PackageManifest) -or
-        $record.systemBMsiSha256 -ne (Hash $manifest.packages.systemB.msi) -or
-        $record.installedProductCode -ne $manifest.packages.systemB.identity.productCode -or
-        $record.installedRelease -ne $manifest.packages.systemB.release) { throw 'Deferred cleanup evidence does not match current package inputs' }
+        $record.systemBMsiSha256 -ne (Hash $manifest.packages.$caseB.msi) -or
+        $record.installedProductCode -ne $manifest.packages.$caseB.identity.productCode -or
+        $record.installedRelease -ne $manifest.packages.$caseB.release) { throw 'Deferred cleanup evidence does not match current package inputs' }
     $products = @(InstalledTestProducts)
     $snapshot = Snapshot
     if ($products.Count -ne 1 -or $products[0].identity.productCode -ne $record.installedProductCode -or
@@ -215,7 +268,7 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         $snapshot.pending.installer.createdAtUnixNano -ne $record.installer.createdAtUnixNano -or
         (Get-Process -Id $record.runner.pid -ErrorAction SilentlyContinue) -or
         (Get-Process -Id $record.installer.pid -ErrorAction SilentlyContinue) -or
-        ($snapshot.replay -and $snapshot.replay.sequence -eq $manifest.packages.systemB.identity.sequence)) {
+        ($snapshot.replay -and $snapshot.replay.sequence -eq $manifest.packages.$caseB.identity.sequence)) {
         throw 'Deferred cleanup no longer matches exact conservative interruption state'
     }
     if ($RequireFenceProof) {
@@ -231,11 +284,11 @@ function DeferInterruptedProductCleanup($witness) {
     $products = @(InstalledTestProducts)
     if ($products.Count -ne 1) { throw 'Exactly one manifest-owned product is required for interruption deferral' }
     $package = $products[0]
-    if ($package.identity.productCode -ne $manifest.packages.systemB.identity.productCode -or
-        $package.release -ne $manifest.packages.systemB.release) { throw 'Interruption deferral requires exact installed system B' }
+    if ($package.identity.productCode -ne $manifest.packages.$caseB.identity.productCode -or
+        $package.release -ne $manifest.packages.$caseB.release) { throw "Interruption deferral requires exact installed $caseB" }
     $record = [ordered]@{
         schema='go-mapi-interruption-cleanup-deferral-v1'; packageManifestSha256=Hash $PackageManifest
-        systemBMsiSha256=Hash $manifest.packages.systemB.msi
+        systemBMsiSha256=Hash $manifest.packages.$caseB.msi
         transactionId=$witness.pending.transactionId; attempt=$witness.pending.attempt
         runner=$witness.pending.runner; installer=$witness.pending.installer
         installedProductCode=$package.identity.productCode; installedRelease=$package.release
@@ -285,7 +338,7 @@ function AssertCommitted([string]$Key, [int]$PreviousPid) {
     $snapshot = AssertHealthy $Key
     if ($snapshot.pending -or $snapshot.replay.sequence -ne $package.identity.sequence -or
         $snapshot.lastResult.result -ne 'installed' -or $snapshot.lastResult.sequence -ne $package.identity.sequence -or
-        $snapshot.service.processId -eq $PreviousPid) { throw "$Key did not commit on a replaced healthy service" }
+        ($SKU -eq 'system' -and $snapshot.service.processId -eq $PreviousPid)) { throw "$Key did not commit on a healthy installed unit" }
     Record 'committed' ([ordered]@{ key=$Key; snapshot=$snapshot })
     return $snapshot
 }
@@ -309,55 +362,74 @@ try {
         # the signed MSI bytes and private key are never regenerated.
         RestoreSignerTrust
         InstallFixture
-        Target 'systemA' $manifest.packages.systemA.serviceVersion
-        Target 'systemB' $manifest.packages.systemA.serviceVersion
-        Target 'systemC' $manifest.packages.systemB.serviceVersion
-        if ($Phase -eq 'PrepareNoUser') { SelectTarget 'systemA' }
-        Msi '/i' $manifest.packages.systemA.msi 'bootstrap-A' @('GOMAPI_AUTO_UPDATE=1')
-        $a = Until 'healthy A' { $s=Snapshot; if ($s.status.health -eq 'healthy' -and $s.marker.packageRelease -eq $manifest.packages.systemA.release) { $s } } 3
+        Target $caseA $manifest.packages.$caseA.serviceVersion
+        Target $caseB $manifest.packages.$caseA.serviceVersion
+        Target $caseC $manifest.packages.$caseB.serviceVersion
+        if ($SKU -eq 'suite' -and $Phase -eq 'Hosted') { Target 'systemB' $manifest.packages.$caseA.serviceVersion 'system' }
+        if ($Phase -eq 'PrepareNoUser') { SelectTarget $caseA }
+        Msi '/i' $manifest.packages.$caseA.msi 'bootstrap-A' @('GOMAPI_AUTO_UPDATE=1')
+        $a = Until 'healthy A' { $s=Snapshot; if ($s.status.health -eq 'healthy' -and $s.marker.packageRelease -eq $manifest.packages.$caseA.release) { $s } } 3
         Record 'bootstrap' $a
         $owner = ReadJson $ownerPath
         $owner | Add-Member -NotePropertyName baselineServicePid -NotePropertyValue $a.service.processId
         WriteJson $ownerPath $owner
-        if ($Phase -ne 'PrepareNoUser') { SelectTarget 'systemB' }
+        if ($Phase -ne 'PrepareNoUser') {
+            if ($SKU -eq 'suite' -and $Phase -eq 'Hosted') {
+                $priorDiscovery = ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
+                $beforeFailures = if ($priorDiscovery) { [int]$priorDiscovery.failures } else { 0 }
+                $beforeRequests = RequestCount '/machine/suite/targets.json'
+                SelectWrongSkuTarget 'systemB'
+                Until 'wrong-SKU rejection' {
+                    $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
+                    if ($d -and (RequestCount '/machine/suite/targets.json') -gt $beforeRequests -and $d.failures -gt $beforeFailures -and
+                        $s.marker.packageRelease -eq $manifest.packages.$caseA.release -and -not $s.pending) { $s }
+                } | ForEach-Object { Record 'wrong-sku-refused' $_ }
+            }
+            SelectTarget $caseB
+        }
     }
     if ($Phase -eq 'Hosted') {
-        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.systemB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.systemB.identity.sequence) { $s } }
-        $b = AssertCommitted 'systemB' $a.service.processId
-        $beforeFailures = (ReadJson (Join-Path $stateDir 'discovery-system-v1.json')).failures
+        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } }
+        $b = AssertCommitted $caseB $a.service.processId
+        $beforeFailures = (ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")).failures
         $beforeReplay = $b.replay.sequence
+        if (-not $azureSigned) {
         RemoveSignerTrust
         $owner = ReadJson $ownerPath
         if ((Test-Path "Cert:\LocalMachine\Root\$signer") -or (Test-Path "Cert:\LocalMachine\TrustedPublisher\$signer") -or
             -not (Test-Path "Cert:\LocalMachine\Root\$($owner.tlsThumbprint)") -or
-            (Hash $manifest.packages.systemC.msi) -ne $manifest.packages.systemC.sha256) {
+            (Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) {
             throw 'Owned code-signing trust removal or independent TLS trust is inconsistent'
         }
-        Record 'C-owned-trust-removed' ([ordered]@{ signer=$signer; tlsThumbprint=$owner.tlsThumbprint; msiSha256=$manifest.packages.systemC.sha256 })
+        Record 'C-owned-trust-removed' ([ordered]@{ signer=$signer; tlsThumbprint=$owner.tlsThumbprint; msiSha256=$manifest.packages.$caseC.sha256 })
         # A restart makes the changed machine certificate trust visible to the
         # service's WinHTTP/WinVerifyTrust process without changing its engine.
         Restart-Service go-mapi -Force
-        $cPath = "/releases/download/$($manifest.packages.systemC.identity.tag)/$($manifest.packages.systemC.identity.assetName)"
-        SelectTarget 'systemC'
+        $cPath = "/releases/download/$($manifest.packages.$caseC.identity.tag)/$($manifest.packages.$caseC.identity.assetName)"
+        SelectTarget $caseC
         Until 'untrusted C rejection after artifact GET' {
-            $s=Snapshot; $d=ReadJson (Join-Path $stateDir 'discovery-system-v1.json')
-            if ((RequestCount $cPath) -gt 0 -and $d.failures -gt $beforeFailures -and $s.marker.packageRelease -eq $manifest.packages.systemB.release -and
+            $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
+            if ((RequestCount $cPath) -gt 0 -and $d.failures -gt $beforeFailures -and $s.marker.packageRelease -eq $manifest.packages.$caseB.release -and
                 $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $beforeReplay) { $s }
         } | ForEach-Object { Record 'untrusted-C-refused' $_ }
         RestoreSignerTrust
-        if ((Hash $manifest.packages.systemC.msi) -ne $manifest.packages.systemC.sha256) { throw 'C MSI bytes changed across trust restoration' }
+        if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'C MSI bytes changed across trust restoration' }
         Restart-Service go-mapi -Force
-        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.systemC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.systemC.identity.sequence) { $s } } 28
-        $c = AssertCommitted 'systemC' $b.service.processId
-        Msi '/i' $manifest.packages.systemC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
-        $disabled = AssertHealthy 'systemC'
+        } else {
+            if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'Azure-signed C MSI bytes changed' }
+            SelectTarget $caseC
+        }
+        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28
+        $c = AssertCommitted $caseC $b.service.processId
+        Msi '/i' $manifest.packages.$caseC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
+        $disabled = AssertHealthy $caseC
         if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }
         $requestsBefore = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         Restart-Service go-mapi -Force
         if ([DateTime]::UtcNow.AddSeconds(185) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }
         Start-Sleep -Seconds 185 # exceeds the production two-minute startup delay and one 60-second cadence
         $requestsAfter = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
-        $disabled = AssertHealthy 'systemC'
+        $disabled = AssertHealthy $caseC
         if ($requestsBefore -cne $requestsAfter -or $disabled.pending -or $disabled.marker.autoUpdateEnabled -ne 0 -or $disabled.status.updates -ne 'disabled') { throw 'Disabled resident service issued a request or changed installed state' }
         Record 'disabled-window' ([ordered]@{ seconds=185; snapshot=$disabled })
     } elseif ($Phase -eq 'PrepareNoUser') {
@@ -365,24 +437,24 @@ try {
     } elseif ($Phase -eq 'VerifyNoUser') {
         AssertNoInteractiveUser
         if (-not (Test-Path -LiteralPath $ownerPath)) { throw 'No owned preparation fixture exists' }
-        $baseline = AssertHealthy 'systemA'
-        if ($baseline.pending -or ($baseline.replay -and $baseline.replay.sequence -ge $manifest.packages.systemB.identity.sequence)) {
+        $baseline = AssertHealthy $caseA
+        if ($baseline.pending -or ($baseline.replay -and $baseline.replay.sequence -ge $manifest.packages.$caseB.identity.sequence)) {
             throw 'No-user baseline already has a pending or committed B update before publication'
         }
         Record 'no-user-before-publication' $baseline
-        SelectTarget 'systemB'
-        Until 'no-user automatic B commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.systemB.release -and $x.status.health -eq 'healthy' -and $x.replay.sequence -eq $manifest.packages.systemB.identity.sequence -and -not $x.pending) { $x } } | Out-Null
-        $b = AssertCommitted 'systemB' $baseline.service.processId
+        SelectTarget $caseB
+        Until 'no-user automatic B commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.$caseB.release -and $x.status.health -eq 'healthy' -and $x.replay.sequence -eq $manifest.packages.$caseB.identity.sequence -and -not $x.pending) { $x } } | Out-Null
+        $b = AssertCommitted $caseB $baseline.service.processId
         AssertNoInteractiveUser
-        SelectTarget 'systemC'
-        Until 'no-user automatic C commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.systemC.release -and $x.status.health -eq 'healthy' -and $x.replay.sequence -eq $manifest.packages.systemC.identity.sequence -and -not $x.pending) { $x } } | Out-Null
-        $c = AssertCommitted 'systemC' $b.service.processId
+        SelectTarget $caseC
+        Until 'no-user automatic C commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.$caseC.release -and $x.status.health -eq 'healthy' -and $x.replay.sequence -eq $manifest.packages.$caseC.identity.sequence -and -not $x.pending) { $x } } | Out-Null
+        $c = AssertCommitted $caseC $b.service.processId
         AssertNoInteractiveUser
         Record 'no-user-A-B-C-committed' $c
     } elseif ($Phase -eq 'InterruptSameBoot') {
         $pending = Until 'matching runner and installer liveness' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
-            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.systemB.release -and (MatchingLiveTransaction $p)) { $p }
+            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
         } 12
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
@@ -390,14 +462,14 @@ try {
         $sameboot = Until 'conservative same-boot reconciliation' {
             $s=Snapshot
             $installer=Get-Process -Id $pending.installer.pid -ErrorAction SilentlyContinue
-            if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.systemB.identity.sequence) -and
+            if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.$caseB.identity.sequence) -and
                 $s.pending -and $s.pending.phase -in @('outcome-unconfirmed','repair-required','reboot-pending','rolled-back')) { $s }
         } 8
         Record 'sameboot-conservative' $sameboot
     } elseif ($Phase -eq 'PrepareReboot') {
         $pending = Until 'matching pending before external reboot' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
-            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.systemB.release -and (MatchingLiveTransaction $p)) { $p }
+            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
         } 12
         $owner = ReadJson $ownerPath
         $task = "go-mapi-ci-fixture-$($owner.runId)"
@@ -421,11 +493,11 @@ try {
             throw 'No matching pending transaction was captured at startup after the test reboot'
         }
         if ((Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime() -le [DateTime]::Parse($owner.bootTimeUtc)) { throw 'Boot identity did not change' }
-        Until 'postboot healthy B reconciliation' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.systemB.release -and $x.status.health -eq 'healthy' -and -not $x.pending -and $x.replay.sequence -eq $manifest.packages.systemB.identity.sequence) { $x } } | Out-Null
-        $b = AssertCommitted 'systemB' $owner.baselineServicePid
-        SelectTarget 'systemC'
-        Until 'postboot automatic C commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.systemC.release -and $x.status.health -eq 'healthy' -and -not $x.pending -and $x.replay.sequence -eq $manifest.packages.systemC.identity.sequence) { $x } } | Out-Null
-        $c = AssertCommitted 'systemC' $b.service.processId
+        Until 'postboot healthy B reconciliation' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.$caseB.release -and $x.status.health -eq 'healthy' -and -not $x.pending -and $x.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $x } } | Out-Null
+        $b = AssertCommitted $caseB $owner.baselineServicePid
+        SelectTarget $caseC
+        Until 'postboot automatic C commit' { $x=Snapshot; if ($x.marker.packageRelease -eq $manifest.packages.$caseC.release -and $x.status.health -eq 'healthy' -and -not $x.pending -and $x.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $x } } | Out-Null
+        $c = AssertCommitted $caseC $b.service.processId
         Record 'postboot-C-committed' $c
         $cleanupOnExit = $true
     }

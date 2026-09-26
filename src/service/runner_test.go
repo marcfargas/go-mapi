@@ -28,11 +28,24 @@ func TestSuiteRunnerAuthorizesPendingSKUBeforeResume(t *testing.T) {
 	runner := UpdateRunner{Pending: store, Ready: &memoryReadyStore{order: &store.order}, Artifacts: fixedArtifactResolver(runnerFixtureArtifact(t)), Integrity: &fakeIntegrityVerifier{order: &store.order}, Runtime: runtime, Clock: fixedRunnerClock(now),
 		AuthorizePending: func(_ context.Context, observed PendingV1) error {
 			return authorizePendingProductSnapshot(observed, pending.Old)
+		},
+		SuiteQuiesce: func(ctx context.Context, observed PendingV1) (PendingV1, error) {
+			if observed.Runner == nil || containsAction(store.order, "start-installer") {
+				t.Fatal("suite quiescence did not precede installer creation")
+			}
+			next := observed
+			deadline := now.Add(30 * time.Second)
+			next.AppDrainDeadline = &deadline
+			if err := store.CompareAndSave(ctx, &observed, next); err != nil {
+				return PendingV1{}, err
+			}
+			store.order = append(store.order, "suite-drained")
+			return next, nil
 		}}
 	if err := runner.Run(context.Background(), pending.TransactionID); err != nil {
 		t.Fatalf("suite runner rejected matching installed SKU: %v", err)
 	}
-	if !containsAction(store.order, "resume") || !containsAction(store.order, "ready") {
+	if !containsAction(store.order, "suite-drained") || !containsAction(store.order, "resume") || !containsAction(store.order, "ready") {
 		t.Fatalf("suite runner did not resume and publish readiness: %v", store.order)
 	}
 }
@@ -183,6 +196,10 @@ func TestFixedInstallerArgumentsExposeNoCallerSelectedProperties(t *testing.T) {
 	want := []string{"/i", artifact, "/qn", "/norestart", "/L*V", log, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=tx-42"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("installer arguments = %q, want %q", args, want)
+	}
+	suiteArgs, err := fixedSuiteInstallerArguments(artifact, log, "tx-42")
+	if err != nil || len(suiteArgs) != len(want) || containsInstallerArgument(suiteArgs, "MSIRMSHUTDOWN=0") || !containsInstallerArgument(suiteArgs, "MSIRESTARTMANAGERCONTROL=Disable") {
+		t.Fatalf("suite arguments=%q err=%v", suiteArgs, err)
 	}
 	if _, err := fixedInstallerArguments("msi", "log", `..\\outside`); err == nil {
 		t.Fatal("accepted unsafe transaction property")
@@ -339,3 +356,12 @@ func (process *fakeInstallerProcess) Wait() (uint32, error) {
 type fixedRunnerClock time.Time
 
 func (clock fixedRunnerClock) Now() time.Time { return time.Time(clock) }
+
+func containsInstallerArgument(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}

@@ -96,6 +96,11 @@ func (a *App) snapshotUpdateAvailable() bool {
 // frontend can share the same path (future-proofing for 11-03 / any
 // later settings panel per CONTEXT Deferred Ideas).
 func (a *App) setUpdateChecksEnabled(enabled bool) error {
+	finish, err := a.beginMachineOperation(context.Background())
+	if err != nil {
+		return err
+	}
+	defer finish()
 	a.settingsMu.Lock()
 	a.settings.UpdateChecksEnabled = enabled
 	s := a.settings

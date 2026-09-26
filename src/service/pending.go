@@ -67,25 +67,26 @@ type ProductSnapshot struct {
 // transaction. It intentionally has no URL, command-line, property, signer,
 // or caller-selected destination fields.
 type PendingV1 struct {
-	Schema          string             `json:"schema"`
-	TransactionID   string             `json:"transactionId"`
-	SKU             update.SKU         `json:"sku"`
-	Old             ProductSnapshot    `json:"old"`
-	Candidate       ProductSnapshot    `json:"candidate"`
-	Replay          update.ReplayState `json:"replay"`
-	ArtifactSHA256  string             `json:"artifactSha256"`
-	LaunchBootID    string             `json:"launchBootId,omitempty"`
-	Phase           Phase              `json:"phase"`
-	Runner          *ProcessIdentity   `json:"runner,omitempty"`
-	Installer       *ProcessIdentity   `json:"installer,omitempty"`
-	InstallerThread *ProcessIdentity   `json:"installerThread,omitempty"`
-	Exit            *ExitEvidence      `json:"exit,omitempty"`
-	PreparedAt      time.Time          `json:"preparedAt"`
-	UpdatedAt       time.Time          `json:"updatedAt"`
-	Attempt         uint               `json:"attempt"`
-	NextAttemptAt   *time.Time         `json:"nextAttemptAt,omitempty"`
-	RetryDeadline   *time.Time         `json:"retryDeadline,omitempty"`
-	Result          Result             `json:"result,omitempty"`
+	Schema           string             `json:"schema"`
+	TransactionID    string             `json:"transactionId"`
+	SKU              update.SKU         `json:"sku"`
+	Old              ProductSnapshot    `json:"old"`
+	Candidate        ProductSnapshot    `json:"candidate"`
+	Replay           update.ReplayState `json:"replay"`
+	ArtifactSHA256   string             `json:"artifactSha256"`
+	LaunchBootID     string             `json:"launchBootId,omitempty"`
+	Phase            Phase              `json:"phase"`
+	Runner           *ProcessIdentity   `json:"runner,omitempty"`
+	Installer        *ProcessIdentity   `json:"installer,omitempty"`
+	InstallerThread  *ProcessIdentity   `json:"installerThread,omitempty"`
+	Exit             *ExitEvidence      `json:"exit,omitempty"`
+	PreparedAt       time.Time          `json:"preparedAt"`
+	UpdatedAt        time.Time          `json:"updatedAt"`
+	Attempt          uint               `json:"attempt"`
+	NextAttemptAt    *time.Time         `json:"nextAttemptAt,omitempty"`
+	RetryDeadline    *time.Time         `json:"retryDeadline,omitempty"`
+	AppDrainDeadline *time.Time         `json:"appDrainDeadline,omitempty"`
+	Result           Result             `json:"result,omitempty"`
 }
 
 var transactionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
@@ -170,6 +171,12 @@ func (pending PendingV1) Validate() error {
 	}
 	if pending.RetryDeadline != nil && (!pending.RetryDeadline.After(pending.PreparedAt) || pending.RetryDeadline.After(pending.PreparedAt.Add(10*time.Minute))) {
 		return errors.New("invalid absolute installer retry deadline")
+	}
+	if pending.AppDrainDeadline != nil {
+		if pending.SKU != update.Suite || (pending.Runner == nil && !(pending.Phase == PhasePrepared && pending.Attempt > 1 && pending.RetryDeadline != nil)) || pending.AppDrainDeadline.IsZero() ||
+			!pending.AppDrainDeadline.After(pending.PreparedAt) || pending.AppDrainDeadline.After(pending.UpdatedAt.Add(30*time.Second)) {
+			return errors.New("invalid suite app drain deadline")
+		}
 	}
 	if pending.Schema == PendingSchemaV2 && pending.Result == ResultRetryScheduled &&
 		(pending.Phase != PhaseRolledBack || pending.Exit == nil || pending.Exit.Code != 1618 || pending.NextAttemptAt == nil || pending.RetryDeadline == nil ||
