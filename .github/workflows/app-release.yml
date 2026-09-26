@@ -119,7 +119,7 @@ jobs:
         run: just build-user-release
       - name: Build development-channel user-component artifact
         if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign)
-        run: just build-user
+        run: just build-user-release
       - name: Verify app artifact metadata before signing
         shell: pwsh
         run: just verify-user-artifact
