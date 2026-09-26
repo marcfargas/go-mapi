@@ -19,7 +19,7 @@ on:
         type: boolean
         default: true
       publish:
-        description: 'Reserved release request; publication remains gated'
+        description: 'Publish the exact signed development system/suite release'
         type: boolean
         default: false
       target_spec_json:
@@ -58,11 +58,11 @@ jobs:
     steps:
       - name: Refuse obsolete interceptor-only publication
         run: |
-          echo 'This checkout no longer builds the legacy interceptor-only admin release. admin-v tags and admin dispatches cannot publish a system or suite MSI under the legacy identity. Use system/suite validation; machine publication remains gated.' >&2
+          echo 'This checkout no longer builds the legacy interceptor-only admin release. admin-v tags and admin dispatches cannot publish a system or suite MSI under the legacy identity.' >&2
           exit 1
 
   validate-machine-package:
-    # This validation job builds machine packages but does not publish them.
+    # Publication uses a dependent job with separate permissions.
     if: github.event_name == 'workflow_dispatch' && inputs.sku != 'admin'
     environment: artifact-signing
     permissions:
@@ -81,6 +81,11 @@ jobs:
       REUSE_RUN_ATTEMPT: ${{ inputs.reuse_run_attempt }}
       REUSE_RELEASE: ${{ inputs.reuse_release }}
       REUSE_COMMIT: ${{ inputs.reuse_commit }}
+    outputs:
+      sku: ${{ steps.machine.outputs.sku }}
+      release: ${{ steps.machine.outputs.release }}
+      asset: ${{ steps.machine.outputs.asset }}
+      manifest: ${{ steps.machine.outputs.manifest }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,13 +102,37 @@ jobs:
         id: machine
         shell: pwsh
         run: |
-          if ('${{ inputs.publish }}' -eq 'true') { throw 'Machine publication remains gated on native system update proof' }
           $sku = '${{ inputs.sku }}'
           $release = '${{ inputs.version }}'
           $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $identity.sku -ne $sku -or $identity.tag -ne "$sku-v$release") { throw 'Invalid machine package identity' }
           if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne '${{ github.sha }}') { throw 'Checkout does not match the triggering commit' }
           if ((git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Machine release checkout is dirty before build' }
+          if ('${{ inputs.publish }}' -eq 'true') {
+            if ($release -cne '3.2.0-alpha.1' -or '${{ github.ref_type }}' -cne 'tag' -or
+                '${{ github.ref_name }}' -cne $identity.tag -or '${{ inputs.sign }}' -ne 'true' -or
+                '${{ inputs.controlled_origin_fixture }}' -eq 'true' -or $env:REUSE_RUN_ID -ne '' -or
+                $env:REUSE_RUN_ATTEMPT -ne '' -or $env:REUSE_RELEASE -ne '' -or $env:REUSE_COMMIT -ne '' -or
+                -not [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -or
+                '${{ github.repository }}' -cne 'marcfargas/go-mapi') { throw 'Public machine release requires the exact signed 3.2 development tag and fresh production build' }
+            if ('${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}' -cne 'https://weu.codesigning.azure.net/' -or
+                '${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}' -cne 'lachispa' -or
+                '${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}' -cne 'lachispa-test') {
+              throw 'Public development machine release requires the reviewed Azure TEST ONLY identity'
+            }
+            foreach ($name in @('service','interceptor','app')) {
+              if ((Get-Content $(switch ($name) { 'service' { 'src/service/VERSION' } 'interceptor' { 'src/interceptor/interceptor-version.txt' } 'app' { 'src/app/VERSION' } }) -Raw).Trim() -cne $release) {
+                throw "Public machine source version mismatch: $name"
+              }
+            }
+            $tagRef = "refs/tags/$($identity.tag)"
+            git fetch --no-tags origin $tagRef
+            if ($LASTEXITCODE -ne 0 -or (git rev-parse 'FETCH_HEAD^{commit}').Trim().ToLowerInvariant() -cne '${{ github.sha }}') { throw 'Public machine tag does not peel to the checked-out source commit' }
+            $runs = gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or @($runs.workflow_runs | Where-Object { $_.head_sha -ceq '${{ github.sha }}' -and $_.conclusion -eq 'success' -and $_.event -eq 'push' }).Count -lt 1) {
+              throw 'No successful full push CI workflow run exists for the exact public machine source commit'
+            }
+          }
           $reuse = $env:REUSE_RUN_ID -ne ''
           if ($reuse -and ($sku -ne 'suite' -or '${{ inputs.sign }}' -ne 'true' -or '${{ inputs.controlled_origin_fixture }}' -ne 'true' -or
               $env:REUSE_RUN_ID -notmatch '^[1-9][0-9]*$' -or $env:REUSE_RUN_ATTEMPT -notmatch '^[1-9][0-9]*$' -or
@@ -125,6 +154,8 @@ jobs:
           "release=$release" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
           "asset=$($identity.assetName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
           "manifest=$($identity.manifestName)" | Out-File $env:GITHUB_OUTPUT -Append -Encoding ascii
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Download pinned prior suite signed PE bundle
         if: inputs.reuse_run_id != ''
@@ -187,7 +218,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Machine signing requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden' }
-          if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -and
+          if ('${{ inputs.publish }}' -ne 'true' -and [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -and
               [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
 
       - run: just prepare-windows -Native -Install
@@ -274,6 +305,15 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
+      - name: Validate Azure TEST signatures with owned runner trust
+        if: inputs.sign && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
+        shell: pwsh
+        run: |
+          $files = @('release/machine-input/go-mapi-service.exe','release/machine-input/go-mapi-x86.dll','release/machine-input/go-mapi-x64.dll')
+          if ('${{ inputs.sku }}' -eq 'suite') { $files += 'release/machine-input/go-mapi-machine.exe' }
+          .\scripts\azure-test-signing-trust.ps1 -Mode Prepare -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -SignedFiles $files
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -Destination release/machine-input/test-trust.json
+
       - name: Bind signed PE input manifest to exact SKU and source versions
         shell: pwsh
         run: |
@@ -350,13 +390,46 @@ jobs:
           $identity = go run ./internal/mapi/cmd/machine-package -- $sku $release | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Machine package identity failed' }
           $manifest = Get-Content release/machine-input/signed-input.json -Raw | ConvertFrom-Json
+          $public = '${{ inputs.publish }}' -eq 'true'
+          if ($public) {
+            $manifestPath = Join-Path release/machine '${{ steps.machine.outputs.manifest }}'
+            Copy-Item -LiteralPath release/machine-input/signed-input.json -Destination $manifestPath
+            if ($sku -eq 'suite') { Copy-Item -LiteralPath release/machine-input/app-artifacts.json -Destination release/machine/app-artifacts.json }
+            $extract = Join-Path $env:RUNNER_TEMP "machine-release-$sku-${{ github.run_id }}"
+            New-Item -ItemType Directory -Force $extract | Out-Null
+            try {
+              $args = @('/a', ('"' + [IO.Path]::GetFullPath($path) + '"'), '/qn', ('TARGETDIR="' + $extract + '"'))
+              $process = Start-Process msiexec.exe -ArgumentList $args -PassThru -Wait
+              if ($process.ExitCode -ne 0) { throw "Cannot extract final MSI: $($process.ExitCode)" }
+              foreach ($part in $manifest.components) {
+                foreach ($artifact in $part.artifacts) {
+                  $suffix = switch ($part.component) {
+                    'service' { 'go-mapi\service\go-mapi-service.exe' }
+                    'app' { 'go-mapi\user\go-mapi.exe' }
+                    'interceptor' { "go-mapi\interceptor\$(if ($artifact.architecture -eq 'x64') { 'AMD64' } else { 'x86' })\go-mapi.dll" }
+                  }
+                  $files = @(Get-ChildItem -LiteralPath $extract -Recurse -File | Where-Object { $_.FullName.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase) })
+                  if ($files.Count -ne 1 -or (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.sha256) {
+                    throw "Final $sku MSI does not contain signed $($part.component)/$($artifact.architecture) bytes"
+                  }
+                }
+              }
+            } finally { Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue }
+          }
           $unsigned = Get-Content release/machine-input/unsigned-hashes.json -Raw | ConvertFrom-Json
           $peHashes = @()
+          $signatures = @()
           foreach ($part in $manifest.components) {
             foreach ($artifact in $part.artifacts) {
               $peHashes += [ordered]@{ component=$part.component; architecture=$artifact.architecture; filename=$artifact.filename; unsignedSha256=$unsigned.($artifact.filename); signedSha256=$artifact.sha256 }
+              if ('${{ inputs.sign }}' -eq 'true') {
+                $peSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path release/machine-input $artifact.filename)
+                if ($peSignature.Status -ne 'Valid' -or -not $peSignature.SignerCertificate -or -not $peSignature.TimeStamperCertificate) { throw "Signed PE failed Windows verification: $($artifact.filename)" }
+                $signatures += [ordered]@{ file=$artifact.filename; status=$peSignature.Status.ToString(); signerThumbprint=$peSignature.SignerCertificate.Thumbprint; timestampThumbprint=$peSignature.TimeStamperCertificate.Thumbprint }
+              }
             }
           }
+          if ($public) { $signatures += [ordered]@{ file=$identity.assetName; status=$signature.Status.ToString(); signerThumbprint=$signature.SignerCertificate.Thumbprint; timestampThumbprint=$signature.TimeStamperCertificate.Thumbprint } }
           $contract = (Get-Content components.json -Raw | ConvertFrom-Json).machinePackages.$sku
           $reuse = $env:REUSE_RUN_ID -ne ''
           $prior = if ($reuse) { Get-Content reuse-input/reuse-provenance.json -Raw | ConvertFrom-Json } else { $null }
@@ -384,14 +457,17 @@ jobs:
           $provenance = [ordered]@{
             schema='go-mapi-machine-validation-provenance-v1'; publishable=$false
             repository='${{ github.repository }}'; commit='${{ github.sha }}'
-            workflow='${{ github.workflow }}'; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'
+            workflow='${{ github.workflow }}'; workflowRevision='${{ github.workflow_sha }}'; sourceRef='${{ github.ref }}'; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'
             sku=$sku; packageRelease=$release; tag=$identity.tag; assetName=$identity.assetName
-            productCode=$identity.productCode; productVersion=$identity.productVersion; upgradeCode=$contract.upgradeCode
+            productCode=$identity.productCode; productVersion=$identity.productVersion; upgradeCode=$contract.upgradeCode; sequence=$identity.sequence
             contained=@($manifest.components | ForEach-Object { [ordered]@{ component=$_.component; version=$_.version } })
             derivative=$derivative; componentSources=$componentSources
             priorBundle=if ($reuse) { [ordered]@{ runId=$prior.runId; runAttempt=$prior.runAttempt; commit=$prior.commit; packageRelease=$prior.packageRelease;
               provenanceSha256=(Get-FileHash reuse-input/reuse-provenance.json -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
-            peHashes=$peHashes
+            peHashes=$peHashes; signatures=$signatures
+            testTrust=if (Test-Path -LiteralPath release/machine-input/test-trust.json) { Get-Content release/machine-input/test-trust.json -Raw | ConvertFrom-Json } else { $null }
+            signedInputManifest=if ($public) { [ordered]@{ file='${{ steps.machine.outputs.manifest }}'; sha256=(Get-FileHash $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
+            appBuildManifest=if ($public -and $sku -eq 'suite') { [ordered]@{ file='app-artifacts.json'; sha256=(Get-FileHash release/machine/app-artifacts.json -Algorithm SHA256).Hash.ToLowerInvariant() } } else { $null }
             msi=[ordered]@{ size=(Get-Item $path).Length; sha256=(Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant(); signed=('${{ inputs.sign }}' -eq 'true') }
             toolchain=[ordered]@{ go='1.25'; dotnet='8.0.x'; azureSigningAction='c7ab2a863ab5f9a846ddb8265964877ef296ee82' }
           }
@@ -405,7 +481,14 @@ jobs:
             }
           }
           if ('${{ inputs.sign }}' -eq 'true') {
-            $specJson = if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON)) {
+            $specJson = if ($public) {
+              $issued = [DateTimeOffset]::UtcNow
+              $spec = [ordered]@{ sku=$sku; packageRelease=$release
+                contained=@($manifest.components | ForEach-Object { [ordered]@{ component=$_.component; version=$_.version } })
+                compatibility=@($manifest.components | ForEach-Object { [ordered]@{ component=$_.component; minInclusive='3.2.0-alpha.1'; maxExclusive='4.0.0' } })
+                issuedAt=$issued.ToString('yyyy-MM-ddTHH:mm:ssZ'); expiresAt=$issued.AddDays(30).ToString('yyyy-MM-ddTHH:mm:ssZ') }
+              $spec | ConvertTo-Json -Depth 8 -Compress
+            } elseif ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON)) {
               $env:MACHINE_RELEASE_TARGET_SPEC_JSON
             } else { $env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON }
             $spec = $specJson | ConvertFrom-Json
@@ -436,6 +519,12 @@ jobs:
               $provenance.targets = [ordered]@{ file=$targetName; sha256=(Get-FileHash $targetPath -Algorithm SHA256).Hash.ToLowerInvariant(); sequence=$target.sequence; artifactUrl=$target.artifact.url }
             } finally { Remove-Item -LiteralPath $specPath -Force -ErrorAction SilentlyContinue }
           }
+          if ($public) {
+            if ($derivative.kind -cne 'production' -or $derivative.metadataOrigin -cne 'https://go-mapi.app' -or
+                $derivative.artifactOrigin -cne 'https://github.com/marcfargas/go-mapi/releases/download/' -or
+                $derivative.checkIntervalSeconds -ne 21600 -or -not $provenance.targets) { throw 'Public machine target is not the canonical production derivative' }
+            $provenance.publishable = $true
+          }
           $validation = Join-Path release/machine "$sku-$release.validation.json"
           [IO.File]::WriteAllText($validation, ($provenance | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
 
@@ -458,7 +547,7 @@ jobs:
             release/machine-input/go-mapi-x64.dll
           if-no-files-found: error
 
-      - name: Upload non-publishable machine validation artifacts
+      - name: Upload machine validation artifacts
         uses: actions/upload-artifact@v4
         with:
           name: go-mapi-${{ steps.machine.outputs.sku }}-${{ steps.machine.outputs.release }}-validation
@@ -473,3 +562,114 @@ jobs:
             release/machine-input/go-mapi-x86.dll
             release/machine-input/go-mapi-x64.dll
             release/machine-input/go-mapi-machine.exe
+      - name: Upload exact public machine release bundle
+        if: inputs.publish
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-${{ steps.machine.outputs.sku }}-${{ steps.machine.outputs.release }}-public
+          path: |
+            release/machine/${{ steps.machine.outputs.asset }}
+            release/machine/${{ steps.machine.outputs.manifest }}
+            release/machine/${{ steps.machine.outputs.sku }}-targets.json
+            release/machine/${{ steps.machine.outputs.sku }}-${{ steps.machine.outputs.release }}.validation.json
+            release/machine/app-artifacts.json
+          if-no-files-found: error
+      - name: Remove owned Azure TEST runner trust
+        if: always() && inputs.sign && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
+        shell: pwsh
+        run: .\scripts\azure-test-signing-trust.ps1 -Mode Cleanup -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
+
+  publish-machine-release:
+    needs: validate-machine-package
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.sku != 'admin'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SKU: ${{ needs.validate-machine-package.outputs.sku }}
+      VERSION: ${{ needs.validate-machine-package.outputs.release }}
+      ASSET: ${{ needs.validate-machine-package.outputs.asset }}
+      MANIFEST: ${{ needs.validate-machine-package.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-${{ needs.validate-machine-package.outputs.sku }}-${{ needs.validate-machine-package.outputs.release }}-public
+          path: release/machine
+      - name: Check exact public bundle and vacant release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$VERSION" = '3.2.0-alpha.1'
+          test "$SKU" = 'system' -o "$SKU" = 'suite'
+          tag="$SKU-v$VERSION"
+          test "${{ github.ref_name }}" = "$tag"
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          git fetch --no-tags origin "refs/tags/$tag"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '${{ github.sha }}'
+          if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
+            echo "Release $tag already exists; immutable assets cannot be replaced" >&2
+            exit 1
+          fi
+          test -f "release/machine/$ASSET"
+          test -f "release/machine/$MANIFEST"
+          test -f "release/machine/$SKU-targets.json"
+          test -f "release/machine/$SKU-$VERSION.validation.json"
+          if [ "$SKU" = suite ]; then test -f release/machine/app-artifacts.json; fi
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('release/machine')
+          sku, version, asset, manifest = (os.environ[k] for k in ('SKU','VERSION','ASSET','MANIFEST'))
+          tag = f'{sku}-v{version}'
+          def digest(name): return hashlib.sha256((root/name).read_bytes()).hexdigest()
+          proof = json.loads((root/f'{sku}-{version}.validation.json').read_text())
+          inputs = json.loads((root/manifest).read_text())
+          target = json.loads((root/f'{sku}-targets.json').read_text())
+          assert proof['publishable'] is True and proof['sku'] == sku and proof['packageRelease'] == version
+          assert proof['repository'] == '${{ github.repository }}' and proof['commit'] == '${{ github.sha }}'
+          assert proof['sourceRef'] == 'refs/tags/' + tag and proof['tag'] == tag
+          assert str(proof['runId']) == '${{ github.run_id }}' and str(proof['runAttempt']) == '${{ github.run_attempt }}'
+          assert proof['assetName'] == asset and proof['signedInputManifest'] == {'file': manifest, 'sha256': digest(manifest)}
+          assert inputs['schema'] == 'go-mapi-machine-signed-input-v1' and inputs['sku'] == sku
+          assert inputs['commit'] == '${{ github.sha }}' and inputs['packageRelease'] == version
+          assert proof['msi']['signed'] is True and proof['msi']['sha256'] == digest(asset)
+          assert proof['msi']['size'] == (root/asset).stat().st_size
+          assert proof['targets']['sha256'] == digest(f'{sku}-targets.json')
+          assert target['sku'] == sku and target['artifact'] == {'url': f'https://github.com/marcfargas/go-mapi/releases/download/{tag}/{asset}', 'size': proof['msi']['size'], 'sha256': proof['msi']['sha256']}
+          assert proof['testTrust']['schema'] == 'go-mapi-azure-test-root-fixture-v1'
+          assert proof['testTrust']['certificateSha256'] == '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
+          assert proof['testTrust']['store'] == 'CurrentUser/Root' and len(proof['testTrust']['baseline']) == (4 if sku == 'suite' else 3)
+          assert len(proof['signatures']) == (5 if sku == 'suite' else 4)
+          assert all(s['status'] == 'Valid' and s['signerThumbprint'] and s['timestampThumbprint'] for s in proof['signatures'])
+          if sku == 'suite':
+              assert proof['appBuildManifest'] == {'file': 'app-artifacts.json', 'sha256': digest('app-artifacts.json')}
+              assert inputs['appBuild']['sha256'] == digest('app-artifacts.json')
+          else: assert proof['appBuildManifest'] is None
+          PY
+      - name: Create immutable experimental GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release-notes.txt" <<'EOF'
+          Experimental 3.2 development machine package. Signed with Azure Artifact Signing TEST ONLY profile.
+          Default Windows trust, installation, and automatic update acceptance are not established.
+          Metadata remains unpublished; automatic update checks are not live for these release targets.
+          EOF
+          assets=("release/machine/$ASSET" "release/machine/$MANIFEST" "release/machine/$SKU-targets.json" "release/machine/$SKU-$VERSION.validation.json")
+          if [ "$SKU" = suite ]; then assets+=(release/machine/app-artifacts.json); fi
+          gh release create "$SKU-v$VERSION" "${assets[@]}" --repo '${{ github.repository }}' --verify-tag --prerelease --latest=false --title "$SKU package $VERSION" --notes-file "$RUNNER_TEMP/release-notes.txt"
+      - name: Verify downloaded public bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/downloaded"
+          gh release download "$SKU-v$VERSION" --repo '${{ github.repository }}' --dir "$RUNNER_TEMP/downloaded"
+          for file in "release/machine/$ASSET" "release/machine/$MANIFEST" "release/machine/$SKU-targets.json" "release/machine/$SKU-$VERSION.validation.json"; do
+            cmp "$file" "$RUNNER_TEMP/downloaded/${file##*/}"
+          done
+          if [ "$SKU" = suite ]; then cmp release/machine/app-artifacts.json "$RUNNER_TEMP/downloaded/app-artifacts.json"; fi

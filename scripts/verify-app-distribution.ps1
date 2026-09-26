@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$MsixPath,
     [Parameter(Mandatory = $true)][string]$InstallerPath,
+    [string]$AppExePath,
     [string]$OutputManifest = "release/app/app-distribution.json",
     [switch]$RequireSignature
 )
@@ -48,6 +49,13 @@ try {
     $files = @(Get-ChildItem $stage -Recurse -File)
     $payload = @($files | Where-Object { $_.Extension -eq '.exe' })
     if ($payload.Count -ne 1 -or $payload[0].Name -ne 'go-mapi.exe') { throw "MSIX must contain exactly one executable payload: go-mapi.exe" }
+    if ($AppExePath) {
+        $appExe = [IO.Path]::GetFullPath((Join-Path $repoRoot $AppExePath))
+        if (-not (Test-Path -LiteralPath $appExe -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $appExe -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $payload[0].FullName -Algorithm SHA256).Hash) {
+            throw 'MSIX payload differs from the exact signed app executable'
+        }
+    }
     $manifest = Get-Content (Join-Path $stage "AppxManifest.xml") -Raw
     if (-not $manifest.Contains("Version=`"$packageVersion`"")) { throw "MSIX identity version does not match $packageVersion" }
     foreach ($required in @('ProcessorArchitecture="x64"', 'Windows.FullTrustApplication', 'windows.startupTask', 'TaskId="go-mapi-user-startup-v4"', 'Enabled="true"', 'FileSystemWriteVirtualization>disabled', 'Name="runFullTrust"', 'Name="unvirtualizedResources"', 'MinVersion="10.0.18362.0"')) {

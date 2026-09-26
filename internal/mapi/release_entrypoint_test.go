@@ -9,8 +9,8 @@ import (
 )
 
 // These checked-in workflow checks make the component split a release
-// authorization boundary. Only the app-v* workflow currently publishes;
-// admin-v* is still recognized but fails closed while machine release is gated.
+// authorization boundary. Only the app-v* push and explicit system/suite
+// dispatch paths publish; retired admin-v* still fails closed.
 func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	for _, release := range []struct {
@@ -31,16 +31,14 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			}
 		}
 		if release.path == "app-release.yml" {
-			for _, want := range []string{"contents: write", "softprops/action-gh-release@v2"} {
-				if !strings.Contains(content, want) {
-					t.Errorf("app release workflow missing %q", want)
-				}
+			jobs := strings.Split(content, "\n  publish-app-release:")
+			if len(jobs) != 2 || strings.Contains(jobs[0], "contents: write") || !strings.Contains(jobs[1], "contents: write") || !strings.Contains(jobs[1], "gh release create") {
+				t.Error("app release must isolate contents: write in its publication job")
 			}
 		} else {
-			for _, forbidden := range []string{"contents: write", "softprops/action-gh-release", "wingetcreate.exe"} {
-				if strings.Contains(content, forbidden) {
-					t.Errorf("non-publishing machine validation includes %q", forbidden)
-				}
+			jobs := strings.Split(content, "\n  publish-machine-release:")
+			if len(jobs) != 2 || strings.Contains(jobs[0], "contents: write") || !strings.Contains(jobs[1], "contents: write") || !strings.Contains(jobs[1], "gh release create") {
+				t.Error("machine release must isolate contents: write in its publication job")
 			}
 		}
 	}
