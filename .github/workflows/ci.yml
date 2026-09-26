@@ -103,6 +103,11 @@ jobs:
       - name: Build distinct machine-distributed app for MSI validation
         shell: pwsh
         run: |
+          # The earlier development build generated these Wails defaults. The
+          # release builder requires them absent so it can generate fresh inputs.
+          foreach ($path in @('src/app/build/appicon.png', 'src/app/build/windows/icon.ico', 'src/app/build/windows/wails.exe.manifest')) {
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+          }
           just build-user-machine
           if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
           .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
