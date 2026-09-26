@@ -88,8 +88,9 @@ verify-suite-package *args:
 build-machine-test-packages *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-machine-test-packages.ps1 {{args}}
 
+[positional-arguments]
 machine-update-integration *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-machine-update-integration.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-machine-update-integration.ps1 "$@"
 
 e2e-system-windows *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 {{args}}
