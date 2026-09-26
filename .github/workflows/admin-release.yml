@@ -350,7 +350,7 @@ jobs:
             -SourceCommit '${{ github.sha }}' -InputDirectory release/machine-input `
             -ServiceVersion $serviceVersion -InterceptorVersion $interceptorVersion @appArgs `
             -RequireSignature:$('${{ inputs.sign }}' -eq 'true') -OutputPath release/machine-input/signed-input.json
-          if ($LASTEXITCODE -ne 0) { throw 'machine signed-input manifest generation failed' }
+          if (-not $? -or -not (Test-Path -LiteralPath release/machine-input/signed-input.json -PathType Leaf)) { throw 'machine signed-input manifest generation failed' }
           $recipe = if ($sku -eq 'suite') { 'package-suite' } else { 'package-system' }
           just $recipe -SignedInputManifest release/machine-input/signed-input.json -RequireSignedInputs:$('true' -eq '${{ inputs.sign }}')
           if ($LASTEXITCODE -ne 0) { throw 'machine MSI build failed' }

@@ -224,7 +224,7 @@ jobs:
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
           New-Item -ItemType Directory -Force release/winget | Out-Null
           Get-ChildItem distribution/winget/*.yaml.in | ForEach-Object {
-            $target = Join-Path release/winget $_.Name.Replace('.in','')
+            $target = Join-Path release/winget ([IO.Path]::GetFileNameWithoutExtension($_.Name))
             $text = (Get-Content $_.FullName -Raw).Replace('@@VERSION@@',$version).Replace('@@INSTALLER_URL@@',$url).Replace('@@INSTALLER_SHA256@@',$hash)
             [IO.File]::WriteAllText($target, $text, [Text.UTF8Encoding]::new($false))
           }
