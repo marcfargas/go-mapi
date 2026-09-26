@@ -240,13 +240,11 @@ jobs:
         with:
           name: go-mapi-machine-app
           path: ci-input/app
-      - name: Use runner LLVM resource tools
+      - name: Use runner LLVM resource compiler
         shell: pwsh
         run: |
           $bin = Join-Path $env:ProgramFiles 'LLVM\bin'
-          foreach ($exe in @('llvm-rc.exe', 'llvm-cvtres.exe')) {
-            if (-not (Test-Path -LiteralPath (Join-Path $bin $exe))) { throw "Missing $exe in runner LLVM at $bin" }
-          }
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'llvm-rc.exe'))) { throw "Missing llvm-rc.exe in runner LLVM at $bin" }
           $bin | Out-File $env:GITHUB_PATH -Append -Encoding utf8
       - name: Prepare current system and suite MSI fixtures
         shell: pwsh

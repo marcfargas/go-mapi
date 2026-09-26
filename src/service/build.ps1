@@ -41,7 +41,18 @@ if (-not [Uri]::TryCreate($ArtifactOrigin, [UriKind]::Absolute, [ref]$artifactUr
 if ($RequireMachineReleaseTrust -and $ArtifactOrigin -cne $canonicalArtifactOrigin) { throw 'Release machine artifact origin must be canonical GitHub' }
 
 $resourceCompiler = Get-Command llvm-rc -ErrorAction Stop
-$resourceConverter = Get-Command llvm-cvtres -ErrorAction Stop
+$llvmConverter = Get-Command llvm-cvtres -ErrorAction SilentlyContinue
+$resourceConverter = if ($llvmConverter) { $llvmConverter.Source } else { $null }
+if (-not $resourceConverter) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw "MSVC resource converter discovery requires $vswhere" }
+    $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'MSVC x64 tools installation not found' }
+    $toolsetVersion = (Get-Content (Join-Path $installation 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt') -Raw).Trim()
+    $resourceConverter = Join-Path $installation "VC\Tools\MSVC\$toolsetVersion\bin\Hostx64\x64\cvtres.exe"
+    if (-not (Test-Path -LiteralPath $resourceConverter -PathType Leaf)) { throw "MSVC resource converter not found at $resourceConverter" }
+}
+Write-Host "Service resource converter: $resourceConverter"
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 $resource = "$temporary.rc"
 $compiled = "$temporary.res"
@@ -56,8 +67,8 @@ try {
     [IO.File]::WriteAllText($resource, $template, [Text.Encoding]::UTF8)
     & $resourceCompiler.Source /fo $compiled $resource
     if ($LASTEXITCODE -ne 0) { throw 'Service resource compilation failed' }
-    & $resourceConverter.Source /machine:x64 "/out:$syso" $compiled
-    if ($LASTEXITCODE -ne 0) { throw 'Service COFF resource conversion failed' }
+    & $resourceConverter /machine:x64 "/out:$syso" $compiled
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $syso -PathType Leaf)) { throw 'Service COFF resource conversion failed' }
     $env:GOOS = 'windows'
     $env:GOARCH = 'amd64'
     $env:CGO_ENABLED = '0'
