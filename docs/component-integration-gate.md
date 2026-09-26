@@ -27,53 +27,70 @@ harness logs, and app acknowledgements. Missing evidence fails the gate.
 
 ## Installed machine update gate
 
-The `admin-msi` job reuses those Release DLLs and the separately built machine
-app. It prepares signed, disposable system A/B/C and suite A/B packages with
-`just build-machine-test-packages`, runs the existing cross-SKU MSI lifecycle
-script, and invokes `just machine-update-integration -Phase Hosted`. The
-package manifest binds the source commit, explicit component version
-substitutions, generated service versions, final signed MSI hashes and
-deterministic MSI identities. The test certificates are generated on that
-disposable runner only. The service build uses a localhost HTTPS origin and
-the minimum supported 60-second check interval; production trust defaults
-remain unchanged.
+Ordinary pushes and pull requests run `just check-portable` on Ubuntu and
+`just test-windows` on Windows. `check-portable` runs Go tests and vet for
+internal/app/service, frontend Vitest/Svelte checks, and fake-backend Playwright
+queue/auth tests. Playwright failure reports and traces are retained. The
+Windows native matrix runs `just test-system <x64|x86> <Debug|Release>` for all
+four combinations; that command builds and runs the matching harness and CTest
+suite, and CTest fails if no tests are registered. The Release DLL and harness
+artifacts feed the separate queue integration command above. `just
+prepare-windows -Native -Wails -Packages -Install` prepares pinned Windows
+prerequisites as needed; omit `-Install` to validate an existing environment.
 
-Run from an elevated, clean Windows machine with Go 1.25, .NET 8, WiX restore,
-`llvm-rc`, `llvm-cvtres`, Windows SDK `signtool.exe`, the Release DLL artifacts,
-and the unsigned machine app with its `app-artifacts.json`:
+The user Windows job builds a release standalone app at 5.0.1-alpha.4 with
+`just build-user-release -OutputDirectory ci-input/app-standalone` and verifies
+its EXE and manifest. It makes the MSIX and NSIS package from that exact EXE
+while `src/app/VERSION` still names A. It then builds the machine app A and
+suite app-only C separately with `just build-user-machine -OutputDirectory
+ci-input/appA` and `ci-input/appC`; C uses 5.0.2-alpha.1. Each EXE and manifest
+pair is verified before upload. The job repeats these three builds and checks
+on the same checkout to exercise owned-output replacement, without rebuilding
+the user packages. The first verified pairs are the uploaded handoff artifacts.
+
+The `admin-msi` job reuses the Release DLLs and distinct A/C machine apps. It
+prepares disposable signed system A/B/C and suite A/B/C packages with `just
+build-machine-test-packages`. Suite C keeps B's exact service and interceptor
+bytes and source identities while changing the app. The signed-input writer is
+shared with machine release validation, but these fixture certificates are
+local to a disposable runner and have no Azure timestamp or release authority.
+The manifest binds the source commit, explicit version substitutions, signed
+PE and MSI hashes, and deterministic MSI identities. The service uses a
+localhost HTTPS origin and the minimum supported 60-second check interval.
+
+Run the installed gate only on an elevated, clean, disposable Windows machine
+with Go 1.25, .NET 8, WiX restore, Windows SDK signing tools, the Release DLLs,
+and the A/C machine app EXE and manifest pairs:
 
 ```powershell
 $root = 'test-results/245-ci/local-run'
+just prepare-windows -Native -Install
 just build-machine-test-packages `
   -X64Dll <x64-dll> -X86Dll <x86-dll> `
-  -MachineApp <go-mapi-machine.exe> -AppBuildManifest <app-artifacts.json> `
+  -MachineApp <app-A.exe> -AppBuildManifest <app-A-artifacts.json> `
+  -SuiteCApp <app-C.exe> -SuiteCAppBuildManifest <app-C-artifacts.json> `
   -OutputDirectory release/machine-test -EvidenceDirectory "$root/build" `
   -MetadataOrigin https://localhost:18453 `
   -ArtifactOrigin https://localhost:18453/releases/download/
-$packages = Get-Content "$root/build/machine-test-packages.json" -Raw | ConvertFrom-Json
-& .\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 `
-  -SystemMsi $packages.packages.systemA.msi `
-  -SuiteMsi $packages.packages.suiteA.msi `
-  -NewerSuiteMsi $packages.packages.suiteB.msi `
-  -LogDirectory "$root/cross-sku"
-just machine-update-integration -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory "$root/update" -Phase Hosted -FixturePort 18453
-just machine-update-integration -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory "$root/update-interruption" -Phase InterruptSameBoot `
-  -FixturePort 18453 -DeadlineMinutes 22
+just machine-hosted-integration `
+  -PackageManifest "$root/build/machine-test-packages.json" `
+  -EvidenceDirectory $root -FixturePort 18453
 ```
 
-Always run the owned cleanup after any failed native phase. Pass the interruption
-evidence directory to both cleanup invocations, as CI does:
+The hosted command runs cross-SKU lifecycle, system Hosted, suite Hosted,
+suite Cleanup, then system InterruptSameBoot with a 22-minute deadline. It
+checks phase result files and attempts all applicable cleanup while retaining
+both primary and cleanup failures. The workflow invokes the same command with
+`-CleanupOnly` in an `always()` step after fixture preparation, and always
+uploads build, MSI, request, status, event and cleanup evidence. When
+`cleanup-deferred.json` exists, cleanup targets only system update and
+interruption with the deferred evidence; the phase script still checks the
+observed uninstall fence and exact interrupted identity. A deferred product
+is reported separately from a clean machine.
 
-```powershell
-just machine-update-integration -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory "$root/update" -Phase Cleanup -FixturePort 18453 `
-  -DeferredInterruptionEvidence "$root/update-interruption"
-just machine-update-integration -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory "$root/update-interruption" -Phase Cleanup -FixturePort 18453 `
-  -DeferredInterruptionEvidence "$root/update-interruption"
-```
+The small `pwsh -File scripts/tests/BuildCi.Tests.ps1` command checks build
+state and failure contracts with stand-ins. It does not prove that a PE builds
+or installs. Hosted Windows jobs provide that proof for the disposable inputs.
 
 `Hosted` bootstraps A explicitly through the administrator, then requires the
 installed LocalSystem service to commit B and C itself. It observes the real
@@ -97,7 +114,7 @@ uninstall fence correctly refuses removal until a changed boot resolves that
 transaction. In this one case the hosted job requires the MSI fence's 1603
 log and matching manifest, product and transaction identities, removes its
 HTTPS binding and test certificates, and records `cleanup-deferred.json`.
-Both CI cleanup calls validate that evidence. The installed test product and
+The hosted cleanup phase validates that evidence. The installed test product and
 pending record then remain on the disposable GitHub-hosted runner until GitHub
 disposes of the machine. A normal Hosted run removes its installed product;
 any other cleanup failure still fails CI. A reusable Windows machine needs a
@@ -124,3 +141,6 @@ does not attest to a run of these new scripts.
 The CI certificate establishes development behavior only. An actual release
 still requires Azure signing and verification bound to the exact final MSI
 and required executable bytes; the CI fixture is never a production signer.
+Final Azure-signed shipped-byte installation, real reboot/no-user/RDS or
+multi-user behavior, live Gmail/OAuth delivery, Store installation and complete
+real desktop shell E2E remain separate proof gaps.

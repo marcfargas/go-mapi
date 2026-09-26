@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [develop]
+    branches: ['**']
   pull_request:
   workflow_call:
     inputs:
@@ -41,12 +41,17 @@ jobs:
         with: { node-version: 20 }
       - uses: extractions/setup-just@v2
       - run: npm ci
-      - run: just test-user
-      - run: just check-user
-      - run: just test-service
-      - run: just check-service
       - run: npx playwright install --with-deps chromium
-      - run: just e2e-user
+      - run: just check-portable
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: go-mapi-playwright-failure-${{ github.run_id }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 7
 
   user-windows-shell:
     if: github.event_name != 'schedule'
@@ -71,14 +76,27 @@ jobs:
           Set-Content src/app/VERSION -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
           Set-Content src/interceptor/interceptor-version.txt -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
       - run: npm ci
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: just build-user
-      - name: Reassert app-only outputs
+      - run: just prepare-windows -Wails -Packages -Install
+      - run: just test-windows
+      - run: pwsh -NoProfile -File scripts/tests/BuildCi.Tests.ps1
+      - name: Build and verify release standalone app once for both user packages
         shell: pwsh
         run: |
-          if (-not (Test-Path src/app/frontend/dist)) { throw 'scoped command did not build frontend' }
-          if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'interceptor output is forbidden' }
-          if (-not (Test-Path src/app/build/bin/go-mapi.exe)) { throw 'app artifact missing' }
+          just build-user-release -OutputDirectory ci-input/app-standalone
+          if ($LASTEXITCODE -ne 0) { throw 'standalone app build failed' }
+          just verify-user-artifact -ArtifactPath ci-input/app-standalone/go-mapi.exe
+          if ($LASTEXITCODE -ne 0) { throw 'standalone app verification failed' }
+          if (-not (Test-Path src/app/frontend/dist)) { throw 'Wails did not build frontend' }
+          if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'app command built interceptor unexpectedly' }
+      - name: Package and verify the same odd-major standalone bytes
+        shell: pwsh
+        run: |
+          just package-user-msix -Version 5.0.1-alpha.4 -IdentityName com.marcfargas.gomapi.validation -Publisher 'CN=go-mapi validation' -PublisherDisplayName 'go-mapi validation' -AppExe ci-input/app-standalone/go-mapi.exe
+          if ($LASTEXITCODE -ne 0) { throw 'user MSIX failed' }
+          just package-user-standalone -Version 5.0.1-alpha.4 -AppExe ci-input/app-standalone/go-mapi.exe
+          if ($LASTEXITCODE -ne 0) { throw 'user standalone installer failed' }
+          just verify-user-distribution -Version 5.0.1-alpha.4 -MsixPath release/app/go-mapi-5.0.1-alpha.4-x64.msix -InstallerPath release/app/go-mapi-user-5.0.1-alpha.4-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'user package verification failed' }
       - uses: actions/download-artifact@v4
         with:
           pattern: go-mapi-*-Release
@@ -87,53 +105,69 @@ jobs:
       - name: Run actual x86/x64 interceptor to app queue integration
         shell: pwsh
         run: |
-          $evidence = "test-results/245-ci/${{ github.run_id }}/component"
-          .\scripts\run-component-integration.ps1 `
+          just e2e-system-windows `
             -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll `
             -X64Harness ci-input/interceptor/go-mapi-tests-x64-Release/go-mapi-test-harness.exe `
             -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll `
             -X86Harness ci-input/interceptor/go-mapi-tests-x86-Release/go-mapi-test-harness.exe `
             -InterceptorVersion (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim() `
             -AppVersion (Get-Content src/app/VERSION -Raw).Trim() `
-            -EvidenceDirectory $evidence
-      - uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-app
-          path: src/app/build/bin/go-mapi.exe
-      - name: Build distinct machine-distributed app for MSI validation
+            -EvidenceDirectory "test-results/245-ci/${{ github.run_id }}/component"
+          if ($LASTEXITCODE -ne 0) { throw 'component queue integration failed' }
+      - name: Build and verify machine app A
         shell: pwsh
         run: |
-          # The earlier development build generated these Wails defaults. The
-          # release builder requires them absent so it can generate fresh inputs.
-          foreach ($path in @('src/app/build/appicon.png', 'src/app/build/windows/icon.ico', 'src/app/build/windows/wails.exe.manifest')) {
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
-          }
-          just build-user-machine
-          if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
-          .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
-          if ($LASTEXITCODE -ne 0) { throw 'machine app provenance verification failed' }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: go-mapi-machine-app
-          path: |
-            src/app/build/bin/go-mapi-machine.exe
-            src/app/build/bin/app-artifacts.json
-          if-no-files-found: error
-      - name: Build app-only suite C machine app
+          just build-user-machine -OutputDirectory ci-input/appA
+          if ($LASTEXITCODE -ne 0) { throw 'machine app A build failed' }
+          just verify-user-artifact -Distribution machine -ArtifactPath ci-input/appA/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'machine app A verification failed' }
+      - name: Build and verify machine app C
         shell: pwsh
         run: |
           Set-Content src/app/VERSION -Value 5.0.2-alpha.1 -NoNewline -Encoding ascii
-          just build-user-machine
-          if ($LASTEXITCODE -ne 0) { throw 'suite C machine app build failed' }
-          .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
-          if ($LASTEXITCODE -ne 0) { throw 'suite C app provenance verification failed' }
+          just build-user-machine -OutputDirectory ci-input/appC
+          if ($LASTEXITCODE -ne 0) { throw 'machine app C build failed' }
+          just verify-user-artifact -Distribution machine -ArtifactPath ci-input/appC/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'machine app C verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-standalone-app
+          path: ci-input/app-standalone/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-machine-app
+          path: ci-input/appA/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: go-mapi-machine-app-suiteC
-          path: |
-            src/app/build/bin/go-mapi-machine.exe
-            src/app/build/bin/app-artifacts.json
+          path: ci-input/appC/
           if-no-files-found: error
+      - name: Repeat real app builds and verify each retained pair
+        shell: pwsh
+        run: |
+          Set-Content src/app/VERSION -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
+          just build-user-release -OutputDirectory ci-input/app-standalone
+          if ($LASTEXITCODE -ne 0) { throw 'repeated standalone build failed' }
+          just verify-user-artifact -ArtifactPath ci-input/app-standalone/go-mapi.exe
+          if ($LASTEXITCODE -ne 0) { throw 'repeated standalone verification failed' }
+          just build-user-machine -OutputDirectory ci-input/appA
+          if ($LASTEXITCODE -ne 0) { throw 'repeated machine A build failed' }
+          just verify-user-artifact -Distribution machine -ArtifactPath ci-input/appA/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'repeated machine A verification failed' }
+          Set-Content src/app/VERSION -Value 5.0.2-alpha.1 -NoNewline -Encoding ascii
+          just build-user-machine -OutputDirectory ci-input/appC
+          if ($LASTEXITCODE -ne 0) { throw 'repeated machine C build failed' }
+          just verify-user-artifact -Distribution machine -ArtifactPath ci-input/appC/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'repeated machine C verification failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-mapi-user-package-validation-${{ github.run_id }}
+          path: release/app/
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -158,28 +192,17 @@ jobs:
       - name: Set explicit native validation interceptor version
         shell: pwsh
         run: Set-Content src/interceptor/interceptor-version.txt -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
-      - name: Install dual-bitness MinGW clang toolchain
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
-          scoop install mingw-mstorsjo-llvm-ucrt
-          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
-          $bin = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin"
-          foreach ($exe in @('x86_64-w64-mingw32-clang.exe','i686-w64-mingw32-clang.exe')) {
-            if (-not (Test-Path "$bin\$exe")) { throw "Missing $exe in $bin" }
-          }
-          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
-      - name: Build interceptor and matching harness
-        working-directory: src/interceptor
-        run: .\build.ps1 -Arch ${{ matrix.arch }} -Config ${{ matrix.config }} -Tests -Clean
-      - name: Run matching-bitness harness
-        working-directory: src/interceptor
-        run: .\build-${{ matrix.arch }}\bin\go-mapi-test-harness.exe .\build-${{ matrix.arch }}\bin\go-mapi.dll
-      - name: Run C++ unit tests
-        working-directory: src/interceptor/build-${{ matrix.arch }}
-        run: ctest --output-on-failure --build-config ${{ matrix.config }}
+      - uses: extractions/setup-just@v2
+      - run: just prepare-windows -Native -Install
+      - name: Build interceptor, run harness and CTest
+        run: just test-system ${{ matrix.arch }} ${{ matrix.config }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: go-mapi-ctest-failure-${{ matrix.arch }}-${{ matrix.config }}-${{ github.run_id }}
+          path: src/interceptor/build-${{ matrix.arch }}/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         with:
           name: go-mapi-dll-${{ matrix.arch }}-${{ matrix.config }}
@@ -190,46 +213,6 @@ jobs:
           name: go-mapi-tests-${{ matrix.arch }}-${{ matrix.config }}
           path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi-test-harness.exe
           if-no-files-found: error
-
-  app-distribution:
-    if: github.event_name != 'schedule'
-    name: Validate user component packages
-    runs-on: windows-latest
-    env:
-      CGO_ENABLED: '1'
-      GOMAPI_OAUTH_CLIENT_ID: ci-client
-      GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - uses: extractions/setup-just@v2
-      - name: Set validation version
-        shell: pwsh
-        run: Set-Content src/app/VERSION -Value 4.0.0 -NoNewline -Encoding ascii
-      - run: npm ci
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-      - run: just build-user
-      - name: Install standalone packager
-        shell: pwsh
-        run: choco install nsis --version=3.11 -y --no-progress
-      - name: Build current user-app packages
-        shell: pwsh
-        run: |
-          .\scripts\build-app-msix.ps1 -Version 4.0.0 -IdentityName com.marcfargas.gomapi.validation -Publisher 'CN=go-mapi validation' -PublisherDisplayName 'go-mapi validation'
-          .\scripts\build-app-installer.ps1 -Version 4.0.0
-      - name: Verify current user-app package boundary
-        shell: pwsh
-        run: .\scripts\verify-app-distribution.ps1 -Version 4.0.0 -MsixPath release/app/go-mapi-4.0.0-x64.msix -InstallerPath release/app/go-mapi-user-4.0.0-x64.exe
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: go-mapi-user-package-validation-${{ github.sha }}
-          path: release/app/
-          if-no-files-found: warn
-          retention-days: 7
 
   admin-msi:
     if: github.event_name != 'schedule'
@@ -254,22 +237,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: go-mapi-machine-app
-          path: ci-input/app
+          path: ci-input/appA
       - uses: actions/download-artifact@v4
         with:
           name: go-mapi-machine-app-suiteC
           path: ci-input/appC
-      - name: Install dual-bitness MinGW clang toolchain
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
-          scoop install mingw-mstorsjo-llvm-ucrt
-          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
-          $windres = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin\x86_64-w64-mingw32-windres.exe"
-          if (-not (Test-Path -LiteralPath $windres -PathType Leaf)) { throw "Missing service windres at $windres" }
-          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+      - run: just prepare-windows -Native -Install
       - name: Prepare current system and suite MSI fixtures
         shell: pwsh
         run: |
@@ -279,8 +252,8 @@ jobs:
           just build-machine-test-packages `
             -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll `
             -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll `
-            -MachineApp ci-input/app/go-mapi-machine.exe `
-            -AppBuildManifest ci-input/app/app-artifacts.json `
+            -MachineApp ci-input/appA/go-mapi-machine.exe `
+            -AppBuildManifest ci-input/appA/app-artifacts.json `
             -SuiteCApp ci-input/appC/go-mapi-machine.exe `
             -SuiteCAppBuildManifest ci-input/appC/app-artifacts.json `
             -OutputDirectory release/machine-test `
@@ -290,53 +263,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'machine package preparation failed' }
           $manifest = Join-Path $evidence 'machine-test-packages.json'
           if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'machine package manifest missing' }
-      - name: Exercise installed cross-SKU lifecycle and rollback
+      - name: Exercise fixed hosted machine lifecycle and update sequence
         shell: pwsh
         run: |
           $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          $manifest = Get-Content (Join-Path $runRoot 'build/machine-test-packages.json') -Raw | ConvertFrom-Json
-          $packages = $manifest.packages
-          foreach ($name in @('systemA','suiteA','suiteB')) {
-            if (-not (Test-Path -LiteralPath $packages.$name.msi -PathType Leaf)) { throw "Missing $name MSI from package preparation" }
-          }
-          .\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 `
-            -SystemMsi $packages.systemA.msi `
-            -SuiteMsi $packages.suiteA.msi `
-            -NewerSuiteMsi $packages.suiteB.msi `
-            -LogDirectory (Join-Path $runRoot 'cross-sku')
-      - name: Exercise installed resident automatic update
-        shell: pwsh
-        run: |
-          $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          just machine-update-integration `
-            -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') `
-            -EvidenceDirectory (Join-Path $runRoot 'update') `
-            -Phase Hosted -FixturePort 18453
-          if ($LASTEXITCODE -ne 0) { throw 'installed automatic update integration failed' }
-      - name: Exercise installed suite A B and app-only C
-        shell: pwsh
-        run: |
-          $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          just machine-update-integration `
-            -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') `
-            -EvidenceDirectory (Join-Path $runRoot 'suite-update') `
-            -SKU suite -Phase Hosted -FixturePort 18453
-          if ($LASTEXITCODE -ne 0) { throw 'installed suite update integration failed' }
-      - name: Clean suite fixtures before system interruption
-        shell: pwsh
-        run: |
-          $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          just machine-update-integration -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') -EvidenceDirectory (Join-Path $runRoot 'suite-update') -SKU suite -Phase Cleanup -FixturePort 18453
-          if ($LASTEXITCODE -ne 0) { throw 'suite fixture cleanup failed before system interruption' }
-      - name: Exercise exact runner interruption and conservative same-boot recovery
-        shell: pwsh
-        run: |
-          $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          just machine-update-integration `
-            -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') `
-            -EvidenceDirectory (Join-Path $runRoot 'update-interruption') `
-            -Phase InterruptSameBoot -FixturePort 18453 -DeadlineMinutes 22
-          if ($LASTEXITCODE -ne 0) { throw 'installed runner interruption integration failed' }
+          just machine-hosted-integration -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') -EvidenceDirectory $runRoot -FixturePort 18453
+          if ($LASTEXITCODE -ne 0) { throw 'hosted machine integration failed' }
       - name: Clean owned native fixtures after success or failure
         if: always()
         shell: pwsh
@@ -344,20 +276,8 @@ jobs:
           $runRoot = "test-results/245-ci/${{ github.run_id }}"
           $manifest = Join-Path $runRoot 'build/machine-test-packages.json'
           if (Test-Path -LiteralPath $manifest -PathType Leaf) {
-            $failures = @()
-            $deferred = Join-Path $runRoot 'update-interruption'
-            $names = if (Test-Path -LiteralPath (Join-Path $deferred 'cleanup-deferred.json')) {
-              @('update', 'update-interruption')
-            } else { @('suite-update', 'update', 'update-interruption') }
-            foreach ($evidence in $names) {
-              try {
-                $sku = if ($evidence -eq 'suite-update') { 'suite' } else { 'system' }
-                $deferredArgs = if ($evidence -eq 'suite-update') { @() } else { @('-DeferredInterruptionEvidence', $deferred) }
-                just machine-update-integration -PackageManifest $manifest -EvidenceDirectory (Join-Path $runRoot $evidence) -SKU $sku -Phase Cleanup -FixturePort 18453 @deferredArgs
-                if ($LASTEXITCODE -ne 0) { throw "$evidence cleanup failed" }
-              } catch { $failures += $_.Exception.Message }
-            }
-            if ($failures.Count -gt 0) { throw "Owned native fixture cleanup failed: $($failures -join '; ')" }
+            just machine-hosted-integration -PackageManifest $manifest -EvidenceDirectory $runRoot -FixturePort 18453 -CleanupOnly
+            if ($LASTEXITCODE -ne 0) { throw 'hosted machine fallback cleanup failed' }
           }
       - uses: actions/upload-artifact@v4
         if: always()
@@ -368,16 +288,6 @@ jobs:
             release/machine-test/
           if-no-files-found: warn
           retention-days: 7
-
-  release-contract:
-    if: github.event_name != 'schedule'
-    name: Validate split release boundary
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: { go-version: '1.25' }
-      - run: go test ./internal/mapi -run '^TestOnlySplitReleaseContractsCanPublish$' -count=1
 
   go-race:
     if: github.event_name == 'schedule' || inputs.run_race

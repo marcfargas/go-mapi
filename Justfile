@@ -23,6 +23,15 @@ test-service:
 check-service:
     go vet ./src/service/...
 
+check-portable: test-user check-user test-service check-service e2e-user
+
+test-windows: build-frontend
+    go test ./internal/mapi/... ./src/app/... ./src/service/...
+
+[positional-arguments]
+prepare-windows *args:
+    pwsh -NoProfile -File scripts/prepare-windows-build.ps1 "$@"
+
 build-service:
     go build ./src/service/...
 
@@ -32,14 +41,17 @@ build-service-windows output="release/service/go-mapi-service.exe":
 e2e-user: build-frontend
     npm run -w @marcfargas/go-mapi-e2e test
 
-build-user:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -UseEnvironmentCredentials
+[positional-arguments]
+build-user *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -UseEnvironmentCredentials "$@"
 
-build-user-release:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials
+[positional-arguments]
+build-user-release *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials "$@"
 
-build-user-machine:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
+[positional-arguments]
+build-user-machine *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials "$@"
 
 dev-user:
     cd src/app && wails build -devtools
@@ -61,29 +73,43 @@ build-system-release-x86:
 
 build-system-release: build-system-release-x64 build-system-release-x86
 
+test-system arch config:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/interceptor/build.ps1 -Arch {{arch}} -Config {{config}} -Tests -RunTests -Clean
+
 verify-system-release:
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/interceptor/verify-release.ps1
 
+[positional-arguments]
 package-user-msix *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-app-msix.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-app-msix.ps1 "$@"
 
+[positional-arguments]
 package-user-standalone *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-app-installer.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-app-installer.ps1 "$@"
 
+[positional-arguments]
 verify-user-distribution *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-app-distribution.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-app-distribution.ps1 "$@"
 
+[positional-arguments]
+verify-user-artifact *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-app-artifact.ps1 "$@"
+
+[positional-arguments]
 package-system *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU system {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU system "$@"
 
+[positional-arguments]
 package-suite *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU suite {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU suite "$@"
 
+[positional-arguments]
 verify-system-package *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU system {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU system "$@"
 
+[positional-arguments]
 verify-suite-package *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite "$@"
 
 [positional-arguments]
 build-machine-test-packages *args:
@@ -93,8 +119,13 @@ build-machine-test-packages *args:
 machine-update-integration *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-machine-update-integration.ps1 "$@"
 
+[positional-arguments]
+machine-hosted-integration *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-hosted-machine-integration.ps1 "$@"
+
+[positional-arguments]
 e2e-system-windows *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 "$@"
 
 register-dev-aumid *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/register-dev-aumid.ps1 {{args}}

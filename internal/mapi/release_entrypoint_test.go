@@ -3,6 +3,7 @@ package mapi
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -95,9 +96,11 @@ func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 	}
 	content := string(justfile)
 	for _, want := range []string{
-		"build-frontend:", "build-user:", "build-user-release:", "test-user:", "check-user:", "e2e-user:",
+		"build-frontend:", "build-user *args:", "build-user-release *args:", "test-user:", "check-user:", "e2e-user:",
 		"scripts/build-wails.ps1 -UseEnvironmentCredentials",
 		"scripts/build-wails.ps1 -Release -UseEnvironmentCredentials",
+		"verify-user-artifact *args:", "scripts/verify-app-artifact.ps1",
+		"verify-user-distribution *args:", "scripts/verify-app-distribution.ps1",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("Just command contract missing %q", want)
@@ -163,7 +166,7 @@ func TestAppReleaseUsesGuardedArtifactEntrypoint(t *testing.T) {
 	content := string(workflow)
 	for _, want := range []string{
 		"workflow_dispatch:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
-		"src/app/VERSION", "just build-user-release", "verify-app-artifact.ps1", "verify-app-distribution.ps1",
+		"src/app/VERSION", "just build-user-release", "just verify-user-artifact", "just verify-user-distribution",
 		"github.event_name == 'push' || inputs.publish || inputs.sign",
 	} {
 		if !strings.Contains(content, want) {
@@ -187,13 +190,33 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(workflow)
+	producer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)/`).FindStringSubmatch(content)
+	admin := strings.SplitN(content, "  admin-msi:", 2)
+	if len(admin) != 2 {
+		t.Fatal("CI workflow lacks admin-msi job")
+	}
+	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(admin[1])
+	if len(producer) != 2 || len(consumer) != 2 || producer[1] != consumer[1] ||
+		!strings.Contains(admin[1], "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
+		!strings.Contains(admin[1], "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
+		t.Errorf("machine A upload, download, and fixture input paths disagree: producer=%v consumer=%v", producer, consumer)
+	}
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
-		"Build interceptor", "Validate user component packages", "Validate machine MSI lifecycle and installed updater",
-		"CrossSkuLifecycle.Tests.ps1", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
+		"Build interceptor", "Package and verify the same odd-major standalone bytes", "Validate machine MSI lifecycle and installed updater",
+		"just machine-hosted-integration", "just check-portable", "just test-windows", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("CI workflow is missing %q", want)
+		}
+	}
+	sequence, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "run-hosted-machine-integration.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22"} {
+		if !strings.Contains(string(sequence), want) {
+			t.Errorf("hosted machine sequence is missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{"softprops/action-gh-release", "azure/artifact-signing-action", "environment: artifact-signing", "environment: user-component-release", "environment: system-component-release"} {

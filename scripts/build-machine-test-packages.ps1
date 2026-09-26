@@ -45,14 +45,6 @@ function Sign([string]$Path) {
         throw "Test signature invalid: $Path ($($signature.Status))"
     }
 }
-function Artifact([string]$Path, [string]$Arch) {
-    [ordered]@{ architecture = $Arch; filename = [IO.Path]::GetFileName($Path); sha256 = Hash $Path }
-}
-function Component([string]$Name, [string]$Version, $Artifacts) {
-    $value = [ordered]@{ component = $Name; version = $Version; artifacts = @($Artifacts) }
-    if ($Name -eq 'app') { $value.distribution = 'machine' }
-    $value
-}
 function AssertValidationProducer([string]$Key, $Validation) {
     $producer = if ($Validation.PSObject.Properties['producer']) { $Validation.producer } else { $null }
     if ($producer -and $producer.kind -ceq 'local') {
@@ -388,21 +380,15 @@ try {
         $caseApp = if ($case.key -eq 'suiteC') { $appC } else { $app }
         $caseBuild = if ($case.key -eq 'suiteC') { $suiteCBuild } else { $appBuild }
         if ($case.key -eq 'suiteC' -and -not $caseBuild) { continue }
-        foreach ($path in @($x64,$x86,$servicePath)) { Copy-Item -LiteralPath $path -Destination $inputDir }
+        foreach ($path in @($x64,$x86)) { Copy-Item -LiteralPath $path -Destination $inputDir }
+        Copy-Item -LiteralPath $servicePath -Destination (Join-Path $inputDir 'go-mapi-service.exe')
         Copy-Item -LiteralPath $caseApp -Destination (Join-Path $inputDir 'go-mapi-machine.exe')
         $caseBuildPath = if ($case.key -eq 'suiteC') { Join-Path $output 'app-artifacts-suiteC.json' } else { Join-Path $output 'app-artifacts.json' }
         Copy-Item -LiteralPath $caseBuildPath -Destination (Join-Path $inputDir 'app-artifacts.json')
-        $components = @(
-            (Component 'service' $serviceVersion @((Artifact (Join-Path $inputDir (Split-Path $servicePath -Leaf)) 'x64'))),
-            (Component 'interceptor' $interceptorVersion @((Artifact (Join-Path $inputDir (Split-Path $x64 -Leaf)) 'x64'),(Artifact (Join-Path $inputDir (Split-Path $x86 -Leaf)) 'x86')))
-        )
-        $manifest = [ordered]@{ schema='go-mapi-machine-signed-input-v1'; sku=$case.sku; packageRelease=$case.release; commit=$commit; components=$components }
-        if ($case.sku -eq 'suite') {
-            $manifest.components += (Component 'app' $caseBuild.version @((Artifact (Join-Path $inputDir 'go-mapi-machine.exe') 'x64')))
-            $manifest.appBuild = [ordered]@{ manifest='app-artifacts.json'; sha256=Hash (Join-Path $inputDir 'app-artifacts.json'); unsignedSha256=$caseBuild.artifact.sha256 }
-        }
         $inputManifest = Join-Path $inputDir 'signed-input.json'
-        WriteJson $inputManifest $manifest
+        $appArgs = if ($case.sku -eq 'suite') { @{ AppVersion=[string]$caseBuild.version; AppBuildManifest=(Join-Path $inputDir 'app-artifacts.json'); UnsignedAppSha256=[string]$caseBuild.artifact.sha256 } } else { @{} }
+        & (Join-Path $repo 'scripts/write-machine-signed-input.ps1') -SKU $case.sku -PackageRelease $case.release -SourceCommit $commit `
+            -InputDirectory $inputDir -ServiceVersion $serviceVersion -InterceptorVersion $interceptorVersion @appArgs -OutputPath $inputManifest
         $msiDir = Join-Path $inputDir 'msi'
         & (Join-Path $repo 'src\installer\msi\build.ps1') -SKU $case.sku -SignedInputManifest $inputManifest -OutputDirectory $msiDir -RequireSignedInputs
         $identity = (& go run ./internal/mapi/cmd/machine-package -- $case.sku $case.release | ConvertFrom-Json)

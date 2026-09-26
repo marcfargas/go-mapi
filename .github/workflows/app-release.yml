@@ -80,7 +80,7 @@ jobs:
       - run: npm ci
       - run: just test-user
       - run: just check-user
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: just prepare-windows -Wails -Install
       - name: Configure development-channel validation credentials
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         shell: pwsh
@@ -95,7 +95,7 @@ jobs:
         run: just build-user
       - name: Verify app artifact metadata before signing
         shell: pwsh
-        run: .\scripts\verify-app-artifact.ps1
+        run: just verify-user-artifact
 
       - name: Authenticate to Azure for Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -117,9 +117,7 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Install pinned standalone packager
-        shell: pwsh
-        run: choco install nsis --version=3.11 -y --no-progress
+      - run: just prepare-windows -Packages -Install
 
       - name: Build app-only MSIX and standalone installer from the signed EXE
         shell: pwsh
@@ -133,8 +131,10 @@ jobs:
           $identity = if ($production) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
           $publisher = if ($production) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
           $display = if ($production) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
-          .\scripts\build-app-msix.ps1 -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
-          .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+          just package-user-msix -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
+          if ($LASTEXITCODE -ne 0) { throw 'MSIX packaging failed' }
+          just package-user-standalone -Version '${{ steps.version.outputs.version }}'
+          if ($LASTEXITCODE -ne 0) { throw 'standalone packaging failed' }
 
       - name: Sign MSIX and standalone installer with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -156,10 +156,11 @@ jobs:
           $production = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
           $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
           if ($production -and $signed) {
-            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
+            just verify-user-distribution -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
           } else {
-            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
+            just verify-user-distribution -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
           }
+          if ($LASTEXITCODE -ne 0) { throw 'user distribution verification failed' }
           if ($signed) {
             foreach ($path in @('src/app/build/bin/go-mapi.exe', 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix', 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe')) {
               $signature = Get-AuthenticodeSignature -LiteralPath $path

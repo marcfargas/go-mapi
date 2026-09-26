@@ -89,6 +89,9 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: extractions/setup-just@v2
 
       - name: Resolve exact machine package from this checkout
         id: machine
@@ -187,16 +190,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -and
               [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
 
-      - name: Install dual-bitness interceptor toolchain
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
-          scoop install mingw-mstorsjo-llvm-ucrt
-          if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
-          "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
-
+      - run: just prepare-windows -Native -Install
       - name: Build and test contained interceptor and service
         if: inputs.reuse_run_id == ''
         shell: pwsh
@@ -223,14 +217,11 @@ jobs:
           }
           npm ci
           if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
-          npm run -w @marcfargas/go-mapi-app-frontend build
-          if ($LASTEXITCODE -ne 0) { throw 'suite frontend build failed' }
-          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
-          if ($LASTEXITCODE -ne 0) { throw 'Wails installation failed' }
-          $env:PATH += ';' + (go env GOPATH) + '\bin'
-          .\scripts\build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
+          just prepare-windows -Wails -Install
+          if ($LASTEXITCODE -ne 0) { throw 'Wails preparation failed' }
+          just build-user-machine
           if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
-          .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
+          just verify-user-artifact -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
           if ($LASTEXITCODE -ne 0) { throw 'machine app provenance verification failed' }
           Copy-Item src/app/build/bin/go-mapi-machine.exe release/machine-input/go-mapi-machine.exe
           Copy-Item src/app/build/bin/app-artifacts.json release/machine-input/app-artifacts.json
@@ -287,56 +278,49 @@ jobs:
         shell: pwsh
         run: |
           $sku = '${{ steps.machine.outputs.sku }}'
-          $parts = if ($env:REUSE_RUN_ID -ne '') {
+          $serviceVersion = (Get-Content src/service/VERSION -Raw).Trim()
+          $interceptorVersion = (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim()
+          if ($env:REUSE_RUN_ID -ne '') {
             $prior = Get-Content reuse-input/signed-input.json -Raw | ConvertFrom-Json
             $priorApp = @($prior.components | Where-Object component -eq 'app')[0]
             $newVersion = (Get-Content src/app/VERSION -Raw).Trim()
             if ([Management.Automation.SemanticVersion]::Parse($priorApp.version) -ge [Management.Automation.SemanticVersion]::Parse($newVersion) -or
-                (Get-FileHash reuse-input/go-mapi-service.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne @($prior.components | Where-Object component -eq 'service')[0].artifacts[0].sha256 -or
                 (Get-FileHash release/machine-input/go-mapi-machine.exe -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $priorApp.artifacts[0].sha256) {
               throw 'Suite C app must be higher and differ from pinned B signed app'
             }
             $priorIdentity = go run ./internal/mapi/cmd/machine-package -- suite $env:REUSE_RELEASE | ConvertFrom-Json
             $currentIdentity = go run ./internal/mapi/cmd/machine-package -- suite '${{ inputs.version }}' | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0 -or $currentIdentity.sequence -le $priorIdentity.sequence) { throw 'Suite C package release must follow B' }
-            @($prior.components | Where-Object { $_.component -in @('service','interceptor') })
-          } else {
-            @(
-              @{ component='service'; version=(Get-Content src/service/VERSION -Raw).Trim(); artifacts=@(@{ architecture='x64'; filename='go-mapi-service.exe' }) },
-              @{ component='interceptor'; version=(Get-Content src/interceptor/interceptor-version.txt -Raw).Trim(); artifacts=@(@{ architecture='x86'; filename='go-mapi-x86.dll' },@{ architecture='x64'; filename='go-mapi-x64.dll' }) }
-            )
-          }
-          if ($sku -eq 'suite') {
-            $parts += @{ component='app'; version=(Get-Content src/app/VERSION -Raw).Trim(); distribution='machine'; artifacts=@(@{ architecture='x64'; filename='go-mapi-machine.exe' }) }
-          }
-          foreach ($part in $parts) {
-            foreach ($artifact in $part.artifacts) {
-              $path = Join-Path release/machine-input $artifact.filename
-              if ('${{ inputs.sign }}' -eq 'true') {
-                $signature = Get-AuthenticodeSignature -LiteralPath $path
-                if ($signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Incomplete or untrusted Azure signing proof: $path" }
-              }
-              $artifact.sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $serviceVersion = @($prior.components | Where-Object component -eq 'service')[0].version
+            $interceptorVersion = @($prior.components | Where-Object component -eq 'interceptor')[0].version
+            foreach ($name in @('go-mapi-service.exe','go-mapi-x86.dll','go-mapi-x64.dll')) {
+              $oldArtifact = @($prior.components.artifacts | Where-Object filename -eq $name)
+              $actual = (Get-FileHash -LiteralPath (Join-Path release/machine-input $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($oldArtifact.Count -ne 1 -or $actual -cne $oldArtifact[0].sha256) { throw "Reused B signed PE changed: $name" }
             }
           }
-          $inputManifest = [ordered]@{ schema='go-mapi-machine-signed-input-v1'; sku=$sku; packageRelease='${{ steps.machine.outputs.release }}'; commit='${{ github.sha }}'; components=$parts }
+          $appArgs = @{}
           if ($sku -eq 'suite') {
             $unsigned = Get-Content release/machine-input/unsigned-hashes.json -Raw | ConvertFrom-Json -AsHashtable
-            $inputManifest.appBuild = [ordered]@{
-              manifest='app-artifacts.json'
-              sha256=(Get-FileHash -LiteralPath release/machine-input/app-artifacts.json -Algorithm SHA256).Hash.ToLowerInvariant()
-              unsignedSha256=$unsigned['go-mapi-machine.exe']
-            }
+            $appArgs = @{ AppVersion=(Get-Content src/app/VERSION -Raw).Trim();
+              AppBuildManifest='release/machine-input/app-artifacts.json';
+              UnsignedAppSha256=$unsigned['go-mapi-machine.exe'] }
           }
-          [IO.File]::WriteAllText('release/machine-input/signed-input.json', ($inputManifest | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
-          .\src\installer\msi\build.ps1 -SKU $sku -SignedInputManifest release/machine-input/signed-input.json -RequireSignedInputs:$('true' -eq '${{ inputs.sign }}')
+          .\scripts\write-machine-signed-input.ps1 -SKU $sku -PackageRelease '${{ steps.machine.outputs.release }}' `
+            -SourceCommit '${{ github.sha }}' -InputDirectory release/machine-input `
+            -ServiceVersion $serviceVersion -InterceptorVersion $interceptorVersion @appArgs `
+            -RequireSignature:$('${{ inputs.sign }}' -eq 'true') -OutputPath release/machine-input/signed-input.json
+          if ($LASTEXITCODE -ne 0) { throw 'machine signed-input manifest generation failed' }
+          $recipe = if ($sku -eq 'suite') { 'package-suite' } else { 'package-system' }
+          just $recipe -SignedInputManifest release/machine-input/signed-input.json -RequireSignedInputs:$('true' -eq '${{ inputs.sign }}')
           if ($LASTEXITCODE -ne 0) { throw 'machine MSI build failed' }
 
       - name: Verify compiled machine MSI
         shell: pwsh
         run: |
           $path = Join-Path release/machine '${{ steps.machine.outputs.asset }}'
-          .\src\installer\msi\verify.ps1 -MsiPath $path -SKU '${{ steps.machine.outputs.sku }}' -PackageRelease '${{ steps.machine.outputs.release }}'
+          $verifyRecipe = if ('${{ steps.machine.outputs.sku }}' -eq 'suite') { 'verify-suite-package' } else { 'verify-system-package' }
+          just $verifyRecipe -MsiPath $path -PackageRelease '${{ steps.machine.outputs.release }}'
           if ($LASTEXITCODE -ne 0) { throw 'machine MSI table verification failed' }
 
       - name: Sign machine MSI
