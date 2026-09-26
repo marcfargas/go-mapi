@@ -189,8 +189,8 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	content := string(workflow)
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
-		"Build interceptor", "Validate user component packages", "Validate system component MSI lifecycle",
-		"AdminLifecycle.Tests.ps1", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
+		"Build interceptor", "Validate user component packages", "Validate machine MSI lifecycle and installed updater",
+		"CrossSkuLifecycle.Tests.ps1", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("CI workflow is missing %q", want)
