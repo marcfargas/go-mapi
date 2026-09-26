@@ -6,6 +6,8 @@ import {mapi} from '../models';
 
 export function CheckForUpdatesNow(arg1:context.Context):Promise<void>;
 
+export function OpenUpdateAction():Promise<void>;
+
 export function CreateDraftForID(arg1:string):Promise<void>;
 
 export function DismissEmail(arg1:string):Promise<void>;

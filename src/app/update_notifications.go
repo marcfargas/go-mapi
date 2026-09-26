@@ -30,9 +30,8 @@ import (
 // such field name appears.
 
 // updateNotificationAction is a single clickable action on the toast.
-// `URL` is the only effect contract — clicking opens it in the user's
-// default browser via openUpdateDownloadPage, which itself swallows
-// browser failures silently per D-04.
+// URL is presentation data. Activation invokes App.OpenUpdateAction, which
+// uses the engine's retained candidate and opens the system shell.
 type updateNotificationAction struct {
 	Label string
 	URL   string
@@ -57,17 +56,20 @@ func buildUpdateNotificationPlan(s UpdateState) *updateNotificationPlan {
 	if !s.UpdateAvailable {
 		return nil
 	}
-	url := s.InstallerURL
-	if url == "" || !allowedUpdateURL(url) {
+	label, url, valid := updateAction(s)
+	if !valid {
 		return nil
 	}
 	title := "go-mapi update available"
-	body := "Version " + s.LatestVersion + " is ready to download."
+	body := "Version " + s.LatestVersion + " is available."
+	if s.DistributionChannel == "store" {
+		body = "Open Microsoft Store to update go-mapi."
+	}
 	return &updateNotificationPlan{
 		Title: title,
 		Body:  body,
 		Actions: []updateNotificationAction{
-			{Label: "Download", URL: url},
+			{Label: label, URL: url},
 		},
 	}
 }
@@ -122,20 +124,17 @@ func (t *updateNotificationTracker) Observe(s UpdateState) {
 		shouldFire = true
 	}
 
-	// Always remember the latest observed state so the next decision
-	// can dedupe correctly.
-	t.lastAvailable = true
-	t.lastVersion = s.LatestVersion
-
 	if !shouldFire {
 		return
 	}
 	plan := buildUpdateNotificationPlan(s)
 	if plan == nil {
-		// Defensive: buildUpdateNotificationPlan returns nil only when
-		// UpdateAvailable=false, which we've already filtered out.
+		// No actionable channel yet. A later valid snapshot of this same
+		// version should still notify once.
 		return
 	}
+	t.lastAvailable = true
+	t.lastVersion = s.LatestVersion
 	if t.dispatch != nil {
 		t.dispatch(plan)
 	}
@@ -163,9 +162,8 @@ func (a *App) wireUpdateNotificationsWith(dispatch func(*updateNotificationPlan)
 
 // pushUpdateNotification is the production dispatch: it builds a
 // Windows toast for the plan and pushes it through the existing toast
-// subsystem (toast_windows.go). Click-through on the body opens the
-// download URL via openUpdateDownloadPage (which handles the browser
-// open and silent-failure case).
+// subsystem (toast_windows.go). Click-through uses the retained engine
+// candidate through App.OpenUpdateAction.
 //
 // We piggyback on the existing AUMID/activator/icon configuration so
 // no new COM registration is needed. The tag is stable across a
@@ -175,14 +173,8 @@ func pushUpdateNotification(a *App, plan *updateNotificationPlan) {
 	if plan == nil {
 		return
 	}
-	url := ""
-	if len(plan.Actions) > 0 {
-		url = plan.Actions[0].URL
-	}
 	// Use the same ActivationType + argument format as other toasts so
-	// handleToastAction can pick up the click. We route through a
-	// dedicated "open-update-url" action that calls openUpdateDownloadPage
-	// via the App binding.
+	// handleToastAction can pick up the click.
 	n := toast.Notification{
 		AppID: activeAUMID(),
 		Title: plan.Title,
@@ -193,9 +185,9 @@ func pushUpdateNotification(a *App, plan *updateNotificationPlan) {
 		ActivationArguments: "action=open-update",
 		Actions: []toast.Action{
 			{
-				Type:      toast.Protocol,
+				Type:      toast.Foreground,
 				Content:   plan.Actions[0].Label,
-				Arguments: url,
+				Arguments: "action=open-update",
 			},
 		},
 	}

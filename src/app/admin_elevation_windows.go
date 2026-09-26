@@ -4,121 +4,19 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"syscall"
 	"unsafe"
 
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 	"golang.org/x/sys/windows"
 )
 
-type productionAdminAuthenticodeInspector struct{}
-
-func (productionAdminAuthenticodeInspector) InspectAdminMSI(_ context.Context, path string) (adminAuthenticodeIdentity, error) {
-	p, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		return adminAuthenticodeIdentity{}, err
-	}
-	file := windows.WinTrustFileInfo{Size: uint32(unsafe.Sizeof(windows.WinTrustFileInfo{})), FilePath: p}
-	data := windows.WinTrustData{Size: uint32(unsafe.Sizeof(windows.WinTrustData{})), UIChoice: windows.WTD_UI_NONE, RevocationChecks: windows.WTD_REVOKE_WHOLECHAIN, UnionChoice: windows.WTD_CHOICE_FILE, FileOrCatalogOrBlobOrSgnrOrCert: unsafe.Pointer(&file), StateAction: windows.WTD_STATEACTION_VERIFY, ProvFlags: windows.WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | windows.WTD_MOTW, UIContext: windows.WTD_UICONTEXT_INSTALL}
-	err = windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data)
-	if err != nil {
-		return adminAuthenticodeIdentity{}, err
-	}
-	defer func() {
-		data.StateAction = windows.WTD_STATEACTION_CLOSE
-		_ = windows.WinVerifyTrustEx(windows.InvalidHWND, &windows.WINTRUST_ACTION_GENERIC_VERIFY_V2, &data)
-	}()
-	prov := procWTHelperProvDataFromStateData.Find()
-	if prov != nil {
-		return adminAuthenticodeIdentity{}, prov
-	}
-	providerData, _, _ := procWTHelperProvDataFromStateData.Call(uintptr(data.StateData))
-	runtime.KeepAlive(&data)
-	if providerData == 0 {
-		return adminAuthenticodeIdentity{}, errors.New("missing WinTrust provider data")
-	}
-	signerProc := procWTHelperGetProvSignerFromChain.Find()
-	if signerProc != nil {
-		return adminAuthenticodeIdentity{}, signerProc
-	}
-	signer := winTrustProviderSignerFromChain(providerData)
-	runtime.KeepAlive(&data)
-	if signer == nil {
-		return adminAuthenticodeIdentity{}, errors.New("missing WinTrust provider signer")
-	}
-	cert := signer.CertChain
-	if cert == nil || cert.Cert == nil || cert.Cert.EncodedCert == nil || cert.Cert.Length == 0 {
-		return adminAuthenticodeIdentity{}, errors.New("missing WinTrust signer certificate")
-	}
-	der := unsafe.Slice(cert.Cert.EncodedCert, cert.Cert.Length)
-	parsed, err := x509.ParseCertificate(der)
-	if err != nil {
-		return adminAuthenticodeIdentity{}, err
-	}
-	ekus := make([]string, 0, len(parsed.ExtKeyUsage)+len(parsed.UnknownExtKeyUsage))
-	for _, usage := range parsed.ExtKeyUsage {
-		if usage == x509.ExtKeyUsageCodeSigning {
-			ekus = append(ekus, "1.3.6.1.5.5.7.3.3")
-		}
-	}
-	for _, oid := range parsed.UnknownExtKeyUsage {
-		ekus = append(ekus, oid.String())
-	}
-	cn := canonicalWinTrustCN(cert.Cert)
-	if cn == "" {
-		return adminAuthenticodeIdentity{}, errors.New("signer publisher identity is empty")
-	}
-	return adminAuthenticodeIdentity{ChainValid: true, Publisher: cn, EKUs: ekus}, nil
-}
-
-type winTrustProviderCert struct {
-	cbStruct uint32
-	Cert     *windows.CertContext
-}
-type winTrustProviderSigner struct {
-	cbStruct       uint32
-	VerifyAsOf     windows.Filetime
-	CertChainCount uint32
-	CertChain      *winTrustProviderCert
-}
-
-var procWTHelperProvDataFromStateData = windows.NewLazySystemDLL("wintrust.dll").NewProc("WTHelperProvDataFromStateData")
-var procWTHelperGetProvSignerFromChain = windows.NewLazySystemDLL("wintrust.dll").NewProc("WTHelperGetProvSignerFromChain")
-
-// winTrustProviderSignerFromChain is the sole raw ABI boundary for the
-// undocumented WinTrust helper. The native routine returns an in-state pointer;
-// callers keep WinTrustData alive and close it only after consuming this value.
-//
-//go:nocheckptr
-func winTrustProviderSignerFromChain(providerData uintptr) *winTrustProviderSigner {
-	r, _, _ := procWTHelperGetProvSignerFromChain.Call(providerData, 0, 0, 0)
-	if r == 0 {
-		return nil
-	}
-	// The return word is a native pointer owned by WinTrust state, not a Go
-	// allocation. Reinterpret the word through its address so vet does not see
-	// a retained uintptr-to-pointer conversion.
-	p := *(*unsafe.Pointer)(unsafe.Pointer(&r))
-	return (*winTrustProviderSigner)(p)
-}
-
-func canonicalWinTrustCN(cert *windows.CertContext) string {
-	n := windows.CertGetNameString(cert, windows.CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nil, nil, 0)
-	if n == 0 {
-		return ""
-	}
-	buf := make([]uint16, n)
-	windows.CertGetNameString(cert, windows.CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nil, &buf[0], n)
-	return strings.ToLower(strings.TrimSpace(windows.UTF16PtrToString(&buf[0])))
-}
+func verifyAdminMSI(_ context.Context, path string) error { return update.VerifyAuthenticode(path) }
 
 type shellExecuteInfo struct {
 	cbSize                                    uint32
@@ -156,17 +54,17 @@ func trustedMSIExecPath() (string, error) {
 	return path, nil
 }
 
-func handoffAuthorizedAdminMSI(_ context.Context, candidate authorizedAdminMSICandidate) error {
-	msi, err := filepath.Abs(candidate.Path)
+func handoffAdminMSI(_ context.Context, candidate update.Prepared) error {
+	msi, err := filepath.Abs(candidate.Path())
 	if err != nil {
 		return err
 	}
-	data, err := os.ReadFile(msi)
+	file, err := os.Open(msi)
 	if err != nil {
 		return fmt.Errorf("reopen staged admin MSI: %w", err)
 	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != candidate.Release.Payload.Artifact.SHA256 {
+	defer file.Close()
+	if err := candidate.Release().VerifyReader(file); err != nil {
 		return errors.New("staged admin MSI changed before elevation")
 	}
 	msiexec, err := trustedMSIExecPath()
@@ -226,7 +124,7 @@ func launchElevatedAdminHelper() (bool, error) {
 	}()
 }
 
-func stagePrivilegedAuthorizedAdminMSI(ctx context.Context, release authorizedAdminRelease, contents []byte) (string, func(), error) {
+func stagePrivilegedAdminMSI(ctx context.Context, candidate update.Candidate, write func(io.Writer) error) (string, func(), error) {
 	var raw *uint16
 	hr, _, _ := procSHGetKnownFolderPath.Call(uintptr(unsafe.Pointer(&folderIDProgramData)), 0, 0, uintptr(unsafe.Pointer(&raw)))
 	if int32(hr) < 0 || raw == nil {
@@ -238,10 +136,10 @@ func stagePrivilegedAuthorizedAdminMSI(ctx context.Context, release authorizedAd
 	if err != nil {
 		return "", nil, err
 	}
-	if _, err := secureAdminStageTree(base, "go-mapi", "admin-installer", release.Payload.Version); err != nil {
+	if _, err := secureAdminStageTree(base, "go-mapi", "admin-installer", candidate.Payload().Version); err != nil {
 		return "", nil, err
 	}
-	return stageAdminMSIAt(ctx, root, release, contents)
+	return stageAdminMSIAt(ctx, root, candidate, write)
 }
 
 func secureAdminStageTree(base string, components ...string) (string, error) {

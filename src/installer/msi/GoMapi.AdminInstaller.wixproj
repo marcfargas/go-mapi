@@ -2,15 +2,29 @@
   <PropertyGroup>
     <OutputType>Package</OutputType>
     <InstallerPlatform>x64</InstallerPlatform>
-    <OutputName>go-mapi-interceptor</OutputName>
+    <OutputName>$(OutputName)</OutputName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <DefineConstants>
       MsiProductVersion=$(MsiProductVersion);
-      ComponentVersion=$(ComponentVersion);
+      SKU=system;
+      HealthComponentGuid=5A07A413-53B3-58DF-BC3F-1C405A6B083F;
       ProductCode=$(ProductCode);
+      UpgradeCode=$(UpgradeCode);
+      ForeignUpgradeCode=$(ForeignUpgradeCode);
+      PackageRelease=$(PackageRelease);
+      ServiceVersion=$(ServiceVersion);
+      InterceptorVersion=$(InterceptorVersion);
       RequiredAppMin=$(RequiredAppMin);
+      RequiredAppMax=$(RequiredAppMax);
       SourceX64=$(SourceX64);
       SourceX86=$(SourceX86);
+      SourceService=$(SourceService);
       CustomActionBinary=$(CustomActionBinary)
     </DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Package.wxs" />
+    <Compile Include="SharedMachine.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.5" />
+  </ItemGroup>
 </Project>

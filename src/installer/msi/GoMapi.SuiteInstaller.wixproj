@@ -1,0 +1,33 @@
+<Project Sdk="WixToolset.Sdk/4.0.5">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputName>$(OutputName)</OutputName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>
+      MsiProductVersion=$(MsiProductVersion);
+      SKU=suite;
+      HealthComponentGuid=299FDB55-B38D-5C25-8334-D45FA3CC3DDB;
+      ProductCode=$(ProductCode);
+      UpgradeCode=$(UpgradeCode);
+      ForeignUpgradeCode=$(ForeignUpgradeCode);
+      PackageRelease=$(PackageRelease);
+      ServiceVersion=$(ServiceVersion);
+      InterceptorVersion=$(InterceptorVersion);
+      AppVersion=$(AppVersion);
+      RequiredAppMin=$(RequiredAppMin);
+      RequiredAppMax=$(RequiredAppMax);
+      SourceX64=$(SourceX64);
+      SourceX86=$(SourceX86);
+      SourceService=$(SourceService);
+      SourceApp=$(SourceApp);
+      CustomActionBinary=$(CustomActionBinary)
+    </DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="SuitePackage.wxs" />
+    <Compile Include="SharedMachine.wxs" />
+    <Compile Include="SuiteUser.wxs" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.5" />
+  </ItemGroup>
+</Project>

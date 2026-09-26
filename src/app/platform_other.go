@@ -50,12 +50,7 @@ func runBoundedDrain(done context.Context, drain func()) {
 	drain()
 }
 
-type unavailableReleaseFetcher struct{}
-
-func newUpdateCheckFetcher(string) releaseFetcher { return unavailableReleaseFetcher{} }
-func (unavailableReleaseFetcher) FetchLatestRelease(context.Context) (*latestRelease, error) {
-	return nil, errors.New("update checks are only available on Windows")
-}
-func allowedUpdateURL(string) bool { return false }
+func updateDistributionChannel() string         { return "unknown" }
+func installedInterceptorUpdateVersion() string { return "unknown" }
 
 func (a *App) wireUpdateNotifications() {}

@@ -17,6 +17,18 @@ check-user:
     go vet ./internal/mapi/... ./src/app/...
     npm run -w @marcfargas/go-mapi-app-frontend check
 
+test-service:
+    go test ./src/service/...
+
+check-service:
+    go vet ./src/service/...
+
+build-service:
+    go build ./src/service/...
+
+build-service-windows output="release/service/go-mapi-service.exe":
+    pwsh -NoProfile -File src/service/build.ps1 -OutputPath '{{output}}'
+
 e2e-user: build-frontend
     npm run -w @marcfargas/go-mapi-e2e test
 
@@ -25,6 +37,9 @@ build-user:
 
 build-user-release:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -UseEnvironmentCredentials
+
+build-user-machine:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials
 
 dev-user:
     cd src/app && wails build -devtools
@@ -59,10 +74,22 @@ verify-user-distribution *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-app-distribution.ps1 {{args}}
 
 package-system *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU system {{args}}
+
+package-suite *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/build.ps1 -SKU suite {{args}}
 
 verify-system-package *args:
-    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 {{args}}
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU system {{args}}
+
+verify-suite-package *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite {{args}}
+
+build-machine-test-packages *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-machine-test-packages.ps1 {{args}}
+
+machine-update-integration *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-machine-update-integration.ps1 {{args}}
 
 e2e-system-windows *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-component-integration.ps1 {{args}}
@@ -75,3 +102,6 @@ unregister-dev-aumid name="go-mapi (dev)":
 
 release-track version:
     go run ./internal/mapi/cmd/release-track -- {{version}}
+
+machine-package sku version:
+    go run ./internal/mapi/cmd/machine-package -- {{sku}} {{version}}

@@ -43,6 +43,8 @@ jobs:
       - run: npm ci
       - run: just test-user
       - run: just check-user
+      - run: just test-service
+      - run: just check-service
       - run: npx playwright install --with-deps chromium
       - run: just e2e-user
 
@@ -50,10 +52,12 @@ jobs:
     if: github.event_name != 'schedule'
     name: User component Windows shell
     runs-on: windows-latest
+    needs: build-interceptor
     env:
       CGO_ENABLED: '1'
       GOMAPI_OAUTH_CLIENT_ID: ci-client
       GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
+      GOMAPI_ADMIN_RELEASE_METADATA_URL: https://github.com/marcfargas/go-mapi/releases/latest/download/admin-targets.json
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -61,6 +65,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - uses: extractions/setup-just@v2
+      - name: Set explicit native validation component versions
+        shell: pwsh
+        run: |
+          Set-Content src/app/VERSION -Value 4.0.0 -NoNewline -Encoding ascii
+          Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
       - run: npm ci
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - run: just build-user
@@ -70,10 +79,48 @@ jobs:
           if (-not (Test-Path src/app/frontend/dist)) { throw 'scoped command did not build frontend' }
           if ((Test-Path src/interceptor/build-x86) -or (Test-Path src/interceptor/build-x64)) { throw 'interceptor output is forbidden' }
           if (-not (Test-Path src/app/build/bin/go-mapi.exe)) { throw 'app artifact missing' }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-mapi-*-Release
+          path: ci-input/interceptor
+          merge-multiple: false
+      - name: Run actual x86/x64 interceptor to app queue integration
+        shell: pwsh
+        run: |
+          $evidence = "test-results/245-ci/${{ github.run_id }}/component"
+          .\scripts\run-component-integration.ps1 `
+            -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll `
+            -X64Harness ci-input/interceptor/go-mapi-tests-x64-Release/go-mapi-test-harness.exe `
+            -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll `
+            -X86Harness ci-input/interceptor/go-mapi-tests-x86-Release/go-mapi-test-harness.exe `
+            -InterceptorVersion (Get-Content src/interceptor/interceptor-version.txt -Raw).Trim() `
+            -AppVersion (Get-Content src/app/VERSION -Raw).Trim() `
+            -EvidenceDirectory $evidence
       - uses: actions/upload-artifact@v4
         with:
           name: go-mapi-app
           path: src/app/build/bin/go-mapi.exe
+      - name: Build distinct machine-distributed app for MSI validation
+        shell: pwsh
+        run: |
+          just build-user-machine
+          if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
+          .\scripts\verify-app-artifact.ps1 -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
+          if ($LASTEXITCODE -ne 0) { throw 'machine app provenance verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-machine-app
+          path: |
+            src/app/build/bin/go-mapi-machine.exe
+            src/app/build/bin/app-artifacts.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-mapi-component-integration-${{ github.run_id }}
+          path: test-results/245-ci/${{ github.run_id }}/component/
+          if-no-files-found: warn
+          retention-days: 7
 
   build-interceptor:
     if: github.event_name != 'schedule'
@@ -88,13 +135,15 @@ jobs:
         arch: [x64, x86]
     steps:
       - uses: actions/checkout@v4
+      - name: Set explicit native validation interceptor version
+        shell: pwsh
+        run: Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
       - name: Install dual-bitness MinGW clang toolchain
         shell: pwsh
         run: |
           Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          $env:SCOOP_INSTALL_AS_ADMIN = '1'
           Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
           scoop install mingw-mstorsjo-llvm-ucrt
           if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
           $bin = "$env:USERPROFILE\scoop\apps\mingw-mstorsjo-llvm-ucrt\current\bin"
@@ -164,52 +213,112 @@ jobs:
 
   admin-msi:
     if: github.event_name != 'schedule'
-    name: Validate system component MSI lifecycle
+    name: Validate machine MSI lifecycle and installed updater
     runs-on: windows-latest
+    timeout-minutes: 90
+    needs: [build-interceptor, user-windows-shell]
+    env:
+      CGO_ENABLED: '1'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '8.0.x' }
-      - name: Set validation version
-        shell: pwsh
-        run: Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
-      - name: Install dual-bitness MinGW clang toolchain
+      - uses: extractions/setup-just@v2
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-mapi-dll-*-Release
+          path: ci-input/interceptor
+          merge-multiple: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-machine-app
+          path: ci-input/app
+      - name: Install service resource compiler
         shell: pwsh
         run: |
           Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-          $env:SCOOP_INSTALL_AS_ADMIN = '1'
           Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile "$env:TEMP\install-scoop.ps1"
-          & "$env:TEMP\install-scoop.ps1"
+          & "$env:TEMP\install-scoop.ps1" -RunAsAdmin
           scoop install mingw-mstorsjo-llvm-ucrt
           if ($LASTEXITCODE -ne 0) { throw 'toolchain installation failed' }
           "$env:USERPROFILE\scoop\shims" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
-      - name: Build and verify x86/x64 interceptor release inputs
-        shell: pwsh
-        run: .\src\interceptor\verify-release.ps1
-      - name: Build and verify current admin MSI
+      - name: Prepare current system and suite MSI fixtures
         shell: pwsh
         run: |
-          .\src\installer\msi\build.ps1 -Version 4.0.0
-          .\src\installer\msi\verify.ps1 -MsiPath release/admin/go-mapi-interceptor.msi
-      - name: Install Pester 5
+          Set-Content src/app/VERSION -Value 4.0.0 -NoNewline -Encoding ascii
+          Set-Content src/interceptor/interceptor-version.txt -Value 4.0.0 -NoNewline -Encoding ascii
+          $evidence = "test-results/245-ci/${{ github.run_id }}/build"
+          just build-machine-test-packages `
+            -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll `
+            -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll `
+            -MachineApp ci-input/app/go-mapi-machine.exe `
+            -AppBuildManifest ci-input/app/app-artifacts.json `
+            -OutputDirectory release/machine-test `
+            -EvidenceDirectory $evidence `
+            -MetadataOrigin https://localhost:18453 `
+            -ArtifactOrigin https://localhost:18453/releases/download/
+          if ($LASTEXITCODE -ne 0) { throw 'machine package preparation failed' }
+          $manifest = Join-Path $evidence 'machine-test-packages.json'
+          if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'machine package manifest missing' }
+      - name: Exercise installed cross-SKU lifecycle and rollback
         shell: pwsh
         run: |
-          # PackageManagement's NuGet provider is no longer published for the
-          # PowerShell 7.6 runner image. PSResourceGet ships with pwsh and
-          # installs Pester directly from PSGallery without that legacy bridge.
-          Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser -Repository PSGallery -TrustRepository -Reinstall
-      - name: Exercise install, repair, rollback, cleanup, and uninstall
+          $runRoot = "test-results/245-ci/${{ github.run_id }}"
+          $manifest = Get-Content (Join-Path $runRoot 'build/machine-test-packages.json') -Raw | ConvertFrom-Json
+          $packages = $manifest.packages
+          foreach ($name in @('systemA','suiteA','suiteB')) {
+            if (-not (Test-Path -LiteralPath $packages.$name.msi -PathType Leaf)) { throw "Missing $name MSI from package preparation" }
+          }
+          .\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 `
+            -SystemMsi $packages.systemA.msi `
+            -SuiteMsi $packages.suiteA.msi `
+            -NewerSuiteMsi $packages.suiteB.msi `
+            -LogDirectory (Join-Path $runRoot 'cross-sku')
+          if ($LASTEXITCODE -ne 0) { throw 'cross-SKU lifecycle failed' }
+      - name: Exercise installed resident automatic update
         shell: pwsh
         run: |
-          $container = New-PesterContainer -Path src/installer/msi/tests/AdminLifecycle.Tests.ps1 -Data @{ MsiPath = (Resolve-Path release/admin/go-mapi-interceptor.msi).Path }
-          Invoke-Pester -Container $container -Output Detailed -CI
+          $runRoot = "test-results/245-ci/${{ github.run_id }}"
+          just machine-update-integration `
+            -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') `
+            -EvidenceDirectory (Join-Path $runRoot 'update') `
+            -Phase Hosted -FixturePort 18453
+          if ($LASTEXITCODE -ne 0) { throw 'installed automatic update integration failed' }
+      - name: Exercise exact runner interruption and conservative same-boot recovery
+        shell: pwsh
+        run: |
+          $runRoot = "test-results/245-ci/${{ github.run_id }}"
+          just machine-update-integration `
+            -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') `
+            -EvidenceDirectory (Join-Path $runRoot 'update-interruption') `
+            -Phase InterruptSameBoot -FixturePort 18453 -DeadlineMinutes 22
+          if ($LASTEXITCODE -ne 0) { throw 'installed runner interruption integration failed' }
+      - name: Clean owned native fixtures after success or failure
+        if: always()
+        shell: pwsh
+        run: |
+          $runRoot = "test-results/245-ci/${{ github.run_id }}"
+          $manifest = Join-Path $runRoot 'build/machine-test-packages.json'
+          if (Test-Path -LiteralPath $manifest -PathType Leaf) {
+            $failures = @()
+            $deferred = Join-Path $runRoot 'update-interruption'
+            foreach ($evidence in @('update', 'update-interruption')) {
+              try {
+                just machine-update-integration -PackageManifest $manifest -EvidenceDirectory (Join-Path $runRoot $evidence) -Phase Cleanup -FixturePort 18453 -DeferredInterruptionEvidence $deferred
+                if ($LASTEXITCODE -ne 0) { throw "$evidence cleanup failed" }
+              } catch { $failures += $_.Exception.Message }
+            }
+            if ($failures.Count -gt 0) { throw "Owned native fixture cleanup failed: $($failures -join '; ')" }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: go-mapi-admin-msi-validation-${{ github.sha }}
+          name: go-mapi-machine-native-validation-${{ github.run_id }}
           path: |
-            release/admin/
-            release/interceptor/
+            test-results/245-ci/${{ github.run_id }}/
+            release/machine-test/
           if-no-files-found: warn
           retention-days: 7
 
@@ -238,4 +347,4 @@ jobs:
       - uses: extractions/setup-just@v2
       - run: npm ci
       - run: just build-frontend
-      - run: go test -race -v ./internal/mapi/... ./src/app/...
+      - run: go test -race -v ./internal/mapi/... ./src/app/... ./src/service/...

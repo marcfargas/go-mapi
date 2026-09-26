@@ -33,7 +33,43 @@
       "requires": {
         "component": "app",
         "minInclusive": "4.0.0",
-        "maxExclusive": "5.0.0"
+        "maxExclusive": "7.0.0"
+      }
+    }
+  },
+  "machinePackages": {
+    "system": {
+      "upgradeCode": "B3C97B33-3F10-47CA-9FA7-24EE3B75E325",
+      "productCodeNamespace": "4D8E30F8-83CF-4A0E-9410-746D75A35705",
+      "productCodeName": "go-mapi/msi/<sku>/<package-release>",
+      "tagPrefix": "system-v",
+      "targetPath": "/machine/system/targets.json",
+      "assetPattern": "go-mapi-<sku>-<package-release>-x64.msi",
+      "manifestPattern": "go-mapi-<sku>-<package-release>.manifest.json",
+      "includedComponents": ["service", "interceptor"],
+      "releaseCadence": "system-component",
+      "service": {
+        "name": "go-mapi",
+        "displayName": "go-mapi system service",
+        "executable": "%ProgramFiles%\\go-mapi\\service\\go-mapi-service.exe",
+        "arguments": "service"
+      }
+    },
+    "suite": {
+      "upgradeCode": "2E050A24-94A2-4FC9-B176-C5CCC1225FE6",
+      "productCodeNamespace": "4D8E30F8-83CF-4A0E-9410-746D75A35705",
+      "productCodeName": "go-mapi/msi/<sku>/<package-release>",
+      "tagPrefix": "suite-v",
+      "targetPath": "/machine/suite/targets.json",
+      "assetPattern": "go-mapi-<sku>-<package-release>-x64.msi",
+      "manifestPattern": "go-mapi-<sku>-<package-release>.manifest.json",
+      "includedComponents": ["service", "interceptor", "app"],
+      "releaseCadence": "any-contained-component",
+      "service": {
+        "name": "go-mapi",
+        "displayName": "go-mapi system service",
+        "executable": "%ProgramFiles%\\go-mapi\\service\\go-mapi-service.exe",
+        "arguments": "service"
       }
     }
   }

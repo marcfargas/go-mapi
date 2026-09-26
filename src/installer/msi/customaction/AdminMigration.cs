@@ -6,6 +6,10 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32;
 using Newtonsoft.Json;
 using WixToolset.Dtf.WindowsInstaller;
@@ -21,14 +25,191 @@ namespace GoMapi.AdminCustomActions
         private const string QueueProtocol = "queue-v1";
         private const string JournalSchema = "go-mapi-admin-migration-journal-v1";
         private const string ActiveDllPath = @"%ProgramW6432%\go-mapi\interceptor\%PROCESSOR_ARCHITECTURE%\go-mapi.dll";
+        private const string UninstallCleanupKey = @"SOFTWARE\go-mapi\UninstallCleanup";
+        private const string VolatileBootKey = @"SOFTWARE\go-mapi\MachineProduct\ServiceBoot";
+        private const string SystemUpgradeCode = "{B3C97B33-3F10-47CA-9FA7-24EE3B75E325}";
+        private const string SuiteUpgradeCode = "{2E050A24-94A2-4FC9-B176-C5CCC1225FE6}";
+        private const uint ErrorNoMoreItems = 259;
+        private const uint MachineContext = 4;
+
+        [DllImport("msi.dll", EntryPoint = "MsiEnumRelatedProductsW", CharSet = CharSet.Unicode)]
+        private static extern uint EnumRelatedProducts(string upgradeCode, uint reserved, uint index, StringBuilder productCode);
+
+        [DllImport("msi.dll", EntryPoint = "MsiEnumProductsExW", CharSet = CharSet.Unicode)]
+        private static extern uint EnumMachineProduct(string productCode, string userSid, uint context, uint index,
+            StringBuilder installedProductCode, out uint installedContext, IntPtr sid, IntPtr sidLength);
+
+        [DllImport("msi.dll", EntryPoint = "MsiGetProductInfoExW", CharSet = CharSet.Unicode)]
+        private static extern uint GetMachineProductInfo(string productCode, string userSid, uint context,
+            string property, StringBuilder value, ref uint valueLength);
+
+        private static List<string> RelatedMachineProducts(string upgradeCode)
+        {
+            var products = new List<string>();
+            for (uint index = 0; index < 128; index++)
+            {
+                var code = new StringBuilder(39);
+                var result = EnumRelatedProducts(upgradeCode, 0, index, code);
+                if (result == ErrorNoMoreItems) return products;
+                if (result != 0) throw new InvalidOperationException("Related-product inventory failed: " + result);
+                var installed = new StringBuilder(39);
+                uint context;
+                result = EnumMachineProduct(code.ToString(), null, MachineContext, 0, installed, out context, IntPtr.Zero, IntPtr.Zero);
+                if (result != 0 || context != MachineContext ||
+                    !string.Equals(code.ToString(), installed.ToString(), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Related product has ambiguous or non-machine installation context: " + code);
+                // Both enumeration APIs include advertised products. An advertised
+                // registration is not an installed source that can be migrated.
+                var state = new StringBuilder(16);
+                uint stateLength = 16;
+                result = GetMachineProductInfo(code.ToString(), null, MachineContext, "State", state, ref stateLength);
+                if (result != 0 || state.ToString() != "5")
+                    throw new InvalidOperationException("Related machine product is not installed or its state is ambiguous: " + code);
+                products.Add(code.ToString().ToUpperInvariant());
+            }
+            throw new InvalidOperationException("Related-product inventory exceeded its bound");
+        }
+
+        [CustomAction]
+        public static ActionResult ValidateMachineTransaction(Session session)
+        {
+            return Guard(session, "validate-machine-transaction", () =>
+            {
+                if (!session.GetMode(InstallRunMode.RollbackEnabled) ||
+                    !string.IsNullOrEmpty(session["RollbackDisabled"]))
+                    throw new InvalidOperationException("Machine transaction requires Windows Installer rollback support");
+
+                var sku = session["GoMapiSku"];
+                if (sku != "system" && sku != "suite")
+                    throw new InvalidDataException("Machine SKU is not fixed by the package");
+                var foreign = RelatedMachineProducts(sku == "system" ? SuiteUpgradeCode : SystemUpgradeCode);
+                var own = RelatedMachineProducts(sku == "system" ? SystemUpgradeCode : SuiteUpgradeCode);
+                if (foreign.Count > 1 || own.Count > 1)
+                    throw new InvalidOperationException("Ambiguous machine product inventory");
+
+                // Windows Installer may set REMOVE=ALL only after InstallValidate.
+                // A nested old-product removal is part of the outer transaction.
+                var finalRemoval = string.Equals(session["REMOVE"], "ALL", StringComparison.OrdinalIgnoreCase);
+                if (finalRemoval) return;
+
+                if (!string.IsNullOrEmpty(session["Installed"]))
+                {
+                    if (foreign.Count != 0)
+                        throw new InvalidOperationException("Repair cannot coexist with another machine SKU");
+                    return;
+                }
+                var removalList = (session["GOMAPI_FOREIGN_PRODUCT"] ?? "").Split(new[] { ';' },
+                    StringSplitOptions.RemoveEmptyEntries).Select(code => code.ToUpperInvariant()).ToArray();
+                if (foreign.Count == 0)
+                {
+                    if (removalList.Length != 0)
+                        throw new InvalidOperationException("Foreign removal list has no matching machine product");
+                    return;
+                }
+                if (session["GOMAPI_MIGRATE_SKU"] != "1" || removalList.Length != 1 ||
+                    !string.Equals(removalList[0], foreign[0], StringComparison.Ordinal))
+                    throw new InvalidOperationException("Explicit SKU migration and exact foreign removal list are required");
+            });
+        }
+
+        // MSI's rollback of ServiceInstall recreates the service, but does not
+        // replay MsiServiceConfig or WiX Util's failure-action custom action.
+        // The *old* product schedules this rollback before DeleteServices for
+        // upgrade-driven removal, so it runs after its own service restoration.
+        [CustomAction]
+        public static ActionResult RollbackServiceConfiguration(Session session)
+        {
+            return Guard(session, "rollback-service-configuration", () =>
+            {
+                RunServiceControl("config go-mapi start= delayed-auto");
+                RunServiceControl("sidtype go-mapi unrestricted");
+                RunServiceControl("failure go-mapi reset= 86400 actions= restart/60000/restart/60000/none/0");
+            });
+        }
+
+        private static void RunServiceControl(string arguments)
+        {
+            using (var process = new Process())
+            {
+                process.StartInfo = new ProcessStartInfo("sc.exe", arguments)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                if (!process.Start())
+                    throw new InvalidOperationException("Could not start service control: " + arguments);
+                if (!process.WaitForExit(30000))
+                {
+                    process.Kill();
+                    throw new TimeoutException("Service control timed out: " + arguments);
+                }
+                if (process.ExitCode != 0)
+                    throw new InvalidOperationException("Service control failed (" + process.ExitCode + "): " + arguments);
+            }
+        }
+
+        // Resolve before RemoveExistingProducts removes the old machine marker.
+        // An explicit administrator property wins; repair and cross-SKU migration
+        // otherwise preserve the existing valid DWORD.
+        private static void ResolveAutoUpdate(Session session)
+        {
+            var choice = session["GOMAPI_AUTO_UPDATE"];
+            if (string.IsNullOrEmpty(choice))
+            {
+                using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                using (var key = root.OpenSubKey(@"SOFTWARE\go-mapi\MachineProduct"))
+                {
+                    if (key != null)
+                    {
+                        if (!Array.Exists(key.GetValueNames(), name => name == "AutoUpdateEnabled"))
+                            throw new InvalidDataException("Existing machine product has no automatic update setting");
+                        if (key.GetValueKind("AutoUpdateEnabled") != RegistryValueKind.DWord)
+                            throw new InvalidDataException("Machine automatic update setting has an invalid type");
+                        var value = (int)key.GetValue("AutoUpdateEnabled");
+                        choice = value.ToString(CultureInfo.InvariantCulture);
+                    }
+                }
+                if (string.IsNullOrEmpty(choice))
+                    choice = "1";
+            }
+            if (choice != "0" && choice != "1")
+                throw new InvalidDataException("Machine automatic update setting must be 0 or 1");
+            session["GOMAPI_AUTO_UPDATE"] = choice;
+        }
+
+        [CustomAction]
+        public static ActionResult ResolveAutoUpdateChoice(Session session)
+        {
+            return Guard(session, "auto-update-choice", () => ResolveAutoUpdate(session));
+        }
 
         [CustomAction]
         public static ActionResult PrepareAdminMigration(Session session)
         {
             return Guard(session, "prepare", () =>
             {
+                ResolveAutoUpdate(session);
                 var paths = Paths.Create();
-                Directory.CreateDirectory(paths.JournalDirectory);
+                EnsureProtectedJournalDirectory(paths.JournalDirectory);
+                var installedManifest = Path.Combine(paths.InstallRoot, "installed-component-v1.json");
+                var manifestBackup = Path.Combine(paths.JournalDirectory, "backup", "rollback-installed-component-v1.json");
+                var hadInstalledManifest = File.Exists(installedManifest);
+                var manifestBackupSha256 = "";
+                if (hadInstalledManifest)
+                {
+                    var info = new FileInfo(installedManifest);
+                    if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024)
+                        throw new InvalidDataException("Installed component manifest is not a bounded regular file");
+                    var backupDirectory = Path.GetDirectoryName(manifestBackup);
+                    EnsureProtectedJournalDirectory(backupDirectory);
+                    DeleteFileIfExists(manifestBackup);
+                    File.Copy(installedManifest, manifestBackup, true);
+                    manifestBackupSha256 = Sha256(installedManifest);
+                    if (Sha256(manifestBackup) != manifestBackupSha256)
+                        throw new InvalidDataException("Installed component manifest backup hash mismatch");
+                }
+                else
+                    DeleteFileIfExists(manifestBackup);
 
                 var previous = LoadJournal(paths.JournalPath);
                 var keepOriginal = previous != null
@@ -45,7 +226,7 @@ namespace GoMapi.AdminCustomActions
                 var journal = new MigrationJournal
                 {
                     Schema = JournalSchema,
-                    ProductVersion = session["GOMAPI_COMPONENT_VERSION"],
+                    ProductVersion = session["GoMapiComponentVersion"],
                     CreatedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     State = "prepared",
                     PreviousProviders = keepOriginal
@@ -75,9 +256,13 @@ namespace GoMapi.AdminCustomActions
                 {
                     ["JournalPath"] = paths.JournalPath,
                     ["InstallRoot"] = paths.InstallRoot,
-                    ["Version"] = session["GOMAPI_COMPONENT_VERSION"],
-                    ["RequiredAppMin"] = session["GOMAPI_REQUIRED_APP_MIN"],
+                    ["Version"] = session["GoMapiComponentVersion"],
+                    ["RequiredAppMin"] = session["GoMapiRequiredAppMin"],
+                    ["RequiredAppMax"] = session["GoMapiRequiredAppMax"],
                     ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
+                    ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
+                    ["HadInstalledManifest"] = hadInstalledManifest ? "1" : "0",
+                    ["ManifestBackupSha256"] = manifestBackupSha256,
                 }.ToString();
                 session["RollbackAdminMigration"] = data;
                 session["ApplyAdminMigration"] = data;
@@ -93,8 +278,13 @@ namespace GoMapi.AdminCustomActions
                 var journalPath = session.CustomActionData["JournalPath"];
                 var journal = RequireJournal(journalPath);
                 MaybeFail(session.CustomActionData, "before-cleanup");
+                var existingProduct = session.CustomActionData["ExistingProduct"] == "1";
                 foreach (var resource in LoadInventory().Resources)
                 {
+                    // Maintenance must not delete MSI-owned files or registration while
+                    // the installed service is running. Retire the exact legacy task.
+                    if (existingProduct && resource.Kind != "scheduled-task")
+                        continue;
                     CleanupResource(resource, session);
                     var operation = journal.Operations.Single(item => item.Id == resource.Id);
                     operation.Status = "removed-or-absent";
@@ -115,8 +305,11 @@ namespace GoMapi.AdminCustomActions
                 var installRoot = data["InstallRoot"];
                 var version = data["Version"];
                 var requiredAppMin = data["RequiredAppMin"];
+                var requiredAppMax = data["RequiredAppMax"];
                 if (string.IsNullOrWhiteSpace(requiredAppMin))
                     throw new InvalidDataException("Required app minimum version is absent");
+                if (string.IsNullOrWhiteSpace(requiredAppMax))
+                    throw new InvalidDataException("Required app maximum version is absent");
                 var x86 = Path.Combine(installRoot, "x86", "go-mapi.dll");
                 var x64 = Path.Combine(installRoot, "AMD64", "go-mapi.dll");
 
@@ -134,6 +327,7 @@ namespace GoMapi.AdminCustomActions
                     {
                         Component = "app",
                         MinInclusive = requiredAppMin,
+                        MaxExclusive = requiredAppMax,
                     },
                     Artifacts = new[]
                     {
@@ -173,7 +367,19 @@ namespace GoMapi.AdminCustomActions
                 RemoveOwnedClient(RegistryView.Registry32);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry64, true);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry32, true);
-                DeleteFileIfExists(Path.Combine(data["InstallRoot"], "installed-component-v1.json"));
+                var installedManifest = Path.Combine(data["InstallRoot"], "installed-component-v1.json");
+                var manifestBackup = Path.Combine(Path.GetDirectoryName(journalPath), "backup", "rollback-installed-component-v1.json");
+                if (data["HadInstalledManifest"] == "1")
+                {
+                    var info = new FileInfo(manifestBackup);
+                    if (!info.Exists || (info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024 ||
+                        Sha256(manifestBackup) != data["ManifestBackupSha256"])
+                        throw new InvalidDataException("Rollback component manifest backup is absent or invalid");
+                    Directory.CreateDirectory(data["InstallRoot"]);
+                    File.Copy(manifestBackup, installedManifest, true);
+                }
+                else
+                    DeleteFileIfExists(installedManifest);
                 journal.State = "rolled-back";
                 SaveJournal(journalPath, journal);
             });
@@ -191,10 +397,44 @@ namespace GoMapi.AdminCustomActions
                     ["InstallRoot"] = paths.InstallRoot,
                     ["WasActive64"] = IsGoMapiActive(RegistryView.Registry64) ? "1" : "0",
                     ["WasActive32"] = IsGoMapiActive(RegistryView.Registry32) ? "1" : "0",
+                    ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
                 }.ToString();
                 session["RollbackAdminUninstall"] = data;
                 session["FinalizeAdminUninstall"] = data;
+                session["CommitAdminUninstall"] = data;
             });
+        }
+
+        [CustomAction]
+        public static ActionResult BeginResidentUninstallFence(Session session)
+        {
+            return Guard(session, "begin-resident-uninstall-fence", () => RunResidentFence("--begin-final-uninstall"));
+        }
+
+        [CustomAction]
+        public static ActionResult RollbackResidentUninstallFence(Session session)
+        {
+            return Guard(session, "rollback-resident-uninstall-fence", () => RunResidentFence("--rollback-final-uninstall"));
+        }
+
+        private static void RunResidentFence(string argument)
+        {
+            var executable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "go-mapi", "service", "go-mapi-service.exe");
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("Installed resident service is required for the final uninstall fence", executable);
+            using (var process = new Process())
+            {
+                process.StartInfo = new ProcessStartInfo(executable, argument) { UseShellExecute = false, CreateNoWindow = true };
+                if (!process.Start())
+                    throw new InvalidOperationException("Could not start resident uninstall fence");
+                if (!process.WaitForExit(30000))
+                {
+                    process.Kill();
+                    throw new TimeoutException("Resident uninstall fence timed out");
+                }
+                if (process.ExitCode != 0)
+                    throw new InvalidOperationException("Resident uninstall fence refused the operation");
+            }
         }
 
         [CustomAction]
@@ -213,8 +453,48 @@ namespace GoMapi.AdminCustomActions
                     journal.State = "uninstalled";
                     SaveJournal(data["JournalPath"], journal);
                 }
-                DeleteFileIfExists(Path.Combine(data["InstallRoot"], "installed-component-v1.json"));
+                MaybeFail(data, "after-uninstall-finalize");
             });
+        }
+
+        // Keep the installed manifest intact until MSI has completed its
+        // script. A deferred deletion cannot be restored if a later action
+        // rolls the uninstall back.
+        [CustomAction]
+        public static ActionResult CommitAdminUninstall(Session session)
+        {
+            try
+            {
+                var manifest = Path.Combine(session.CustomActionData["InstallRoot"], "installed-component-v1.json");
+                DeleteFileIfExists(manifest);
+                var machineRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi");
+                SafeDeleteDirectory(Path.Combine(machineRoot, "updates"));
+                SafeDeleteDirectory(Path.Combine(machineRoot, "status"));
+                SafeDeleteDirectory(Path.Combine(machineRoot, "service"));
+                using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                {
+                    root.DeleteSubKeyTree(VolatileBootKey, false);
+                    root.DeleteSubKeyTree(UninstallCleanupKey, false);
+                }
+                return ActionResult.Success;
+            }
+            catch (Exception error)
+            {
+                // Commit actions cannot safely undo a partially completed
+                // cleanup. Leave the exact file for administrator retry.
+                session.Log("go-mapi admin migration commit-uninstall cleanup incomplete: {0}", error);
+                try
+                {
+                    using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
+                    using (var marker = root.CreateSubKey(UninstallCleanupKey, true))
+                        marker.SetValue("Result", "manifest-cleanup-incomplete", RegistryValueKind.String);
+                }
+                catch (Exception markerError)
+                {
+                    session.Log("go-mapi admin migration could not persist cleanup marker: {0}", markerError);
+                }
+                return ActionResult.Success;
+            }
         }
 
         [CustomAction]
@@ -227,6 +507,12 @@ namespace GoMapi.AdminCustomActions
                     SetActiveProvider(RegistryView.Registry64, ProductName);
                 if (data["WasActive32"] == "1")
                     SetActiveProvider(RegistryView.Registry32, ProductName);
+                var journal = LoadJournal(data["JournalPath"]);
+                if (journal != null && journal.State == "uninstalled")
+                {
+                    journal.State = "committed";
+                    SaveJournal(data["JournalPath"], journal);
+                }
             });
         }
 
@@ -555,11 +841,28 @@ namespace GoMapi.AdminCustomActions
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "go-mapi"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "go-mapi"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "updates"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "service"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "status"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "uninst"),
             }.Select(item => Path.GetFullPath(item).TrimEnd(Path.DirectorySeparatorChar));
             if (!allowed.Contains(full, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException("Refusing non-owned directory: " + full);
+            RejectReparseTree(full);
             Directory.Delete(full, true);
+        }
+
+        private static void RejectReparseTree(string path)
+        {
+            if ((File.GetAttributes(path) & System.IO.FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Refusing reparse point under owned directory: " + path);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(path))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & System.IO.FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Refusing reparse point under owned directory: " + entry);
+                if ((attributes & System.IO.FileAttributes.Directory) != 0)
+                    RejectReparseTree(entry);
+            }
         }
 
         private static void DeleteFileIfExists(string path)
@@ -583,6 +886,36 @@ namespace GoMapi.AdminCustomActions
         private static void SaveJournal(string path, MigrationJournal journal)
         {
             AtomicWriteJson(path, journal);
+            ProtectJournalFile(path);
+        }
+
+        private static void EnsureProtectedJournalDirectory(string path)
+        {
+            Directory.CreateDirectory(path);
+            var info = new DirectoryInfo(path);
+            var parent = info.Parent;
+            if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 ||
+                (parent != null && (parent.Attributes & System.IO.FileAttributes.ReparsePoint) != 0))
+                throw new InvalidDataException("Installer journal directory is a reparse point");
+            var security = new DirectorySecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
+                    FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                    PropagationFlags.None, AccessControlType.Allow));
+            Directory.SetAccessControl(path, security);
+        }
+
+        private static void ProtectJournalFile(string path)
+        {
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+            foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+                security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
+                    FileSystemRights.FullControl, AccessControlType.Allow));
+            File.SetAccessControl(path, security);
         }
 
         private static void AtomicWriteJson(string path, object value)
@@ -710,6 +1043,8 @@ namespace GoMapi.AdminCustomActions
             public string Component { get; set; }
             [JsonProperty("minInclusive")]
             public string MinInclusive { get; set; }
+            [JsonProperty("maxExclusive")]
+            public string MaxExclusive { get; set; }
         }
 
         private sealed class InstalledArtifact

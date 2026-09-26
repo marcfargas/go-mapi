@@ -17,12 +17,32 @@ var assets embed.FS
 
 var Version = "0.0.0-dev" // overridden via -ldflags "-X main.Version=..."
 
+// AppDistribution is set to "machine" only for the suite MSI's dedicated app
+// build. The ordinary Store/standalone artifacts leave this empty and retain
+// their existing runtime channel detection.
+var AppDistribution = ""
+
 // RequiredInterceptorMin/Max are compiled from the app record in
 // components.json. They are independent from the interceptor's own version.
 var RequiredInterceptorMin = "4.0.0"
 var RequiredInterceptorMax = ""
 
 func main() {
+	if isMachineStartup(os.Args[1:]) {
+		if AppDistribution != "machine" {
+			println("Error: machine startup requires the machine-distributed app")
+			os.Exit(1)
+		}
+		settings := loadSettings()
+		if !allowMachineStartup(settings) {
+			// A user opt-out (or unreadable settings) must be honored before
+			// single-instance signalling, queue access, or Wails startup.
+			return
+		}
+	} else if hasMachineStartupArgument(os.Args[1:]) {
+		println("Error: invalid machine startup arguments")
+		os.Exit(1)
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		println(Version)
 		return

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 	"github.com/pkg/browser"
 )
 
@@ -81,11 +82,8 @@ func formatUpdateLastCheckedLabel(s UpdateState, now time.Time) string {
 // computeTrayVisual can consult it without reaching through the full
 // GetUpdateState copy on every tick.
 func (a *App) snapshotUpdateAvailable() bool {
-	state := a.updateState.Load()
-	if state == nil {
-		return false
-	}
-	return state.UpdateAvailable
+	state := a.GetUpdateState()
+	return state.UpdateAvailable || state.InterceptorUpdateAvailable
 }
 
 // setUpdateChecksEnabled flips the "Check for updates" preference,
@@ -174,23 +172,23 @@ func (a *App) setUpdateStateObserver(fn func(UpdateState)) {
 // update_notifications.go so the tray and the notification surface
 // converge on one download-action implementation.
 func (a *App) handleUpdateDownloadAction() {
-	openUpdateDownloadPage(a.GetUpdateState())
+	if err := a.OpenUpdateAction(); err != nil {
+		logInfo("updates: open action: %v", err)
+	}
 }
 
-// openUpdateDownloadPage opens the user's default browser at the validated,
-// versioned first-party download route for the cached LatestVersion. Missing
-// or untrusted URLs are ignored rather than falling back to another origin.
-//
-// D-03 invariant: this function only opens a URL. It never downloads,
-// stages, launches, or replaces a binary.
-// D-04 invariant: a failed browser.Open is logged and swallowed — no
-// tray error is raised on missing default-browser registration.
-func openUpdateDownloadPage(s UpdateState) {
-	url := s.InstallerURL
-	if url == "" || !allowedUpdateURL(url) {
-		return
+// OpenUpdateAction hands the engine's validated browser or Store candidate to
+// the platform shell. The frontend supplies no URL to this binding.
+func (a *App) OpenUpdateAction() error {
+	a.updateCheckMu.Lock()
+	candidate := a.updateCandidate
+	a.updateCheckMu.Unlock()
+	state := a.GetUpdateState()
+	if a.updates == nil || !state.UpdateAvailable || !validUpdateActionURL(state) || candidate.ActionKind() == "" || candidate.ActionURL() != state.UpdateActionURL {
+		return nil
 	}
-	if err := browser.OpenURL(url); err != nil {
-		logInfo("updates: open download page (silent per D-04): %v", err)
-	}
+	_, err := a.updates.Install(context.Background(), candidate, update.InstallOptions{
+		OpenURL: func(_ context.Context, url string) error { return browser.OpenURL(url) },
+	})
+	return err
 }

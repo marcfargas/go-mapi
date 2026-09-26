@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marcfargas/go-mapi/internal/mapi"
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -76,10 +77,14 @@ type App struct {
 
 	// --- Phase 11: notify-only update state (REL-03, REL-05) --------
 	//
-	// updates is the stateless service that performs version fetch +
-	// compare. App owns the cadence/scheduling and all persistence —
-	// the service is a pure consumer.
-	updates *updateService
+	// The shared engine owns check cadence, metadata validation and update
+	// actions. App owns wakeups, settings persistence and presentation.
+	updates           *update.Engine
+	updateVersion     string
+	updateObservation func() (channel, interceptor string)
+	updateCheckMu     sync.Mutex
+	updateCheckState  update.CheckState
+	updateCandidate   update.Candidate
 
 	// updateState is the cached UpdateState snapshot that tray and
 	// frontend consume via GetUpdateState. atomic.Pointer so readers
@@ -288,8 +293,13 @@ func (a *App) startup(ctx context.Context) {
 	// — the app still runs; we just never detect updates until next
 	// start (D-04 silent-failure invariant extends to the updater
 	// bootstrap itself).
-	if fetcher := newUpdateCheckFetcher(Version); fetcher != nil {
-		a.updates = newUpdateService(Version, fetcher, logInfo)
+	if engine := newAppUpdateEngine(); engine != nil {
+		a.updates = engine
+		a.updateVersion = Version
+		if last, err := time.Parse(time.RFC3339, a.settings.LastUpdateCheck); err == nil {
+			a.updateCheckState.LastAttemptAt = last
+			a.updateCheckState.NextAttemptAt = last.Add(updateCheckWindow)
+		}
 		a.updateState.Store(&UpdateState{
 			CurrentVersion: Version,
 			Enabled:        a.settings.UpdateChecksEnabled,
@@ -708,11 +718,13 @@ func (a *App) GetPausedState() bool { return a.isPaused() }
 // ---- Phase 11: update-check bindings (REL-03, REL-05, D-06, D-07) ----
 
 // updateCheckInterval is how often the long-lived scheduler wakes while
-// the app stays open. Intentionally shorter than updateCheckWindow so
-// a boundary crossing during a multi-day session is handled promptly.
-// The cadence gate inside MaybeCheck still enforces the 24h floor, so
-// ticking more often is safe — we only do real fetches when stale.
+// the app stays open. The engine enforces the 24-hour fetch floor.
 var updateCheckInterval = 1 * time.Hour
+
+// Recheck the local protected service status independently of the 24-hour
+// availability fetch. A stopped service or expired publication must restore
+// cached system advice in an already-open window and tray.
+const updateStatusRefreshInterval = time.Minute
 
 // GetUpdateState returns the cached notify-only update state for the
 // frontend / tray. Always returns a valid snapshot — never nil — so
@@ -720,11 +732,11 @@ var updateCheckInterval = 1 * time.Hour
 // fully initialised yet, CurrentVersion falls back to main.Version.
 func (a *App) GetUpdateState() UpdateState {
 	if state := a.updateState.Load(); state != nil {
-		return *state
+		return publicUpdateState(*state)
 	}
-	return UpdateState{
+	return publicUpdateState(UpdateState{
 		CurrentVersion: Version,
-	}
+	})
 }
 
 // CheckForUpdatesNow forces an immediate update check, bypassing the
@@ -739,10 +751,7 @@ func (a *App) CheckForUpdatesNow(ctx context.Context) error {
 	}
 	// Always run through the full manual-check path so LastUpdateCheck
 	// is persisted and the state-change emitter fires.
-	newState, err := a.updates.CheckNow(ctx)
-	newState.Enabled = a.isUpdateChecksEnabled()
-	a.applyUpdateCheckResult(newState, err)
-	return err
+	return a.checkUpdates(ctx, true)
 }
 
 // isUpdateChecksEnabled is a small RLock helper so call sites read
@@ -777,28 +786,64 @@ func (a *App) updateSchedulerTick(ctx context.Context) {
 	a.runGatedUpdateCheck(ctx)
 }
 
-// runGatedUpdateCheck is the shared cadence/opt-out path used by both
-// startup and the scheduler tick. Uses MaybeCheck so the cadence gate
-// lives in one place (the update service); App handles state caching,
-// persistence, and observer notification.
+// runGatedUpdateCheck wakes the shared engine for startup and scheduler
+// checks. App handles state caching, persistence and observer notification.
 func (a *App) runGatedUpdateCheck(ctx context.Context) {
 	if a.updates == nil {
 		return
 	}
-	settings := updateSettings{
-		Enabled:         a.isUpdateChecksEnabled(),
-		LastUpdateCheck: a.lastUpdateCheckValue(),
-		Now:             time.Now().UTC(),
+	if err := a.checkUpdates(ctx, false); err != nil {
+		logInfo("updates: background check failed: %v", err)
 	}
-	newState, checked, err := a.updates.MaybeCheck(ctx, settings)
-	if !checked {
-		// Opt-out or inside 24h window. Refresh the cached Enabled
-		// flag in case the user toggled the opt-out; do not mutate
-		// LatestVersion / LastCheckedAt (we did not attempt a fetch).
-		a.syncUpdateEnabledIntoState(settings.Enabled)
-		return
+}
+
+// checkUpdates is the app's sole metadata check path. The engine decides
+// cadence, validates the response, and produces the action candidate.
+func (a *App) checkUpdates(ctx context.Context, force bool) error {
+	if a.updates == nil {
+		return errors.New("updates: engine not initialised")
 	}
-	a.applyUpdateCheckResult(newState, err)
+	a.updateCheckMu.Lock()
+	defer a.updateCheckMu.Unlock()
+	enabled := a.isUpdateChecksEnabled()
+	version := a.updateVersion
+	if version == "" {
+		version = Version
+	}
+	channel, interceptor := updateDistributionChannel(), installedInterceptorUpdateVersion()
+	if a.updateObservation != nil {
+		channel, interceptor = a.updateObservation()
+	}
+	result, err := a.updates.Check(ctx, update.CheckRequest{
+		Enabled: enabled, Force: force, State: a.updateCheckState,
+		InstalledVersion: version,
+		Installed:        map[string]string{"app": version, "interceptor": interceptor},
+		Channel:          channel, Track: mapi.ReleaseTrack(version),
+	})
+	if !result.Checked {
+		a.syncUpdateEnabledIntoState(enabled)
+		return err
+	}
+	a.updateCheckState = result.State
+	state := UpdateState{CurrentVersion: version, Enabled: enabled,
+		LastCheckedAt: result.State.LastAttemptAt.UTC().Format(time.RFC3339),
+	}
+	if !result.State.LastSuccessAt.IsZero() {
+		state.LastSuccessfulAt = result.State.LastSuccessAt.UTC().Format(time.RFC3339)
+	}
+	if err == nil {
+		a.updateCandidate = result.Candidate
+		state.LatestVersion = result.App.Version
+		state.LatestReleaseURL = result.App.ReleaseURL
+		state.InstallerURL = result.App.ReleaseURL
+		state.UpdateAvailable = result.App.Available
+		state.DistributionChannel = result.App.Channel
+		state.InterceptorLatestVersion = result.App.InterceptorVersion
+		state.InterceptorUpdateAvailable = result.App.InterceptorUpdateAvailable
+		state.Compatibility = result.App.Compatibility
+	}
+	a.applyUpdateCheckResult(state, err)
+	return err
 }
 
 // applyUpdateCheckResult merges a fresh check result into the cached
@@ -806,11 +851,16 @@ func (a *App) runGatedUpdateCheck(ctx context.Context) {
 // the state-change emitter. On fetch error, LatestVersion / URL /
 // UpdateAvailable from the previous snapshot are preserved (D-04).
 func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
-	prior := a.GetUpdateState()
+	prior := UpdateState{}
+	if cached := a.updateState.Load(); cached != nil {
+		prior = *cached
+	}
 	merged := UpdateState{
 		CurrentVersion:             newState.CurrentVersion,
 		InstallerURL:               newState.InstallerURL,
 		LastCheckedAt:              newState.LastCheckedAt,
+		LastSuccessfulAt:           newState.LastSuccessfulAt,
+		DistributionChannel:        newState.DistributionChannel,
 		Enabled:                    newState.Enabled,
 		LatestVersion:              newState.LatestVersion,
 		LatestReleaseURL:           newState.LatestReleaseURL,
@@ -824,10 +874,13 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 		// flicker on transient outages (D-04).
 		merged.LatestVersion = prior.LatestVersion
 		merged.LatestReleaseURL = prior.LatestReleaseURL
+		merged.InstallerURL = prior.InstallerURL
 		merged.UpdateAvailable = prior.UpdateAvailable
 		merged.InterceptorLatestVersion = prior.InterceptorLatestVersion
 		merged.InterceptorUpdateAvailable = prior.InterceptorUpdateAvailable
 		merged.Compatibility = prior.Compatibility
+		merged.LastSuccessfulAt = prior.LastSuccessfulAt
+		merged.DistributionChannel = prior.DistributionChannel
 	}
 	if merged.CurrentVersion == "" {
 		merged.CurrentVersion = Version
@@ -842,14 +895,15 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 		}
 	}
 
+	visible := publicUpdateState(merged)
 	if a.updateStateEmitter != nil {
-		a.updateStateEmitter(merged)
+		a.updateStateEmitter(visible)
 	}
 	// Phase 11 Plan 02: in-process observer fan-out for tray/notification
 	// code. Distinct from the Wails EventsEmit hook so the frontend path
 	// and the tray path can evolve independently.
 	if a.updateStateObserver != nil {
-		a.updateStateObserver(merged)
+		a.updateStateObserver(visible)
 	}
 	// Signal tray refresh so the update-available icon/tooltip and the
 	// "Last checked" status row reflect this result. Coalesced via the
@@ -862,14 +916,17 @@ func (a *App) applyUpdateCheckResult(newState UpdateState, fetchErr error) {
 // changing any other field. Called on opt-out / within-window no-op
 // paths so tray/frontend see toggle changes even when no fetch ran.
 func (a *App) syncUpdateEnabledIntoState(enabled bool) {
-	prior := a.GetUpdateState()
+	prior := UpdateState{}
+	if cached := a.updateState.Load(); cached != nil {
+		prior = *cached
+	}
 	if prior.Enabled == enabled {
 		return
 	}
 	prior.Enabled = enabled
 	a.updateState.Store(&prior)
 	if a.updateStateEmitter != nil {
-		a.updateStateEmitter(prior)
+		a.updateStateEmitter(publicUpdateState(prior))
 	}
 }
 
@@ -892,29 +949,64 @@ func (a *App) persistLastUpdateCheck(ts string) error {
 	return saveSettings(snapshot)
 }
 
-// startUpdateScheduler kicks off the long-lived 24h cadence goroutine.
-// Called from startup after the update service is built. The goroutine
-// wakes every updateCheckInterval, re-evaluates opt-out + last-checked
-// state, and performs a silent recheck when the cadence floor is crossed.
-// Cancelled via updateSchedulerStop on shutdown.
+// startUpdateScheduler keeps availability fetches on their 24-hour cadence
+// while refreshing local managed-service presentation every minute. Both
+// tickers stop with the app's shutdown context.
 func (a *App) startUpdateScheduler() {
+	a.startUpdateSchedulerWithProjection(publicUpdateState, updateStatusRefreshInterval)
+}
+
+func (a *App) startUpdateSchedulerWithProjection(project func(UpdateState) UpdateState, statusInterval time.Duration) {
 	if a.updates == nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(a.shutdownCtx)
 	a.updateSchedulerStop = cancel
 	go func() {
-		ticker := time.NewTicker(updateCheckInterval)
-		defer ticker.Stop()
+		checkTicker := time.NewTicker(updateCheckInterval)
+		defer checkTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-checkTicker.C:
 				a.updateSchedulerTick(ctx)
 			}
 		}
 	}()
+	go func() {
+		statusTicker := time.NewTicker(statusInterval)
+		defer statusTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-statusTicker.C:
+				a.refreshUpdatePresentation(project)
+			}
+		}
+	}()
+}
+
+// Refreshing presentation never overwrites raw cached availability. A fresh
+// read of service status can therefore remove or restore only the managed
+// system filter without a network check or user-preference write.
+func (a *App) refreshUpdatePresentation(project func(UpdateState) UpdateState) {
+	if project == nil {
+		return
+	}
+	raw := UpdateState{CurrentVersion: Version}
+	if cached := a.updateState.Load(); cached != nil {
+		raw = *cached
+	}
+	visible := project(raw)
+	if a.updateStateEmitter != nil {
+		a.updateStateEmitter(visible)
+	}
+	if a.updateStateObserver != nil {
+		a.updateStateObserver(visible)
+	}
+	a.signalTrayRefresh()
 }
 
 // handleToastAction dispatches a toast click or button tap to the appropriate
@@ -953,12 +1045,9 @@ func (a *App) handleToastAction(args string) {
 	case "open":
 		a.showWindow()
 	case "open-update":
-		// Phase 11 Plan 02: update-available toast body was clicked.
-		// Open the validated download page in the browser; D-03 invariant —
-		// never launch an installer. openUpdateDownloadPage validates the
-		// first-party route and swallows
-		// browser.Open failures silently per D-04.
-		openUpdateDownloadPage(a.GetUpdateState())
+		if err := a.OpenUpdateAction(); err != nil {
+			logInfo("updates: open action: %v", err)
+		}
 	default:
 		logError("toast: unknown action %q", op)
 		a.showWindow()

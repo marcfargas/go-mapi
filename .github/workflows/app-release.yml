@@ -35,7 +35,6 @@ jobs:
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
       GOMAPI_STORE_PACKAGE_FAMILY_NAME: ${{ vars.STORE_PACKAGE_FAMILY_NAME }}
       HAS_AZURE_ARTIFACT_SIGNING: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
-      GOMAPI_ADMIN_RELEASE_ROOT_B64: ${{ secrets.ADMIN_RELEASE_ROOT_B64 }}
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -62,7 +61,14 @@ jobs:
         shell: pwsh
         run: |
           if ($env:HAS_AZURE_ARTIFACT_SIGNING -ne 'true') { throw 'Public/signing app release requires the Azure Artifact Signing OIDC configuration; unsigned publication is forbidden.' }
-          if ('${{ steps.version.outputs.track }}' -ne 'stable') { exit 0 }
+          $publishing = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
+          if ($publishing) {
+            foreach ($name in @('GOMAPI_OAUTH_CLIENT_ID','GOMAPI_OAUTH_CLIENT_SECRET')) {
+              if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) { throw "Public app release requires the real Google OAuth credential: $name" }
+            }
+          }
+          $publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
+          if (-not $publishingStable) { exit 0 }
           foreach ($name in @('STORE_IDENTITY_NAME','STORE_PUBLISHER','STORE_PUBLISHER_DISPLAY_NAME','GOMAPI_STORE_PACKAGE_FAMILY_NAME')) {
             if ([string]::IsNullOrWhiteSpace((Get-Item "env:$name" -ErrorAction SilentlyContinue).Value)) { throw "Missing protected Store identity: $name" }
           }
@@ -76,7 +82,7 @@ jobs:
       - run: just check-user
       - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - name: Configure development-channel validation credentials
-        if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign)
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
         shell: pwsh
         run: |
           "GOMAPI_OAUTH_CLIENT_ID=ci-client" | Out-File $env:GITHUB_ENV -Encoding ascii -Append
@@ -122,11 +128,11 @@ jobs:
           STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
         run: |
-          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
+          $production = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
           $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
-          $identity = if ($stable) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
-          $publisher = if ($stable) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
-          $display = if ($stable) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
+          $identity = if ($production) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
+          $publisher = if ($production) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
+          $display = if ($production) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
           .\scripts\build-app-msix.ps1 -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
           .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
 
@@ -147,9 +153,9 @@ jobs:
       - name: Verify signed packages and exact bytes
         shell: pwsh
         run: |
-          $stable = '${{ steps.version.outputs.track }}' -eq 'stable'
+          $production = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
           $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
-          if ($stable -and $signed) {
+          if ($production -and $signed) {
             .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
           } else {
             .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'

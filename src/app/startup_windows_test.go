@@ -75,6 +75,16 @@ func TestStandaloneStartupStateDistinguishesRequestedRegisteredEffective(t *test
 	}
 }
 
+func TestMachineStartupOptOutNeverWritesRegistration(t *testing.T) {
+	store := &fakeStartupRegistrationStore{exists: true, value: `"C:\Apps\go-mapi\go-mapi.exe" --startup --machine-install`, writeErr: errors.New("unexpected write"), deleteErr: errors.New("unexpected delete")}
+	service := &windowsStartupService{machine: true, machineRegistration: store, exePath: `C:\Apps\go-mapi\go-mapi.exe`}
+	enabled := service.Set(context.Background(), true)
+	disabled := service.Set(context.Background(), false)
+	if enabled.Backend != "machine" || enabled.Effective != "enabled" || disabled.Effective != "disabled" || !store.exists {
+		t.Fatalf("enabled=%+v disabled=%+v store=%+v", enabled, disabled, store)
+	}
+}
+
 func TestStandaloneStartupRejectsForeignExecutable(t *testing.T) {
 	store := &fakeStartupRegistrationStore{exists: true, value: `"C:\Other\go-mapi.exe" --startup`}
 	service := &windowsStartupService{registration: store, exePath: `C:\Apps\go-mapi\go-mapi.exe`}

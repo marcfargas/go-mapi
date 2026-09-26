@@ -18,6 +18,23 @@ type componentManifest struct {
 		Scope         string                 `json:"scope"`
 		Requires      CounterpartRequirement `json:"requires"`
 	} `json:"components"`
+	MachinePackages map[string]struct {
+		UpgradeCode          string   `json:"upgradeCode"`
+		ProductCodeNamespace string   `json:"productCodeNamespace"`
+		ProductCodeName      string   `json:"productCodeName"`
+		TagPrefix            string   `json:"tagPrefix"`
+		TargetPath           string   `json:"targetPath"`
+		AssetPattern         string   `json:"assetPattern"`
+		ManifestPattern      string   `json:"manifestPattern"`
+		IncludedComponents   []string `json:"includedComponents"`
+		ReleaseCadence       string   `json:"releaseCadence"`
+		Service              struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"displayName"`
+			Executable  string `json:"executable"`
+			Arguments   string `json:"arguments"`
+		} `json:"service"`
+	} `json:"machinePackages"`
 }
 
 func TestComponentManifestMatchesCheckedInVersionInputs(t *testing.T) {
@@ -74,5 +91,49 @@ func TestComponentManifestMatchesCheckedInVersionInputs(t *testing.T) {
 	app := manifest.Components["app"]
 	if app.Artifact != "go-mapi.exe" || len(app.Architectures) != 1 || app.Architectures[0] != "amd64" {
 		t.Errorf("app artifact contract = %#v, want go-mapi.exe/amd64", app)
+	}
+}
+
+func TestComponentManifestDeclaresDistinctMachinePackageFamilies(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	data, err := os.ReadFile(filepath.Join(repoRoot, "components.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest componentManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	system, systemOK := manifest.MachinePackages["system"]
+	suite, suiteOK := manifest.MachinePackages["suite"]
+	if !systemOK || !suiteOK || len(manifest.MachinePackages) != 2 {
+		t.Fatalf("machinePackages keys = %v, want exactly system and suite", manifest.MachinePackages)
+	}
+	if system.UpgradeCode != "B3C97B33-3F10-47CA-9FA7-24EE3B75E325" {
+		t.Errorf("system UpgradeCode = %q", system.UpgradeCode)
+	}
+	if suite.UpgradeCode != "2E050A24-94A2-4FC9-B176-C5CCC1225FE6" {
+		t.Errorf("suite UpgradeCode = %q", suite.UpgradeCode)
+	}
+	if system.UpgradeCode == suite.UpgradeCode || system.TargetPath == suite.TargetPath || system.TagPrefix == suite.TagPrefix {
+		t.Error("system and suite package namespaces must be distinct")
+	}
+	for sku, contract := range manifest.MachinePackages {
+		if contract.ProductCodeNamespace != machineProductCodeNamespace || contract.ProductCodeName != "go-mapi/msi/<sku>/<package-release>" {
+			t.Errorf("%s ProductCode contract = %q/%q", sku, contract.ProductCodeNamespace, contract.ProductCodeName)
+		}
+		if contract.Service.Name != "go-mapi" || contract.Service.DisplayName != "go-mapi system service" || contract.Service.Executable != `%ProgramFiles%\go-mapi\service\go-mapi-service.exe` || contract.Service.Arguments != "service" {
+			t.Errorf("%s service identity = %#v", sku, contract.Service)
+		}
+		if contract.AssetPattern != "go-mapi-<sku>-<package-release>-x64.msi" || contract.ManifestPattern != "go-mapi-<sku>-<package-release>.manifest.json" {
+			t.Errorf("%s publication patterns = %q/%q", sku, contract.AssetPattern, contract.ManifestPattern)
+		}
+	}
+	if strings.Join(system.IncludedComponents, ",") != "service,interceptor" {
+		t.Errorf("system components = %v", system.IncludedComponents)
+	}
+	if strings.Join(suite.IncludedComponents, ",") != "service,interceptor,app" {
+		t.Errorf("suite components = %v", suite.IncludedComponents)
 	}
 }

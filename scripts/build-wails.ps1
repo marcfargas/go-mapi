@@ -34,12 +34,15 @@ param(
     # source avoids materialising the values in a runner file while keeping the
     # local .env.local workflow unchanged.
     [switch]$UseEnvironmentCredentials,
+    # The suite MSI consumes a distinct PE whose installed channel cannot be
+    # mistaken for the per-user standalone or Store package.
+    [switch]$MachineDistribution,
     # The installed application's explicit identity is a release concern. The
     # empty default preserves the existing local-development build behaviour.
     [string]$Aumid = '',
     [string]$StorePackageFamilyName = ''
-    ,[string]$AdminReleaseRootB64 = ''
     ,[string]$AdminReleaseMetadataURL = ''
+    ,[string]$SourceCommit = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +70,6 @@ function Get-SHA256Hex([string]$Path) {
         $stream.Dispose()
     }
 }
-
 # Resolve script directory manually. $PSScriptRoot is unreliable inside param
 # default expressions in PS 5.1; compute it here instead.
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -118,6 +120,26 @@ if ($missing) {
 # prevents a release command from drifting to an independent npm version or a
 # machine component input.
 $RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir '..'))
+if ($Release) {
+    # Wails prefers existing local assets in these paths when packaging PE
+    # resources.  Require a clean start so only this invocation's pinned Wails
+    # defaults can create them, including in a Git checkout where ignored files
+    # are not tracked by Git.
+    foreach ($relative in @('src/app/build/appicon.png', 'src/app/build/windows/icon.ico', 'src/app/build/windows/wails.exe.manifest')) {
+        if (Test-Path -LiteralPath (Join-Path $RepoRoot $relative)) {
+            throw "Release build input must be absent before Wails generation: $relative"
+        }
+    }
+}
+if (Test-Path -LiteralPath (Join-Path $RepoRoot '.git')) {
+    $actualSourceCommit = ((& git -C $RepoRoot rev-parse HEAD) -join '').Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0 -or $actualSourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'Build requires a Git source commit' }
+    if ($SourceCommit -and $SourceCommit.ToLowerInvariant() -ne $actualSourceCommit) { throw 'Requested source commit differs from checkout' }
+    $sourceCommit = $actualSourceCommit
+} else {
+    if ($SourceCommit -notmatch '^[0-9a-fA-F]{40}$') { throw 'Archived source build requires its verified source commit' }
+    $sourceCommit = $SourceCommit.ToLowerInvariant()
+}
 $ManifestPath = Join-Path $RepoRoot 'components.json'
 if (-not (Test-Path -LiteralPath $ManifestPath)) { throw "Missing component manifest: $ManifestPath" }
 $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
@@ -143,9 +165,8 @@ if ($Release -and (-not (Test-CanonicalSemVer $AppVersion) -or $AppVersion -eq '
     Write-Error "Release builds require a non-development src/app/VERSION; refusing to package $AppVersion."
     exit 1
 }
-if ([string]::IsNullOrWhiteSpace($AdminReleaseRootB64)) { $AdminReleaseRootB64 = [Environment]::GetEnvironmentVariable('GOMAPI_ADMIN_RELEASE_ROOT_B64') }
 if ([string]::IsNullOrWhiteSpace($AdminReleaseMetadataURL)) { $AdminReleaseMetadataURL = [Environment]::GetEnvironmentVariable('GOMAPI_ADMIN_RELEASE_METADATA_URL') }
-if ($Release -and ([string]::IsNullOrWhiteSpace($AdminReleaseRootB64) -or $AdminReleaseMetadataURL -notmatch '^https://')) { throw 'Release builds require protected admin release root and HTTPS metadata URL' }
+if ($Release -and $AdminReleaseMetadataURL -notmatch '^https://') { throw 'Release builds require HTTPS admin metadata URL' }
 if (-not (Test-CanonicalSemVer ([string]$app.requires.minInclusive)) -or
     (-not [string]::IsNullOrWhiteSpace($RequiredInterceptorMax) -and -not (Test-CanonicalSemVer $RequiredInterceptorMax))) {
     throw 'components.json app counterpart bounds must be canonical SemVer'
@@ -160,6 +181,9 @@ $ldflags = @(
     "-X `"main.oauthClientID=$($values['GOMAPI_OAUTH_CLIENT_ID'])`"",
     "-X `"main.oauthClientSecret=$($values['GOMAPI_OAUTH_CLIENT_SECRET'])`""
 )
+if ($MachineDistribution) {
+    $ldflags += '-X "main.AppDistribution=machine"'
+}
 if ([string]::IsNullOrWhiteSpace($StorePackageFamilyName)) {
     $StorePackageFamilyName = [Environment]::GetEnvironmentVariable('GOMAPI_STORE_PACKAGE_FAMILY_NAME')
 }
@@ -170,7 +194,6 @@ if (-not [string]::IsNullOrWhiteSpace($StorePackageFamilyName)) {
 if (-not [string]::IsNullOrWhiteSpace($Aumid)) {
     $ldflags += "-X `"main.aumidOverride=$Aumid`""
 }
-if (-not [string]::IsNullOrWhiteSpace($AdminReleaseRootB64)) { $ldflags += "-X `"main.AdminReleaseRootB64=$AdminReleaseRootB64`"" }
 if (-not [string]::IsNullOrWhiteSpace($AdminReleaseMetadataURL)) { $ldflags += "-X `"main.AdminReleaseMetadataURL=$AdminReleaseMetadataURL`"" }
 $ldflags = $ldflags -join ' '
 
@@ -222,14 +245,24 @@ try {
     Write-Host "[build-wails] CC:       $(if ($env:CC)  { $env:CC }  else { '(default)' })"
     Write-Host "[build-wails] CXX:      $(if ($env:CXX) { $env:CXX } else { '(default)' })"
     Write-Host "[build-wails] ldflags:  (oauth vars set -- values redacted)"
-    # Wails emits benign binding-discovery diagnostics to stderr.  With the
-    # caller's Stop preference that stream becomes a terminating PowerShell
-    # error before we can inspect Wails' actual exit code.  Preserve strict
-    # failure semantics based on $LASTEXITCODE instead.
+    # Wails' normal build-options table prints the entire ldflags value,
+    # including the OAuth client secret.  Quiet mode suppresses that table;
+    # redact every remaining output line before it reaches a CI log.  Wails
+    # also emits benign binding diagnostics to stderr, so decide success from
+    # its exit code rather than PowerShell's native-stderr error records.
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & wails build -platform $Platform -ldflags $ldflags
+        # The checked-in bindings and module graph are reviewed source inputs.
+        # Wails' regeneration/tidy would rewrite them during packaging (and can
+        # change frontend types); keep the archived versions authoritative.
+        & wails build -v 0 -skipbindings -nosyncgomod -m -platform $Platform -ldflags $ldflags 2>&1 | ForEach-Object {
+            $line = [string]$_
+            foreach ($protected in @($values['GOMAPI_OAUTH_CLIENT_ID'], $values['GOMAPI_OAUTH_CLIENT_SECRET'])) {
+                if (-not [string]::IsNullOrEmpty($protected)) { $line = $line.Replace($protected, '[REDACTED]') }
+            }
+            Write-Host $line
+        }
         $rc = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
@@ -240,7 +273,19 @@ try {
     }
     $artifactPath = Join-Path $appDir 'build\bin\go-mapi.exe'
     if (-not (Test-Path -LiteralPath $artifactPath)) { throw "Wails did not produce $artifactPath" }
+    $artifactName = [string]$app.artifact
+    if ($MachineDistribution) {
+        $machinePath = Join-Path $appDir 'build\bin\go-mapi-machine.exe'
+        if (Test-Path -LiteralPath $machinePath) { throw "Remove the previous machine build artifact before rebuilding: $machinePath" }
+        Move-Item -LiteralPath $artifactPath -Destination $machinePath
+        $artifactPath = $machinePath
+        $artifactName = 'go-mapi-machine.exe'
+    }
+    # Binding generation can update checked-in frontend files.  The manifest
+    # must describe the bytes that actually produced the executable, rather
+    # than the pre-build tree if Wails changed a source input along the way.
     $artifactManifest = [ordered]@{
+        schema = 'go-mapi-app-artifacts-v2'
         component = 'app'
         version = $AppVersion
         queueProtocol = $app.queueProtocol
@@ -249,11 +294,20 @@ try {
             minInclusive = [string]$app.requires.minInclusive
         }
         artifact = [ordered]@{
-            filename = [string]$app.artifact
+            filename = $artifactName
             sha256 = Get-SHA256Hex $artifactPath
             peProductVersion = $AppVersion
         }
+        source = [ordered]@{ commit = $sourceCommit }
+        build = [ordered]@{
+            command = if ($MachineDistribution -and $Release -and $UseEnvironmentCredentials) { 'scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials' } elseif ($Release) { 'scripts/build-wails.ps1 -Release' } else { 'scripts/build-wails.ps1' }
+            go = ((& go version) -join ' ').Trim()
+            wails = ((& wails version) -join ' ').Trim()
+            node = ((& node --version) -join ' ').Trim()
+            npm = ((& npm --version) -join ' ').Trim()
+        }
     }
+    if ($MachineDistribution) { $artifactManifest['distribution'] = 'machine' }
     if (-not [string]::IsNullOrWhiteSpace($RequiredInterceptorMax)) {
         $artifactManifest.requires['maxExclusive'] = $RequiredInterceptorMax
     }

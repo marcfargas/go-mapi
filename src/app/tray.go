@@ -148,8 +148,8 @@ func (a *App) onTrayReady() {
 	// The "Download" row only lights up when an update is available (D-03 + REL-04):
 	// clicking it opens the validated download page in the user's browser. It NEVER
 	// launches an installer, quits-and-installs, or replaces the running binary.
-	mDownload := systray.AddMenuItem("Download update", "Open the versioned download page")
-	if !a.snapshotUpdateAvailable() {
+	mDownload := systray.AddMenuItem("Open update", "Open your update channel")
+	if !validUpdateActionURL(a.GetUpdateState()) {
 		mDownload.Hide()
 	}
 
@@ -220,7 +220,8 @@ func (a *App) onTrayReady() {
 				} else {
 					mToggleUpdates.Uncheck()
 				}
-				if snap.UpdateAvailable {
+				if snap.UpdateAvailable && validUpdateActionURL(snap) {
+					mDownload.SetTitle(snap.UpdateActionLabel)
 					mDownload.Show()
 				} else {
 					mDownload.Hide()

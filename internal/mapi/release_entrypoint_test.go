@@ -8,8 +8,8 @@ import (
 )
 
 // These checked-in workflow checks make the component split a release
-// authorization boundary. Only app-v* and admin-v* workflows may have the
-// GitHub permissions or actions that can publish a component release.
+// authorization boundary. Only the app-v* workflow currently publishes;
+// admin-v* is still recognized but fails closed while machine release is gated.
 func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	for _, release := range []struct {
@@ -24,9 +24,22 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			t.Fatalf("read %s: %v", release.path, err)
 		}
 		content := string(workflow)
-		for _, want := range []string{release.tag, "contents: write", "softprops/action-gh-release@v2", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"} {
+		for _, want := range []string{release.tag, "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"} {
 			if !strings.Contains(content, want) {
 				t.Errorf("authoritative workflow %s is missing %q", release.path, want)
+			}
+		}
+		if release.path == "app-release.yml" {
+			for _, want := range []string{"contents: write", "softprops/action-gh-release@v2"} {
+				if !strings.Contains(content, want) {
+					t.Errorf("app release workflow missing %q", want)
+				}
+			}
+		} else {
+			for _, forbidden := range []string{"contents: write", "softprops/action-gh-release", "wingetcreate.exe"} {
+				if strings.Contains(content, forbidden) {
+					t.Errorf("non-publishing machine validation includes %q", forbidden)
+				}
 			}
 		}
 	}

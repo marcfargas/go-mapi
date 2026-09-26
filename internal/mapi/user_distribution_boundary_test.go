@@ -70,14 +70,21 @@ func TestUserReleaseFailsClosedAndPublishesVerifiedArtifacts(t *testing.T) {
 		"microsoft/microsoft-store-apppublisher@v1.1", "winget-create/releases/download/v1.10.3.0/wingetcreate.exe",
 		"WINGET_CREATE_GITHUB_TOKEN", "environment: user-component-release",
 		"github.event_name == 'push' || inputs.publish || inputs.sign",
+		"$publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable'",
+		"$production = '${{ steps.version.outputs.track }}' -eq 'stable'",
 		"prerelease: ${{ steps.version.outputs.track == 'development' }}",
 		"needs.build-sign-verify.outputs.track == 'stable'",
+		"Public app release requires the real Google OAuth credential",
+		"if: github.event_name == 'workflow_dispatch' && !inputs.publish",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Errorf("app release contract missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"build:interceptor", "build:admin:msi", "src/installer/msi", "unsigned fallback"} {
+	for _, forbidden := range []string{
+		"build:interceptor", "build:admin:msi", "src/installer/msi", "unsigned fallback",
+		"if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish)",
+	} {
 		if strings.Contains(workflow, forbidden) {
 			t.Errorf("app release couples to forbidden graph/path %q", forbidden)
 		}

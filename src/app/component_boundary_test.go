@@ -45,6 +45,12 @@ func TestUserComponentHasNoMachineScopeOperations(t *testing.T) {
 			if file == "admin_elevation_windows.go" && (token == "ProgramData" || token == "RunAs") {
 				continue
 			}
+			// The v4 app may inspect the resident service's public status
+			// under ProgramData. The focused test below confines this to
+			// read-only, no-follow opening of the fixed status file.
+			if file == "public_status_windows.go" && token == "ProgramData" {
+				continue
+			}
 			// The standalone app owns exactly one current-user Startup Apps
 			// registration. Keep the generic registry-write ban for every other
 			// app file; the focused assertion below constrains this exception.
@@ -71,6 +77,31 @@ func TestUserComponentHasNoMachineScopeOperations(t *testing.T) {
 			if strings.Contains(strings.ToLower(line), token) {
 				t.Errorf("app command couples to admin component: %s", line)
 			}
+		}
+	}
+}
+
+func TestPublicStatusConsumerStaysReadOnly(t *testing.T) {
+	data, err := os.ReadFile("public_status_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"folderIDProgramData", "status-v2.json", "windows.OPEN_EXISTING", "windows.FILE_SHARE_READ",
+		"windows.FILE_FLAG_OPEN_REPARSE_POINT", "windows.GetSecurityInfo", "mapi.DecodePublicStatusV2",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("read-only public status consumer missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"os.Mkdir", "os.OpenFile", "windows.CreateDirectory", "windows.SetSecurityInfo", "windows.WriteFile",
+		"windows.CREATE_ALWAYS", "windows.OPEN_ALWAYS", "windows.TRUNCATE_EXISTING", "windows.FILE_OPEN_IF",
+		"registry.CreateKey", "registry.SetStringValue", "registry.DeleteKey",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("read-only public status consumer contains mutation surface %q", forbidden)
 		}
 	}
 }
@@ -106,6 +137,24 @@ func TestStandaloneStartupRegistrationStaysPerUserAndLimited(t *testing.T) {
 	for _, forbidden := range []string{"schtasks.exe", "TASK_RUNLEVEL_HIGHEST", "registry.LOCAL_MACHINE", "HKEY_LOCAL_MACHINE"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("startup registration contains machine/elevated token %q", forbidden)
+		}
+	}
+}
+
+func TestMachineStartupRegistrationIsReadOnly(t *testing.T) {
+	data, err := os.ReadFile("startup_machine_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"registry.LOCAL_MACHINE", "registry.QUERY_VALUE", "machineStartupValue"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("machine startup registration missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"registry.CreateKey", "registry.SET_VALUE", "registry.CURRENT_USER", "DeleteValue", "SetStringValue"} {
+		if strings.Contains(content, forbidden) {
+			t.Errorf("machine startup registration contains mutating token %q", forbidden)
 		}
 	}
 }

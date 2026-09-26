@@ -1,48 +1,46 @@
-# go-mapi admin MSI
+# go-mapi machine MSIs
 
-This directory owns the machine-wide interceptor package. It never packages or
-launches the Wails app and never changes the user's Windows Default Apps choice.
-The MSI always activates `go-mapi` as the legacy Simple MAPI provider in both
-the shared HKLM registration uses a `REG_EXPAND_SZ` path containing
-`%ProgramW6432%` and `%PROCESSOR_ARCHITECTURE%`. The MAPI stub expands it in
-the caller process, selecting `AMD64\go-mapi.dll` for x64 callers and
-`x86\go-mapi.dll` for legacy callers.
+`Package.wxs` and `SuitePackage.wxs` define separate, mutually exclusive
+system-only and suite products. `MachinePackage.wxi` supplies their common
+transaction behavior; `SharedMachine.wxs` supplies one interceptor and resident
+service. The suite alone installs the all-users app in Program Files, a common
+Start Menu shortcut, and an HKLM Run entry. Neither product inventories or
+changes per-user packages, settings, queues, or credentials.
 
-`build.ps1` consumes the independently verified interceptor artifact manifest.
-It rejects a missing architecture, hash/PE/version disagreement, development
-version, and (with `-RequireSignedInputs`) unsigned DLLs. The Windows release
-build packages the x64 DTF custom action and creates
-`release/admin/go-mapi-interceptor.msi`.
+Both products require elevated Windows Installer transactions with rollback
+enabled. An immediate guard runs after `InstallValidate`, before the
+auto-update choice, transaction initialization, old-product removal, and
+custom-action journals. It checks machine-context MSI products under the two
+fixed UpgradeCodes. Ordinary repair rejects a foreign product; an initial
+cross-SKU migration needs `GOMAPI_MIGRATE_SKU=1` and an exact foreign removal
+list. A matching existing `AutoUpdateEnabled` DWORD is preserved unless an
+administrator supplies `GOMAPI_AUTO_UPDATE=0` or `1`.
 
-The custom action consumes `legacy-inventory.json`. Cleanup is unconditional on
-install, silent install, repair, and upgrade; there is no cleanup-disable MSI
-property. Before mutation it records the original native and WOW64 active MAPI
-provider in `%ProgramData%\go-mapi\installer-journal\admin-migration-v1.json`.
-Rollback removes partial v4 state and restores an earlier provider only when its
-client key still exists. Exact product paths/names are the deletion boundary.
-The old NSIS uninstaller is never invoked.
+`build.ps1` accepts a `go-mapi-machine-signed-input-v1` manifest containing
+the exact component binaries, versions, architectures, and hashes. Suite
+inputs also require `appBuild` evidence linked to the machine app's
+`app-artifacts.json`: source commit, controlled build invocation, tool
+versions, unsigned hash, and signed binary metadata. The package release
+version is separate from the contained component versions. Use
+`-RequireSignedInputs` for trusted release inputs. The nonpublishing validation
+workflow may build unsigned artifacts for native test only.
+Build from a Git checkout or a source archive whose commit and archive hash
+were verified before extraction. Pass that commit through `-SourceCommit` when
+the archive has no `.git`. `build-wails.ps1` records the commit and finished app
+artifact digest; `build.ps1` checks the app commit against the machine input
+manifest before packaging.
 
-Only after both DLL files and registry views verify does the custom action
-atomically write
-`%ProgramFiles%\go-mapi\interceptor\installed-component-v1.json`. Its schema is
-checked in under `schema/`; the paths are relative to the manifest directory and
-match the app/interceptor version-gate contract.
-
-Windows validation runs:
+On disposable elevated Windows, run the compiled table verifier for each MSI:
 
 ```powershell
-.\src\installer\msi\build.ps1 -Version 4.0.0 -ArtifactDirectory release\interceptor
-.\src\installer\msi\verify.ps1 -MsiPath release\admin\go-mapi-interceptor.msi
-.\src\installer\msi\tests\AdminLifecycle.Tests.ps1 -MsiPath release\admin\go-mapi-interceptor.msi
+.\src\installer\msi\verify.ps1 -SKU system -PackageRelease <system-release> -MsiPath <system.msi>
+.\src\installer\msi\verify.ps1 -SKU suite -PackageRelease <suite-release> -MsiPath <suite.msi>
+.\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 -SystemMsi <system.msi> -SuiteMsi <suite-S1.msi> -NewerSuiteMsi <suite-S2.msi> -LogDirectory <private-log-dir>
 ```
 
-The lifecycle script seeds manual-registration, NSIS, update-staging, stale-file,
-and dual-view fixtures; exercises install, repair, rollback, and uninstall; and
-preserves per-user Wails data. Run it only on a disposable elevated Windows VM.
-
-Public publication is signed-only. The system-component release workflow
-(`admin-release.yml`, retained as an internal filename) signs both DLLs, then the
-MSI, verifies the result, emits immutable release metadata, and generates/submits
-the elevated machine-scope winget manifest. Microsoft Store publication remains
-the independently built user package's workflow; `admin-release.json` is the
-cross-channel coordination record and does not embed that package.
+The lifecycle driver checks manual install, repair, same-SKU upgrade, both
+explicit migration directions, rejection and rollback paths, and final
+uninstall. Exit 3010 is a reboot checkpoint requiring the same guest's postboot
+inspection. Interactive standard-user app, MAPI, ACL, and per-user package
+preservation checks require separate native evidence. Silent service-driven
+suite updates belong to Ticket 247.

@@ -6,6 +6,10 @@ export function CheckForUpdatesNow(arg1) {
   return window['go']['main']['App']['CheckForUpdatesNow'](arg1);
 }
 
+export function OpenUpdateAction() {
+  return window['go']['main']['App']['OpenUpdateAction']();
+}
+
 export function CreateDraftForID(arg1) {
   return window['go']['main']['App']['CreateDraftForID'](arg1);
 }

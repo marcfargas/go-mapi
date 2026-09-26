@@ -21,14 +21,16 @@
 <script lang="ts">
   interface Props {
     latestVersion: string;
+    component?: 'app' | 'system';
     onViewUpdate: () => void;
   }
-  let { latestVersion, onViewUpdate }: Props = $props();
+  let { latestVersion, component = 'app', onViewUpdate }: Props = $props();
 </script>
 
 <section class="banner" aria-label="Update available">
   <span class="msg">
-    Update available — <strong>go-mapi {latestVersion}</strong>
+    {component === 'system' ? 'System component update available' : 'Update available'} —
+    <strong>{component === 'system' ? 'go-mapi system component' : 'go-mapi'} {latestVersion}</strong>
   </span>
   <button type="button" class="view" onclick={onViewUpdate}>
     View update
