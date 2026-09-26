@@ -31,8 +31,18 @@ Ordinary pushes and pull requests run `just check-portable` on Ubuntu and
 `just test-windows` on Windows. `check-portable` runs Go tests and vet for
 internal/app/service, frontend Vitest/Svelte checks, and fake-backend Playwright
 queue/auth tests. Playwright failure reports and traces are retained. The
-Windows native matrix runs `just test-system <x64|x86> <Debug|Release>` for all
-four combinations; that command builds and runs the matching harness and CTest
+Windows service-package tests need an elevated process. Their package fixture
+borrows an existing `go-mapi` SCM registration unchanged, or creates a disabled
+`go-mapi` entry only when the name is absent. It never starts the entry and
+removes only one it created. The fixture enables the test process's
+`SeRestorePrivilege` when needed and restores its previous state so the tests
+exercise the real SYSTEM-owned storage ACL implementation. Forced termination
+can bypass cleanup and leave a disabled `go-mapi` entry; inspect its identity
+before any manual removal. These elevated tests do not prove ordinary-user or
+service-logon authorization.
+
+The Windows native matrix runs `just test-system <x64|x86> <Debug|Release>` for
+all four combinations; that command builds and runs the matching harness and CTest
 suite, and CTest fails if no tests are registered. The Release DLL and harness
 artifacts feed the separate queue integration command above. `just
 prepare-windows -Native -Wails -Packages -Install` prepares pinned Windows
