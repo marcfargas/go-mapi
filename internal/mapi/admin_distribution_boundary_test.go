@@ -288,30 +288,23 @@ func TestAdminReleaseFailsClosedAndDoesNotBuildApp(t *testing.T) {
 	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
 	legacyWorkflow := strings.Split(workflow, "\n  validate-machine-package:")[0]
 	for _, want := range []string{
-		"admin-v*", "AZURE_ARTIFACT_SIGNING_ENDPOINT", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "unsigned publication is forbidden", "-RequireSignedInputs",
-		"environment: artifact-signing", "id-token: write",
-		"verify.ps1 -MsiPath $path -RequireSignature",
-		"ElevationRequirement: elevationRequired", "wingetcreate.exe update", "admin-release.json",
-		"github.event_name == 'push' || inputs.publish || inputs.sign",
+		"tags: ['admin-v*']", "reject-retired-admin-release:", "github.event_name == 'push' || inputs.sku == 'admin'",
+		"This checkout no longer builds the legacy interceptor-only admin release", "exit 1",
+		"environment: artifact-signing", "id-token: write", "AZURE_ARTIFACT_SIGNING_ENDPOINT",
+		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "-RequireSignedInputs",
 	} {
-		if !strings.Contains(workflow, want) && want != "ElevationRequirement: elevationRequired" {
+		if !strings.Contains(workflow, want) {
 			t.Errorf("admin release workflow missing %q", want)
 		}
 	}
-	winget := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "generate-winget.ps1")
-	for _, want := range []string{"InstallerType: msi", "Scope: machine", "ElevationRequirement: elevationRequired", "Get-AuthenticodeSignature"} {
-		if !strings.Contains(winget, want) {
-			t.Errorf("winget generator missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{"build-wails", "npm run build:app", "src/app/build", "go-mapi.exe"} {
+	for _, forbidden := range []string{"build-wails", "npm run build:app", "src/app/build", "go-mapi.exe", "softprops/action-gh-release", "wingetcreate.exe", "release/admin/", "build.ps1 -Version"} {
 		if strings.Contains(legacyWorkflow, forbidden) {
-			t.Errorf("admin release builds or embeds user app via %q", forbidden)
+			t.Errorf("retired admin release can build or publish via %q", forbidden)
 		}
 	}
 }
 
-func TestMachineValidationKeepsLegacyPublicationAndFailsClosed(t *testing.T) {
+func TestMachineValidationRetiresLegacyPublicationAndFailsClosed(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
 	parts := strings.Split(workflow, "\n  validate-machine-package:")
@@ -321,10 +314,10 @@ func TestMachineValidationKeepsLegacyPublicationAndFailsClosed(t *testing.T) {
 	legacy, machine := parts[0], parts[1]
 	for _, want := range []string{
 		"tags: ['admin-v*']", "if: github.event_name == 'push' || inputs.sku == 'admin'",
-		"admin-targets.json", "Publish GitHub admin release",
+		"exit 1",
 	} {
 		if !strings.Contains(legacy, want) {
-			t.Errorf("legacy explicit-repair release lost %q", want)
+			t.Errorf("retired admin release refusal lost %q", want)
 		}
 	}
 	for _, want := range []string{

@@ -130,6 +130,9 @@ if (@(RelatedProducts $systemCode).Count -ne 0 -or @(RelatedProducts $suiteCode)
     (Get-Service go-mapi -ErrorAction SilentlyContinue)) {
     throw 'Cross-SKU lifecycle test requires a clean machine, not an existing go-mapi install'
 }
+if (Get-ScheduledTask -TaskName 'go-mapi Auto Update' -ErrorAction SilentlyContinue) {
+    throw 'Cross-SKU lifecycle test requires no pre-existing legacy task'
+}
 $sentinelDirectory = Join-Path $env:LOCALAPPDATA 'go-mapi'
 New-Item -ItemType Directory -Path $sentinelDirectory -Force | Out-Null
 $sentinel = Join-Path $sentinelDirectory ("migration-sentinel-" + [guid]::NewGuid().ToString('N') + '.txt')
@@ -138,6 +141,7 @@ $legacyTask = 'go-mapi Auto Update'
 $unrelatedTask = 'go-mapi-unrelated-' + [guid]::NewGuid().ToString('N')
 $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'
 $taskTrigger = New-ScheduledTaskTrigger -Daily -At '23:59'
+try {
 Register-ScheduledTask -TaskName $legacyTask -Action $taskAction -Trigger $taskTrigger -Force | Out-Null
 Register-ScheduledTask -TaskName $unrelatedTask -Action $taskAction -Trigger $taskTrigger -Force | Out-Null
 
@@ -229,3 +233,11 @@ Unregister-ScheduledTask -TaskName $unrelatedTask -Confirm:$false
 [pscustomobject]@{ Event = 'CrossSkuLifecyclePass'; SystemToSuite = $true;
     SuiteToSystem = $true; RejectedBothDirections = $true; RollbackBothDirections = $true } |
     ConvertTo-Json -Compress
+} finally {
+    foreach ($task in @($legacyTask,$unrelatedTask)) {
+        if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false
+        }
+    }
+    if (Test-Path -LiteralPath $sentinel) { Remove-Item -LiteralPath $sentinel -Force }
+}

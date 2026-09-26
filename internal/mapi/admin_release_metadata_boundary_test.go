@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// The release workflow must publish plain first-party target metadata while
-// retaining Azure signing and its Windows signature check for the actual MSI.
-func TestAdminReleaseWorkflowPublishesPlainTarget(t *testing.T) {
+// The machine validation workflow generates plain first-party target metadata
+// from the final signed MSI without reviving obsolete admin publication.
+func TestMachineValidationWorkflowBindsPlainTargetToSignedMSI(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestAdminReleaseWorkflowPublishesPlainTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-admin-targets-v1", "admin-targets.json", "maxExclusive = $requires.maxExclusive", "Signed MSI has no complete Authenticode and timestamp proof", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath"} {
+	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-machine-signed-input-v1", "go-mapi-machine-validation-provenance-v1", "signedSha256", "Plain target does not bind exact final machine MSI", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath"} {
 		if !strings.Contains(content, required) {
 			t.Errorf("release workflow missing %q", required)
 		}

@@ -13,6 +13,7 @@ if (-not $RequireSignedInputs) {
 $msiRoot = $PSScriptRoot
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $msiRoot '..\..\..'))
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'release\machine' }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 function Fail([string]$Message) { throw "Machine MSI build failed: $Message" }
 function Get-PeMachine([string]$Path) {
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -92,10 +93,12 @@ if ($SKU -eq 'suite') {
         if ([string]::IsNullOrWhiteSpace($appBuild.build.$tool)) { Fail "suite app $tool build tool version is missing" }
     }
     $appContract = (Get-Content (Join-Path $repoRoot 'components.json') -Raw | ConvertFrom-Json).components.app
+    $appBuildMax = if ($appBuild.requires.PSObject.Properties['maxExclusive']) { [string]$appBuild.requires.PSObject.Properties['maxExclusive'].Value } else { '' }
+    $appContractMax = if ($appContract.requires.PSObject.Properties['maxExclusive']) { [string]$appContract.requires.PSObject.Properties['maxExclusive'].Value } else { '' }
     if ($appBuild.queueProtocol -ne $appContract.queueProtocol -or
         $appBuild.requires.component -ne $appContract.requires.component -or
         $appBuild.requires.minInclusive -ne $appContract.requires.minInclusive -or
-        [string]$appBuild.requires.maxExclusive -ne [string]$appContract.requires.maxExclusive) { Fail 'suite app compatibility declaration differs from source contract' }
+        $appBuildMax -ne $appContractMax) { Fail 'suite app compatibility declaration differs from source contract' }
     $signedVersion = (Get-Item -LiteralPath $componentMap.app.Artifacts.x64).VersionInfo
     if ([string]$signedVersion.ProductVersion -ne $componentMap.app.Version -or
         [string]$signedVersion.FileVersion -ne $componentMap.app.Version) { Fail 'signed suite app PE version differs from source build' }
@@ -120,6 +123,7 @@ $customBinary = Join-Path $msiRoot 'customaction\bin\x64\Release\net48\GoMapi.Ad
 if (-not (Test-Path $customBinary)) { Fail "missing packaged DTF custom action $customBinary" }
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+$intermediateDirectory = (Join-Path $OutputDirectory 'obj') + [IO.Path]::DirectorySeparatorChar
 $project = Join-Path $msiRoot $(if ($SKU -eq 'system') { 'GoMapi.AdminInstaller.wixproj' } else { 'GoMapi.SuiteInstaller.wixproj' })
 $arguments = @('build', $project, '--configuration', 'Release',
     "-p:MsiProductVersion=$($identity.productVersion)", "-p:PackageRelease=$($identity.release)",
@@ -128,7 +132,8 @@ $arguments = @('build', $project, '--configuration', 'Release',
     "-p:ServiceVersion=$($componentMap.service.Version)", "-p:InterceptorVersion=$($componentMap.interceptor.Version)",
     "-p:RequiredAppMin=$requiredAppMin", "-p:RequiredAppMax=$requiredAppMax", "-p:SourceService=$($componentMap.service.Artifacts.x64)",
     "-p:SourceX64=$($componentMap.interceptor.Artifacts.x64)", "-p:SourceX86=$($componentMap.interceptor.Artifacts.x86)",
-    "-p:CustomActionBinary=$customBinary", "-p:OutputName=$([IO.Path]::GetFileNameWithoutExtension($identity.assetName))",
+    "-p:CustomActionBinary=$customBinary", "-p:BaseIntermediateOutputPath=$intermediateDirectory",
+    "-p:OutputName=$([IO.Path]::GetFileNameWithoutExtension($identity.assetName))",
     "-p:OutputPath=$OutputDirectory")
 if ($SKU -eq 'suite') {
     $arguments += "-p:AppVersion=$($componentMap.app.Version)"
@@ -136,6 +141,6 @@ if ($SKU -eq 'suite') {
 }
 dotnet @arguments
 if ($LASTEXITCODE -ne 0) { Fail 'WiX MSI build failed' }
-$msi = Get-ChildItem $OutputDirectory -Filter $identity.assetName -Recurse | Select-Object -First 1
-if (-not $msi) { Fail "WiX build did not produce immutable asset $($identity.assetName)" }
-Write-Host "Built $SKU MSI: $($msi.FullName)"
+$msi = Join-Path $OutputDirectory $identity.assetName
+if (-not (Test-Path -LiteralPath $msi -PathType Leaf)) { Fail "WiX build did not produce immutable asset $($identity.assetName) in $OutputDirectory" }
+Write-Host "Built $SKU MSI: $msi"
