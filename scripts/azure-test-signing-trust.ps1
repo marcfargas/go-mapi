@@ -9,9 +9,14 @@ $ErrorActionPreference = 'Stop'
 $rootUrl = 'https://www.microsoft.com/pkiops/certs/Microsoft%20Identity%20Verification%20TEST%20ONLY%20Root%20Certificate%20Authority%202020.crt'
 $rootHash = '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
 $rootCommonName = 'CN=Microsoft Identity Verification TEST ONLY Root Certificate Authority 2020'
-function SignatureStatus([string]$Path) {
+function SignatureStatus([string]$Path, [string]$Phase) {
+    $name = [IO.Path]::GetFileName($Path)
+    Write-Host "Azure TEST trust $Phase signature check starting: $name"
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    return [ordered]@{ file=[IO.Path]::GetFileName($Path); status=$signature.Status.ToString();
+    $timer.Stop()
+    Write-Host "Azure TEST trust $Phase signature check finished: $name status=$($signature.Status) elapsedMs=$($timer.ElapsedMilliseconds)"
+    return [ordered]@{ file=$name; status=$signature.Status.ToString();
         signerThumbprint=if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint } else { $null };
         timestampThumbprint=if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Thumbprint } else { $null } }
 }
@@ -36,11 +41,16 @@ if ($Mode -eq 'Cleanup') {
     return
 }
 if (-not $SignedFiles -or (Test-Path -LiteralPath $StatePath)) { throw 'Test-root preparation requires signed files and a vacant state path' }
-$baseline = @($SignedFiles | ForEach-Object { SignatureStatus $_ })
+$baseline = @($SignedFiles | ForEach-Object { SignatureStatus $_ 'baseline' })
 $tempCert = Join-Path $env:RUNNER_TEMP ('go-mapi-test-root-' + [Guid]::NewGuid().ToString('N') + '.crt')
 try {
-    Invoke-WebRequest -Uri $rootUrl -OutFile $tempCert
+    Write-Host 'Azure TEST trust pinned Microsoft root download starting (60-second timeout)'
+    $downloadTimer = [Diagnostics.Stopwatch]::StartNew()
+    Invoke-WebRequest -Uri $rootUrl -OutFile $tempCert -TimeoutSec 60
+    $downloadTimer.Stop()
+    Write-Host "Azure TEST trust pinned Microsoft root download finished: elapsedMs=$($downloadTimer.ElapsedMilliseconds)"
     if ((Get-FileHash -LiteralPath $tempCert -Algorithm SHA256).Hash.ToLowerInvariant() -cne $rootHash) { throw 'Official Azure TEST root hash mismatch' }
+    Write-Host 'Azure TEST trust pinned Microsoft root SHA-256 matched'
     $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($tempCert)
     if ($certificate.Subject -cne $certificate.Issuer -or -not $certificate.Subject.Contains($rootCommonName)) { throw 'Unexpected Azure TEST root identity' }
     $storePath = "Cert:\CurrentUser\Root\$($certificate.Thumbprint)"
@@ -53,13 +63,17 @@ try {
     # fails after adding the cert, the job's always() cleanup can still remove it.
     [IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
     if ($shouldImport) {
+        Write-Host 'Azure TEST trust owned CurrentUser Root import starting'
         Import-Certificate -FilePath $tempCert -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
         if (-not (Test-Path -LiteralPath $storePath)) { throw 'Azure TEST root import did not persist' }
         $state.imported = $true
         [IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+        Write-Host 'Azure TEST trust owned CurrentUser Root import finished'
+    } else {
+        Write-Host 'Azure TEST trust root import skipped; preserving existing store state'
     }
     foreach ($file in $SignedFiles) {
-        $status = SignatureStatus $file
+        $status = SignatureStatus $file 'final'
         if ($status.status -ne 'Valid' -or -not $status.signerThumbprint -or -not $status.timestampThumbprint) {
             throw "Azure TEST signature did not validate with explicit runner trust: $file ($($status.status))"
         }
