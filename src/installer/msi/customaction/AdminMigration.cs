@@ -31,6 +31,58 @@ namespace GoMapi.AdminCustomActions
         private const string SuiteUpgradeCode = "{2E050A24-94A2-4FC9-B176-C5CCC1225FE6}";
         private const uint ErrorNoMoreItems = 259;
         private const uint MachineContext = 4;
+        private const uint TokenQuery = 0x0008;
+        private const uint TokenAdjustPrivileges = 0x0020;
+        private const uint SePrivilegeEnabled = 0x0002;
+        private const int ErrorNoToken = 1008;
+        private const int ErrorNotAllAssigned = 1300;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Luid
+        {
+            public uint LowPart;
+            public int HighPart;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TokenPrivileges
+        {
+            public uint PrivilegeCount;
+            public Luid Luid;
+            public uint Attributes;
+        }
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentThread();
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool OpenThreadToken(IntPtr thread, uint access, [MarshalAs(UnmanagedType.Bool)] bool openAsSelf, out IntPtr token);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool LookupPrivilegeValue(string systemName, string name, out Luid luid);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AdjustTokenPrivileges(IntPtr token, [MarshalAs(UnmanagedType.Bool)] bool disableAll,
+            ref TokenPrivileges newState, uint bufferLength, out TokenPrivileges previousState, out uint returnLength);
+
+        [DllImport("advapi32.dll", EntryPoint = "AdjustTokenPrivileges", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool RestoreTokenPrivileges(IntPtr token, [MarshalAs(UnmanagedType.Bool)] bool disableAll,
+            ref TokenPrivileges newState, uint bufferLength, IntPtr previousState, IntPtr returnLength);
 
         [DllImport("msi.dll", EntryPoint = "MsiEnumRelatedProductsW", CharSet = CharSet.Unicode)]
         private static extern uint EnumRelatedProducts(string upgradeCode, uint reserved, uint index, StringBuilder productCode);
@@ -904,7 +956,7 @@ namespace GoMapi.AdminCustomActions
                 security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
                     FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                     PropagationFlags.None, AccessControlType.Allow));
-            Directory.SetAccessControl(path, security);
+            WithRestorePrivilege(() => Directory.SetAccessControl(path, security));
         }
 
         private static void ProtectJournalFile(string path)
@@ -915,7 +967,56 @@ namespace GoMapi.AdminCustomActions
             foreach (var sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
                 security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null),
                     FileSystemRights.FullControl, AccessControlType.Allow));
-            File.SetAccessControl(path, security);
+            WithRestorePrivilege(() => File.SetAccessControl(path, security));
+        }
+
+        // Immediate MSI actions impersonate the installer caller. An elevated
+        // administrator has SeRestorePrivilege, but it is normally disabled;
+        // assigning SYSTEM as owner requires it even when the DACL grants access.
+        private static void WithRestorePrivilege(Action action)
+        {
+            if (WindowsIdentity.GetCurrent().User.IsWellKnown(WellKnownSidType.LocalSystemSid))
+            {
+                action();
+                return;
+            }
+
+            IntPtr token;
+            if (!OpenThreadToken(GetCurrentThread(), TokenQuery | TokenAdjustPrivileges, true, out token))
+            {
+                var error = Marshal.GetLastWin32Error();
+                if (error != ErrorNoToken)
+                    throw new InvalidOperationException("Could not open installer thread token: " + error);
+                if (!OpenProcessToken(GetCurrentProcess(), TokenQuery | TokenAdjustPrivileges, out token))
+                    throw new InvalidOperationException("Could not open installer process token: " + Marshal.GetLastWin32Error());
+            }
+            try
+            {
+                Luid luid;
+                if (!LookupPrivilegeValue(null, "SeRestorePrivilege", out luid))
+                    throw new InvalidOperationException("Could not resolve SeRestorePrivilege: " + Marshal.GetLastWin32Error());
+                var enabled = new TokenPrivileges { PrivilegeCount = 1, Luid = luid, Attributes = SePrivilegeEnabled };
+                TokenPrivileges previous;
+                uint returned;
+                if (!AdjustTokenPrivileges(token, false, ref enabled, (uint)Marshal.SizeOf(typeof(TokenPrivileges)), out previous, out returned))
+                    throw new InvalidOperationException("Could not enable SeRestorePrivilege: " + Marshal.GetLastWin32Error());
+                if (Marshal.GetLastWin32Error() == ErrorNotAllAssigned)
+                    throw new InvalidOperationException("SeRestorePrivilege is not assigned to the installer token");
+                try
+                {
+                    action();
+                }
+                finally
+                {
+                    if (previous.PrivilegeCount != 0 &&
+                        !RestoreTokenPrivileges(token, false, ref previous, 0, IntPtr.Zero, IntPtr.Zero))
+                        throw new InvalidOperationException("Could not restore SeRestorePrivilege: " + Marshal.GetLastWin32Error());
+                }
+            }
+            finally
+            {
+                CloseHandle(token);
+            }
         }
 
         private static void AtomicWriteJson(string path, object value)
