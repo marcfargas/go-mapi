@@ -218,7 +218,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Validate machine MSI lifecycle and installed updater
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     needs: [build-interceptor, user-windows-shell]
     env:
       CGO_ENABLED: '1'

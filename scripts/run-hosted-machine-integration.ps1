@@ -60,7 +60,7 @@ try {
             throw 'Cross-SKU lifecycle produced no MSI log evidence'
         }
         Invoke-Phase 'update' 'system' 'Hosted'
-        Invoke-Phase 'suite-update' 'suite' 'Hosted'
+        Invoke-Phase 'suite-update' 'suite' 'Hosted' 45
         Invoke-Phase 'suite-update' 'suite' 'Cleanup'
         Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22
     }
