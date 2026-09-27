@@ -53,9 +53,23 @@ func effectiveUpdateState(raw UpdateState, channel string, machine publicMachine
 		state.LatestReleaseURL = ""
 		state.UpdateAvailable = false
 		state.InterceptorUpdateAvailable = false
-		if machine.Trusted && (machine.Status.Health == "repair-required" || machine.Status.Code == "repair-required") {
+		s := machine.Status
+		switch {
+		case !machine.Trusted:
+			state.UpdateGuidance = "Machine update status is unavailable. Contact your administrator."
+		case s.Health == "repair-required" || s.Code == "repair-required":
 			state.UpdateGuidance = "The machine installation needs repair. Contact your administrator."
-		} else {
+		case s.Code == "reboot-pending":
+			state.UpdateGuidance = "A restart is required to finish the machine update."
+		case s.Code == "prepared" || s.Code == "handed-off" || s.Code == "still-running":
+			state.UpdateGuidance = "The machine installation is updating. New work is temporarily unavailable."
+		case s.Updates == "disabled":
+			state.UpdateGuidance = "Automatic machine updates are disabled. Contact your administrator for updates."
+		case state.ManagedSystemUpdate:
+			state.UpdateGuidance = "This machine installation is maintained automatically."
+		case s.Capability == "unavailable" || s.Checker == "unavailable" || s.Checker == "offline" || s.Checker == "rejected" || !machine.ServiceRunning:
+			state.UpdateGuidance = "Automatic machine maintenance is unavailable. Contact your administrator."
+		default:
 			state.UpdateGuidance = "This machine installation is maintained by your administrator."
 		}
 	default:

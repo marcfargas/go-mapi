@@ -83,6 +83,7 @@ add_library(go-mapi SHARED
     mapi_impl.cpp
     json_writer.cpp
     fs_utils.cpp
+    suite_activation.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
     $<TARGET_OBJECTS:message_converter_obj>
     $<TARGET_OBJECTS:component_compat_obj>
@@ -112,14 +113,14 @@ target_compile_definitions(go-mapi PRIVATE
 if(MSVC)
     # MSVC specific options
     target_compile_options(go-mapi PRIVATE /W4 /WX-)
-    target_link_libraries(go-mapi PRIVATE kernel32.lib user32.lib shell32.lib)
+    target_link_libraries(go-mapi PRIVATE kernel32.lib user32.lib shell32.lib advapi32.lib)
     set_target_properties(go-mapi PROPERTIES
         LINK_FLAGS "/DEF:\"${CMAKE_CURRENT_SOURCE_DIR}/mapi_exports.def\""
     )
 elseif(MINGW)
     # MinGW specific options
     target_compile_options(go-mapi PRIVATE -Wall -Wextra -Wno-unused-parameter)
-    target_link_libraries(go-mapi PRIVATE kernel32 user32 shell32 -static-libgcc -static-libstdc++)
+    target_link_libraries(go-mapi PRIVATE kernel32 user32 shell32 advapi32 -static-libgcc -static-libstdc++)
     set_target_properties(go-mapi PROPERTIES
         LINK_FLAGS "-Wl,--output-def,${CMAKE_BINARY_DIR}/bin/go-mapi.def -static"
     )

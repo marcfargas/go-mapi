@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
 func TestProductionResidentSchedulePerformsInstalledHealthCheck(t *testing.T) {
@@ -127,5 +131,115 @@ func TestResidentNonterminalReconciliationDoesNotAdvance(t *testing.T) {
 		func(context.Context, PendingV1) (Outcome, error) { return OutcomeStillRunning, nil })
 	if err != nil || outcome != OutcomeStillRunning || retired || loads != 0 {
 		t.Fatalf("in-flight result = %q, retired=%t, loads=%d, err=%v", outcome, retired, loads, err)
+	}
+}
+
+func TestResidentRepairRetirementRequiresPendingAbsenceWithoutSecondPass(t *testing.T) {
+	current := PendingV1{TransactionID: "suite-repair", Phase: PhaseRepairRequired, Result: ResultAmbiguous}
+	for _, remaining := range []bool{false, true} {
+		calls := 0
+		outcome, retired, err := reconcileResidentTerminal(context.Background(), current,
+			func(context.Context) (*PendingV1, error) {
+				if remaining {
+					return &current, nil
+				}
+				return nil, nil
+			},
+			func(context.Context, PendingV1) (Outcome, error) { calls++; return OutcomeRepairRetired, nil })
+		if err != nil || outcome != OutcomeRepairRetired || retired == remaining || calls != 1 {
+			t.Fatalf("remaining=%v outcome=%s retired=%v calls=%d err=%v", remaining, outcome, retired, calls, err)
+		}
+	}
+}
+
+func TestResidentPreparedReconcileClosesEarlierOpenOnCurrentState(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		product string
+		busy    bool
+		want    Outcome
+		open    bool
+	}{
+		{"candidate without exit", "candidate", false, OutcomeOutcomeUnconfirmed, false},
+		{"foreign product", "foreign", false, OutcomeRepairRequired, false},
+		{"old product retired", "old", false, OutcomeRolledBack, false},
+		{"unchanged prepared while server busy", "candidate", true, OutcomeStillRunning, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pending := suiteRepairPending(t, nil)
+			pending.Phase, pending.Result = PhasePrepared, ResultNone
+			pending.Runner, pending.Installer = nil, nil
+			if err := pending.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			store := &memoryPendingStore{pending: &pending}
+			deps := defaultDependencies(t)
+			deps.Pending, deps.Boot = store, fixedBootID("boot-one")
+			product := pending.Candidate
+			switch tc.product {
+			case "old":
+				product = pending.Old
+			case "foreign":
+				product.SKU = update.System
+			}
+			deps.Inventory = &fakeInventory{products: []InstalledProduct{{Snapshot: product}}}
+			deps.Health = fakeHealthProbe{healthy: true}
+			deps.Processes = &fakeProcessProbe{}
+			server := &fakeInstallerServerProbe{}
+			if tc.busy {
+				server.busyOnCall = 1
+			}
+			deps.InstallerServer = server
+			coordinator := mustCoordinator(t, update.Suite, deps)
+			gate, err := os.CreateTemp(t.TempDir(), "admission-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gate.Close()
+			if _, err := writeSuiteByte(gate, 'O'); err != nil {
+				t.Fatal(err)
+			}
+			closes := 0
+			closeGate := func(context.Context) error {
+				closes++
+				_, err := writeSuiteByte(gate, 'C')
+				return err
+			}
+			outcome, retired, prepared, err := reconcileResidentSuitePending(context.Background(), pending,
+				store.Load, store.Load,
+				func(ctx context.Context, _ PendingV1) (Outcome, error) { return coordinator.Reconcile(ctx) }, closeGate)
+			var admission [1]byte
+			if _, readErr := gate.ReadAt(admission[:], 0); readErr != nil {
+				t.Fatal(readErr)
+			}
+			wantByte := byte('C')
+			if tc.open {
+				wantByte = 'O'
+			}
+			if err != nil || outcome != tc.want || admission[0] != wantByte || prepared != tc.open {
+				t.Fatalf("outcome=%s retired=%v prepared=%v admission=%c closes=%d pending=%+v err=%v", outcome, retired, prepared, admission[0], closes, store.pending, err)
+			}
+			if tc.open && closes != 0 || !tc.open && closes != 1 {
+				t.Fatalf("gate closures=%d", closes)
+			}
+			if tc.product == "old" && (!retired || store.pending != nil) {
+				t.Fatalf("old product was not retired: retired=%v pending=%+v", retired, store.pending)
+			}
+		})
+	}
+}
+
+func TestResidentPreparedReconcileUnreadableCurrentStateClosesEarlierOpen(t *testing.T) {
+	pending := suiteRepairPending(t, nil)
+	pending.Phase, pending.Result = PhasePrepared, ResultNone
+	pending.Runner, pending.Installer = nil, nil
+	closed := false
+	_, _, prepared, err := reconcileResidentSuitePending(context.Background(), pending,
+		func(context.Context) (*PendingV1, error) { return &pending, nil },
+		func(context.Context) (*PendingV1, error) { return nil, errors.New("unreadable pending") },
+		func(context.Context, PendingV1) (Outcome, error) { return OutcomeStillRunning, nil },
+		func(context.Context) error { closed = true; return nil })
+	if err == nil || prepared || !closed {
+		t.Fatalf("unreadable state: prepared=%v closed=%v err=%v", prepared, closed, err)
 	}
 }

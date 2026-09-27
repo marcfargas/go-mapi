@@ -5,6 +5,7 @@
     InstallerVersion="500" Compressed="yes">
     <SummaryInformation Description="go-mapi machine system and all-users app" />
     <MediaTemplate EmbedCab="yes" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
     <Feature Id="SuiteProduct" Title="go-mapi suite" Level="1" AllowAbsent="no">
       <ComponentGroupRef Id="InterceptorComponents" />
       <ComponentGroupRef Id="ResidentServiceComponents" />

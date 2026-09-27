@@ -14,6 +14,15 @@ New-Item -ItemType Directory -Force $directory | Out-Null
 $log = Join-Path $directory 'requests.ndjson'
 $selection = Join-Path $directory 'target-selection.json'
 $stop = Join-Path $directory 'stop'
+$caseKeys = @('systemA','systemB','systemC','suiteA','suiteB','suiteC')
+$wrongSkuSystem = if ($manifest.PSObject.Properties['references'] -and $manifest.references.PSObject.Properties['wrongSkuSystem']) {
+    $manifest.references.wrongSkuSystem
+} else { $null }
+if ($wrongSkuSystem -and ($wrongSkuSystem.package.sku -cne 'system' -or
+    (Get-FileHash -LiteralPath $wrongSkuSystem.sourceManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $wrongSkuSystem.sourceManifestSha256 -or
+    (Get-FileHash -LiteralPath $wrongSkuSystem.package.msi -Algorithm SHA256).Hash.ToLowerInvariant() -cne $wrongSkuSystem.package.sha256)) {
+    throw 'Wrong-SKU system fixture reference changed'
+}
 $pendingPath = Join-Path $env:ProgramData 'go-mapi\service\pending-v2.json'
 if (Test-Path -LiteralPath $pendingPath) {
     # At startup the service is delayed; capture the protected pre-reconcile
@@ -40,17 +49,25 @@ try {
         $record = [ordered]@{ atUtc=[DateTime]::UtcNow.ToString('o'); method=$context.Request.HttpMethod; path=$requestPath; status=404 }
         try {
             $path = $null
-            if ($requestPath -eq '/machine/system/targets.json' -and (Test-Path -LiteralPath $selection)) {
+            if ($requestPath -in @('/machine/system/targets.json','/machine/suite/targets.json') -and (Test-Path -LiteralPath $selection)) {
                 $chosen = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
-                if ($chosen.key -in @('systemA','systemB','systemC')) { $path = Join-Path $directory "$($chosen.key)-targets.json" }
-            } elseif ($requestPath -eq '/machine/suite/targets.json') {
-                # The system test never offers a suite target.
-                $path = $null
+                $sku = if ($requestPath -eq '/machine/system/targets.json') { 'system' } else { 'suite' }
+                $key = if ($chosen.PSObject.Properties.Name -contains $sku) { [string]$chosen.$sku } elseif ($sku -eq 'system') { [string]$chosen.key } else { '' }
+                # A deliberately wrong-SKU key is allowed only for an explicit
+                # negative; normal selections cannot cross the SKU boundary.
+                $package = if ($key -eq 'systemB' -and $wrongSkuSystem) { $wrongSkuSystem.package } else { $manifest.packages.$key }
+                if ($key -in $caseKeys -and $package -and
+                    ($package.sku -eq $sku -or $chosen.negativeWrongSku -eq $true)) {
+                    $path = Join-Path $directory "$key-targets.json"
+                }
             } else {
-                foreach ($key in @('systemA','systemB','systemC')) {
+                foreach ($key in $caseKeys) {
                     $package = $manifest.packages.$key
+                    if (-not $package) { continue }
                     $expected = "/releases/download/$($package.identity.tag)/$($package.identity.assetName)"
-                    if ($requestPath -ceq $expected) { $path = $package.msi; break }
+                    if ($requestPath -ceq $expected -and (Get-FileHash -LiteralPath $package.msi -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $package.sha256) {
+                        $path = $package.msi; break
+                    }
                 }
             }
             if ($context.Request.HttpMethod -ne 'GET') { $context.Response.StatusCode = 405; $record.status = 405 }

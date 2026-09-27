@@ -43,6 +43,7 @@ param(
     [string]$StorePackageFamilyName = ''
     ,[string]$AdminReleaseMetadataURL = ''
     ,[string]$SourceCommit = ''
+    ,[string]$OutputDirectory = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -197,90 +198,117 @@ if (-not [string]::IsNullOrWhiteSpace($Aumid)) {
 if (-not [string]::IsNullOrWhiteSpace($AdminReleaseMetadataURL)) { $ldflags += "-X `"main.AdminReleaseMetadataURL=$AdminReleaseMetadataURL`"" }
 $ldflags = $ldflags -join ' '
 
-# 4) CC / CXX override for ARM64 hosts. If the triple-prefixed binaries are on
-# PATH we prefer them explicitly; otherwise leave the env alone (x86_64 hosts
-# with a matching `gcc` in PATH will Just Work).
-$ccCandidate  = Get-Command 'x86_64-w64-mingw32-clang'   -ErrorAction SilentlyContinue
-$cxxCandidate = Get-Command 'x86_64-w64-mingw32-clang++' -ErrorAction SilentlyContinue
-if ($ccCandidate)  { $env:CC  = $ccCandidate.Source }
-if ($cxxCandidate) { $env:CXX = $cxxCandidate.Source }
-
-# 5) Invoke wails build. cd into src/app for wails.json resolution.
-$appDir = Join-Path $ScriptDir '..\src\app'
-$appDir = [System.IO.Path]::GetFullPath($appDir)
+# Existing outputs are owned only when their manifest verifies against their own
+# recorded version, distribution, source and exact bytes. The next build may
+# target a different VERSION or even a newer checkout.
+function Assert-OwnedOutput([string]$Directory) {
+    $manifestPath = Join-Path $Directory 'app-artifacts.json'
+    $existing = @(Get-ChildItem -LiteralPath $Directory -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('go-mapi.exe','go-mapi-machine.exe') })
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        if ($existing.Count -gt 0) { throw "Unowned app executable in $Directory" }
+        return ''
+    }
+    $old = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    $oldName = [string]$old.artifact.filename
+    $oldDistribution = if ($old.PSObject.Properties.Name -contains 'distribution') { [string]$old.distribution } else { 'standalone' }
+    if ($old.schema -cne 'go-mapi-app-artifacts-v2' -or $old.component -cne 'app' -or
+        $old.version -ne $old.artifact.peProductVersion -or [string]::IsNullOrWhiteSpace($old.version) -or
+        $old.source.commit -cnotmatch '^[a-f0-9]{40}$' -or
+        ($oldDistribution -eq 'machine' -and $oldName -cne 'go-mapi-machine.exe') -or
+        ($oldDistribution -eq 'standalone' -and $oldName -cne 'go-mapi.exe') -or
+        $oldDistribution -notin @('standalone','machine') -or
+        $old.build.command -notin @('scripts/build-wails.ps1','scripts/build-wails.ps1 -Release',
+            'scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials') -or
+        $existing.Count -ne 1 -or $existing[0].Name -cne $oldName -or
+        (Get-SHA256Hex $existing[0].FullName) -cne $old.artifact.sha256) {
+        throw "Invalid or unrelated app output in $Directory"
+    }
+    return $oldName
+}
+$appDir = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir '..\src\app'))
+function Get-CanonicalDirectory([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ($full -eq $root) { return $full }
+    return $full.TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar))
+}
+$defaultDir = Get-CanonicalDirectory (Join-Path $appDir 'build\bin')
+$targetDir = if ($OutputDirectory) { Get-CanonicalDirectory $OutputDirectory } else { $defaultDir }
+$targetName = if ($MachineDistribution) { 'go-mapi-machine.exe' } else { 'go-mapi.exe' }
+$oldName = Assert-OwnedOutput $targetDir
+$explicitOutput = $targetDir -ine $defaultDir
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('go-mapi-wails-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage | Out-Null
 $windowsBuildDir = Join-Path $appDir 'build\windows'
 $versionInfoPath = Join-Path $windowsBuildDir 'info.json'
-$hadVersionInfo = Test-Path -LiteralPath $versionInfoPath
-$originalVersionInfo = if ($hadVersionInfo) { [System.IO.File]::ReadAllBytes($versionInfoPath) } else { $null }
-
-# Wails embeds PE metadata from build/windows/info.json, rather than wails.json.
-# Generate it from the component version input for this build so the executable
-# has both FileVersion and ProductVersion resources even in a clean checkout.
-# Windows fixed versions are numeric, whereas the string table may retain a
-# release suffix such as 4.0.0-rc.1.
-$fixedVersion = '0.0.0.0'
-if ($AppVersion -match '^(\d+)\.(\d+)\.(\d+)(?:[.-].*)?$') {
-    $fixedVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
-} elseif ($Release) {
-    throw "Release app version must begin major.minor.patch: $AppVersion"
+$tracked = @($versionInfoPath,
+    (Join-Path $appDir 'build\appicon.png'),
+    (Join-Path $windowsBuildDir 'icon.ico'),
+    (Join-Path $windowsBuildDir 'wails.exe.manifest'))
+$original = @{}
+foreach ($path in $tracked) {
+    $original[$path] = if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::ReadAllBytes($path) } else { $null }
 }
-$versionInfo = [ordered]@{
-    fixed = [ordered]@{ file_version = $fixedVersion; product_version = $fixedVersion }
-    info = [ordered]@{
-        '0000' = [ordered]@{
-            ProductVersion = $AppVersion
-            FileVersion = $AppVersion
-            CompanyName = 'Marc Fargas'
-            FileDescription = 'go-mapi'
-            ProductName = 'go-mapi'
-        }
-    }
+$oldCC = [Environment]::GetEnvironmentVariable('CC')
+$oldCXX = [Environment]::GetEnvironmentVariable('CXX')
+$defaultFiles = @{}
+foreach ($name in @('go-mapi.exe','app-artifacts.json')) {
+    $path = Join-Path $defaultDir $name
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $backup = Join-Path $stage ('default-' + $name)
+        Copy-Item -LiteralPath $path -Destination $backup
+        $defaultFiles[$path] = $backup
+    } else { $defaultFiles[$path] = $null }
 }
-New-Item -ItemType Directory -Force -Path $windowsBuildDir | Out-Null
-$versionInfo | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $versionInfoPath -NoNewline -Encoding ascii
-Push-Location $appDir
+$committed = $false
 try {
-    Write-Host "[build-wails] Platform: $Platform"
-    Write-Host "[build-wails] Version:  $AppVersion"
-    Write-Host "[build-wails] CC:       $(if ($env:CC)  { $env:CC }  else { '(default)' })"
-    Write-Host "[build-wails] CXX:      $(if ($env:CXX) { $env:CXX } else { '(default)' })"
-    Write-Host "[build-wails] ldflags:  (oauth vars set -- values redacted)"
-    # Wails' normal build-options table prints the entire ldflags value,
-    # including the OAuth client secret.  Quiet mode suppresses that table;
-    # redact every remaining output line before it reaches a CI log.  Wails
-    # also emits benign binding diagnostics to stderr, so decide success from
-    # its exit code rather than PowerShell's native-stderr error records.
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    $ccCandidate = Get-Command 'x86_64-w64-mingw32-clang' -ErrorAction SilentlyContinue
+    $cxxCandidate = Get-Command 'x86_64-w64-mingw32-clang++' -ErrorAction SilentlyContinue
+    if ($ccCandidate) { $env:CC = $ccCandidate.Source }
+    if ($cxxCandidate) { $env:CXX = $cxxCandidate.Source }
+    $fixedVersion = '0.0.0.0'
+    if ($AppVersion -match '^(\d+)\.(\d+)\.(\d+)(?:[.-].*)?$') {
+        $fixedVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+    } elseif ($Release) { throw "Release app version must begin major.minor.patch: $AppVersion" }
+    $versionInfo = [ordered]@{
+        fixed = [ordered]@{ file_version = $fixedVersion; product_version = $fixedVersion }
+        info = [ordered]@{ '0000' = [ordered]@{
+            ProductVersion = $AppVersion; FileVersion = $AppVersion; CompanyName = 'Marc Fargas'
+            FileDescription = 'go-mapi'; ProductName = 'go-mapi'
+        } }
+    }
+    New-Item -ItemType Directory -Force -Path $windowsBuildDir, $defaultDir | Out-Null
+    $versionInfo | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $versionInfoPath -NoNewline -Encoding ascii
+    # Require a fresh Wails output, even when an earlier valid pair exists.
+    Remove-Item -LiteralPath (Join-Path $defaultDir 'go-mapi.exe') -Force -ErrorAction SilentlyContinue
+    Push-Location $appDir
     try {
-        # The checked-in bindings and module graph are reviewed source inputs.
-        # Wails' regeneration/tidy would rewrite them during packaging (and can
-        # change frontend types); keep the archived versions authoritative.
-        & wails build -v 0 -skipbindings -nosyncgomod -m -platform $Platform -ldflags $ldflags 2>&1 | ForEach-Object {
-            $line = [string]$_
-            foreach ($protected in @($values['GOMAPI_OAUTH_CLIENT_ID'], $values['GOMAPI_OAUTH_CLIENT_SECRET'])) {
-                if (-not [string]::IsNullOrEmpty($protected)) { $line = $line.Replace($protected, '[REDACTED]') }
+        Write-Host "[build-wails] Platform: $Platform"
+        Write-Host "[build-wails] Version:  $AppVersion"
+        Write-Host "[build-wails] CC:       $(if ($env:CC) { $env:CC } else { '(default)' })"
+        Write-Host "[build-wails] CXX:      $(if ($env:CXX) { $env:CXX } else { '(default)' })"
+        Write-Host '[build-wails] ldflags:  (oauth vars set -- values redacted)'
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & wails build -v 0 -skipbindings -nosyncgomod -m -platform $Platform -ldflags $ldflags 2>&1 | ForEach-Object {
+                $line = [string]$_
+                foreach ($protected in @($values['GOMAPI_OAUTH_CLIENT_ID'], $values['GOMAPI_OAUTH_CLIENT_SECRET'])) {
+                    if (-not [string]::IsNullOrEmpty($protected)) { $line = $line.Replace($protected, '[REDACTED]') }
+                }
+                Write-Host $line
             }
-            Write-Host $line
-        }
-        $rc = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
-    if ($rc -ne 0) {
-        Write-Error "wails build exited with code $rc"
-        exit $rc
-    }
-    $artifactPath = Join-Path $appDir 'build\bin\go-mapi.exe'
-    if (-not (Test-Path -LiteralPath $artifactPath)) { throw "Wails did not produce $artifactPath" }
-    $artifactName = [string]$app.artifact
-    if ($MachineDistribution) {
-        $machinePath = Join-Path $appDir 'build\bin\go-mapi-machine.exe'
-        if (Test-Path -LiteralPath $machinePath) { throw "Remove the previous machine build artifact before rebuilding: $machinePath" }
-        Move-Item -LiteralPath $artifactPath -Destination $machinePath
-        $artifactPath = $machinePath
-        $artifactName = 'go-mapi-machine.exe'
-    }
+            $rc = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $previousErrorActionPreference }
+        if ($rc -ne 0) { throw "wails build exited with code $rc" }
+    } finally { Pop-Location }
+    $built = Join-Path $defaultDir 'go-mapi.exe'
+    if (-not (Test-Path -LiteralPath $built -PathType Leaf)) { throw "Wails did not produce $built" }
+    $stagedExe = Join-Path $stage $targetName
+    Copy-Item -LiteralPath $built -Destination $stagedExe
+    $artifactPath = $stagedExe
+    $artifactName = $targetName
     # Binding generation can update checked-in frontend files.  The manifest
     # must describe the bytes that actually produced the executable, rather
     # than the pre-build tree if Wails changed a source input along the way.
@@ -312,16 +340,50 @@ try {
         $artifactManifest.requires['maxExclusive'] = $RequiredInterceptorMax
     }
     $artifactManifestJson = $artifactManifest | ConvertTo-Json -Depth 8
-    [IO.File]::WriteAllText(
-        (Join-Path $appDir 'build\bin\app-artifacts.json'),
-        $artifactManifestJson,
-        (New-Object System.Text.UTF8Encoding($false))
-    )
-} finally {
-    if ($hadVersionInfo) {
-        [System.IO.File]::WriteAllBytes($versionInfoPath, $originalVersionInfo)
-    } elseif (Test-Path -LiteralPath $versionInfoPath) {
-        Remove-Item -LiteralPath $versionInfoPath -Force
+    $stagedManifest = Join-Path $stage 'app-artifacts.json'
+    [IO.File]::WriteAllText($stagedManifest, $artifactManifestJson, [Text.UTF8Encoding]::new($false))
+    if (-not (Test-Path -LiteralPath $targetDir)) { New-Item -ItemType Directory -Force -Path $targetDir | Out-Null }
+    $targetExe = Join-Path $targetDir $targetName
+    $targetManifest = Join-Path $targetDir 'app-artifacts.json'
+    # Keep a bounded backup until both files have been committed.
+    $restore = @{}
+    foreach ($path in @($targetExe,$targetManifest)) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $backup = Join-Path $stage ('target-' + [IO.Path]::GetFileName($path))
+            Copy-Item -LiteralPath $path -Destination $backup
+            $restore[$path] = $backup
+        } else { $restore[$path] = $null }
     }
-    Pop-Location
+    try {
+        Copy-Item -LiteralPath $stagedExe -Destination $targetExe -Force
+        Copy-Item -LiteralPath $stagedManifest -Destination $targetManifest -Force
+        if ($oldName -and $oldName -cne $targetName) {
+            Remove-Item -LiteralPath (Join-Path $targetDir $oldName) -Force
+        } elseif ($MachineDistribution -and -not $explicitOutput) {
+            # Wails always writes this scratch EXE in the default directory.
+            Remove-Item -LiteralPath $built -Force
+        }
+        $committed = $true
+    } finally {
+        if (-not $committed) {
+            foreach ($path in $restore.Keys) {
+                if ($restore[$path]) { Copy-Item -LiteralPath $restore[$path] -Destination $path -Force }
+                else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+} finally {
+    foreach ($path in $tracked) {
+        if ($null -ne $original[$path]) { [IO.File]::WriteAllBytes($path, $original[$path]) }
+        else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+    }
+    [Environment]::SetEnvironmentVariable('CC', $oldCC)
+    [Environment]::SetEnvironmentVariable('CXX', $oldCXX)
+    if ($explicitOutput -or -not $committed) {
+        foreach ($path in $defaultFiles.Keys) {
+            if ($defaultFiles[$path]) { Copy-Item -LiteralPath $defaultFiles[$path] -Destination $path -Force }
+            else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }

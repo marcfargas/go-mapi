@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
 const RunnerReadySchemaV1 = "go-mapi-runner-ready-v1"
@@ -70,6 +72,16 @@ func fixedInstallerArguments(msiPath, logPath, transactionID string) ([]string, 
 	return []string{"/i", msiPath, "/qn", "/norestart", "/L*V", logPath, "MSIRMSHUTDOWN=0", "GOMAPI_UPDATE_ORIGIN=SERVICE", "GOMAPI_UPDATE_TRANSACTION=" + transactionID}, nil
 }
 
+func fixedSuiteInstallerArguments(msiPath, logPath, transactionID string) ([]string, error) {
+	args, err := fixedInstallerArguments(msiPath, logPath, transactionID)
+	if err != nil {
+		return nil, err
+	}
+	suite := append(args[:6], args[7:]...)
+	suite = append(suite, "MSIRESTARTMANAGERCONTROL=Disable")
+	return suite, nil
+}
+
 type UpdateRunner struct {
 	Pending   PendingStore
 	Ready     RunnerReadyStore
@@ -84,6 +96,8 @@ type UpdateRunner struct {
 	// AuthorizePending rechecks the exact installed product and machine setting
 	// after the installer child is created suspended, before its thread resumes.
 	AuthorizePending func(context.Context, PendingV1) error
+	SuiteQuiesce     func(context.Context, PendingV1) (PendingV1, error)
+	ExpectedSKU      update.SKU
 }
 
 // Run executes one already-authorized transaction. Cancellation is honored
@@ -102,6 +116,9 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	}
 	if pending == nil || pending.Schema != PendingSchemaV2 || pending.TransactionID != transactionID || pending.Phase != PhasePrepared || pending.Runner != nil || pending.Installer != nil || pending.InstallerThread != nil || pending.Exit != nil {
 		return errors.New("update runner transaction is not exclusively prepared")
+	}
+	if runner.ExpectedSKU != "" && pending.SKU != runner.ExpectedSKU {
+		return ErrStateConflict
 	}
 	artifact, err := runner.Artifacts.Resolve(ctx, *pending)
 	if err != nil {
@@ -132,6 +149,19 @@ func (runner UpdateRunner) Run(ctx context.Context, transactionID string) error 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if pending.SKU == update.Suite {
+		if runner.SuiteQuiesce == nil {
+			return errors.New("suite runner lacks app quiescence")
+		}
+		closed, err := runner.SuiteQuiesce(ctx, *pending)
+		if err != nil {
+			return fmt.Errorf("quiesce installed suite apps: %w", err)
+		}
+		if closed.AppDrainDeadline == nil || closed.Runner == nil || *closed.Runner != self || closed.TransactionID != transactionID {
+			return errors.New("suite quiescence did not retain exact runner authorization")
+		}
+		pending = &closed
 	}
 	installer, err := runner.Runtime.StartInstaller(artifact, transactionID)
 	if err != nil {

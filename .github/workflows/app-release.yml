@@ -18,7 +18,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
   actions: read
   id-token: write
 
@@ -53,8 +53,35 @@ jobs:
         run: |
           $version = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' -replace '^app-v','' } else { '${{ inputs.version }}' }
           go run ./internal/mapi/cmd/release-track --github-output $env:GITHUB_OUTPUT -- $version
-          [IO.File]::WriteAllText('src/app/VERSION', $version, [Text.Encoding]::ASCII)
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid app release version' }
+          $publishing = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true'
+          if ($publishing) {
+            $tag = "app-v$version"
+            if ('${{ github.ref_type }}' -cne 'tag' -or '${{ github.ref_name }}' -cne $tag -or
+                '${{ github.repository }}' -cne 'marcfargas/go-mapi' -or
+                ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ inputs.sign }}' -ne 'true')) {
+              throw 'Public app release requires the exact signed app tag'
+            }
+            if ($version -ceq '3.2.0-alpha.1' -and ('${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}' -cne 'https://weu.codesigning.azure.net/' -or
+                '${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}' -cne 'lachispa' -or
+                '${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}' -cne 'lachispa-test')) {
+              throw 'Public development app release requires the reviewed Azure TEST ONLY identity'
+            }
+            if ((Get-Content src/app/VERSION -Raw).Trim() -cne $version) { throw 'Public app source VERSION differs from release tag' }
+            if ((git rev-parse HEAD).Trim().ToLowerInvariant() -cne '${{ github.sha }}' -or
+                (git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Public app checkout differs from clean trigger source' }
+            git fetch --no-tags origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0 -or (git rev-parse 'FETCH_HEAD^{commit}').Trim().ToLowerInvariant() -cne '${{ github.sha }}') { throw 'Public app tag does not peel to the checked-out source commit' }
+            $runs = gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=100" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or @($runs.workflow_runs | Where-Object { $_.head_sha -ceq '${{ github.sha }}' -and $_.conclusion -eq 'success' -and $_.event -eq 'push' }).Count -lt 1) {
+              throw 'No successful full push CI workflow run exists for the exact public app source commit'
+            }
+          } else {
+            [IO.File]::WriteAllText('src/app/VERSION', $version, [Text.Encoding]::ASCII)
+          }
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Fail closed for public or selected signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -80,7 +107,7 @@ jobs:
       - run: npm ci
       - run: just test-user
       - run: just check-user
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - run: just prepare-windows -Wails -Install
       - name: Configure development-channel validation credentials
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         shell: pwsh
@@ -92,10 +119,10 @@ jobs:
         run: just build-user-release
       - name: Build development-channel user-component artifact
         if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish && !inputs.sign)
-        run: just build-user
+        run: just build-user-release
       - name: Verify app artifact metadata before signing
         shell: pwsh
-        run: .\scripts\verify-app-artifact.ps1
+        run: just verify-user-artifact
 
       - name: Authenticate to Azure for Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -117,9 +144,15 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      - name: Install pinned standalone packager
+      - name: Validate development Azure TEST signature with owned runner trust
+        if: steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.sign || inputs.publish) && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
         shell: pwsh
-        run: choco install nsis --version=3.11 -y --no-progress
+        run: |
+          .\scripts\azure-test-signing-trust.ps1 -Mode Prepare -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -SignedFiles @('src/app/build/bin/go-mapi.exe')
+          New-Item -ItemType Directory -Force release/app | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -Destination release/app/test-trust.json
+
+      - run: just prepare-windows -Packages -Install
 
       - name: Build app-only MSIX and standalone installer from the signed EXE
         shell: pwsh
@@ -133,8 +166,10 @@ jobs:
           $identity = if ($production) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
           $publisher = if ($production) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
           $display = if ($production) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
-          .\scripts\build-app-msix.ps1 -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
-          .\scripts\build-app-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+          just package-user-msix -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
+          if ($LASTEXITCODE -ne 0) { throw 'MSIX packaging failed' }
+          just package-user-standalone -Version '${{ steps.version.outputs.version }}'
+          if ($LASTEXITCODE -ne 0) { throw 'standalone packaging failed' }
 
       - name: Sign MSIX and standalone installer with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -156,16 +191,29 @@ jobs:
           $production = '${{ steps.version.outputs.track }}' -eq 'stable' -and ('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true')
           $signed = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true' -or '${{ inputs.sign }}' -eq 'true'
           if ($production -and $signed) {
-            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -RequireSignature
+            just verify-user-distribution -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -AppExePath 'src/app/build/bin/go-mapi.exe' -RequireSignature
           } else {
-            .\scripts\verify-app-distribution.ps1 -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe'
+            just verify-user-distribution -Version '${{ steps.version.outputs.version }}' -MsixPath 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix' -InstallerPath 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe' -AppExePath 'src/app/build/bin/go-mapi.exe'
           }
+          if ($LASTEXITCODE -ne 0) { throw 'user distribution verification failed' }
           if ($signed) {
+            $signatures = @()
             foreach ($path in @('src/app/build/bin/go-mapi.exe', 'release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix', 'release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe')) {
               $signature = Get-AuthenticodeSignature -LiteralPath $path
               if ($signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw "Azure Artifact Signing proof is incomplete: $path" }
+              if (('${{ github.event_name }}' -eq 'push' -or '${{ inputs.publish }}' -eq 'true') -and $signature.Status -ne 'Valid') { throw "Public app signature fails Windows verification: $path ($($signature.Status))" }
+              $signatures += [ordered]@{ file=[IO.Path]::GetFileName($path); sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); status=$signature.Status.ToString(); signerThumbprint=$signature.SignerCertificate.Thumbprint; timestampThumbprint=$signature.TimeStamperCertificate.Thumbprint }
             }
+            $testTrust = if (Test-Path -LiteralPath release/app/test-trust.json) { Get-Content release/app/test-trust.json -Raw | ConvertFrom-Json } else { $null }
+            $evidence = [ordered]@{ schema='go-mapi-app-release-signatures-v1'; repository='${{ github.repository }}'; commit='${{ github.sha }}'; sourceRef='${{ github.ref }}'; workflowRevision='${{ github.workflow_sha }}'; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'; version='${{ steps.version.outputs.version }}'; signatures=$signatures; testTrust=$testTrust; validationContext='Windows hosted runner; Azure TEST ONLY development profile uses pinned owned test-chain fixture when needed' }
+            [IO.File]::WriteAllText('release/app/signatures.json', ($evidence | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
           }
+
+      - name: Copy app build provenance beside final packages
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath src/app/build/bin/app-artifacts.json -PathType Leaf)) { throw 'Missing app build provenance' }
+          Copy-Item -LiteralPath src/app/build/bin/app-artifacts.json -Destination release/app/app-artifacts.json
 
       - name: Render winget manifests for the verified standalone hash
         shell: pwsh
@@ -176,7 +224,7 @@ jobs:
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
           New-Item -ItemType Directory -Force release/winget | Out-Null
           Get-ChildItem distribution/winget/*.yaml.in | ForEach-Object {
-            $target = Join-Path release/winget $_.Name.Replace('.in','')
+            $target = Join-Path release/winget ([IO.Path]::GetFileNameWithoutExtension($_.Name))
             $text = (Get-Content $_.FullName -Raw).Replace('@@VERSION@@',$version).Replace('@@INSTALLER_URL@@',$url).Replace('@@INSTALLER_SHA256@@',$hash)
             [IO.File]::WriteAllText($target, $text, [Text.UTF8Encoding]::new($false))
           }
@@ -188,27 +236,101 @@ jobs:
             release/app/
             release/winget/
 
-      - name: Publish immutable GitHub release assets
-        if: github.event_name == 'push' || inputs.publish
-        uses: softprops/action-gh-release@v2
+      - name: Remove owned Azure TEST runner trust
+        if: always() && steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.sign || inputs.publish) && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
+        shell: pwsh
+        run: .\scripts\azure-test-signing-trust.ps1 -Mode Cleanup -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
+
+  publish-app-release:
+    needs: build-sign-verify
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.build-sign-verify.outputs.version }}
+      TRACK: ${{ needs.build-sign-verify.outputs.track }}
+    steps:
+      - uses: actions/checkout@v4
         with:
-          tag_name: app-v${{ steps.version.outputs.version }}
-          name: User component ${{ steps.version.outputs.version }}
-          body: |
-            Development-channel validation release.
-            Artifacts are signed by the configured Azure Artifact Signing profile.
-            Beta artifacts may use the Azure TEST ONLY certificate and are not a stable production release.
-          prerelease: ${{ steps.version.outputs.track == 'development' }}
-          make_latest: ${{ steps.version.outputs.track == 'stable' }}
-          fail_on_unmatched_files: true
-          files: |
-            release/app/go-mapi-${{ steps.version.outputs.version }}-x64.msix
-            release/app/go-mapi-user-${{ steps.version.outputs.version }}-x64.exe
-            release/app/app-distribution.json
-            release/winget/*.yaml
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-user-${{ needs.build-sign-verify.outputs.version }}
+          path: release
+      - name: Check exact public app bundle and vacant release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="app-v$VERSION"
+          test "${{ github.ref_name }}" = "$tag"
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          test "$(cat src/app/VERSION)" = "$VERSION"
+          git fetch --no-tags origin "refs/tags/$tag"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '${{ github.sha }}'
+          if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
+            echo "Release $tag already exists; immutable assets cannot be replaced" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('release/app')
+          v = os.environ['VERSION']
+          msix, installer = f'go-mapi-{v}-x64.msix', f'go-mapi-user-{v}-x64.exe'
+          def digest(name): return hashlib.sha256((root/name).read_bytes()).hexdigest()
+          distribution = json.loads((root/'app-distribution.json').read_text())
+          signatures = json.loads((root/'signatures.json').read_text())
+          build = json.loads((root/'app-artifacts.json').read_text())
+          assert distribution['version'] == v and distribution['provenance']['commit'] == '${{ github.sha }}'
+          assert distribution['msix']['file'] == msix and distribution['msix']['sha256'] == digest(msix)
+          assert distribution['standalone']['file'] == installer and distribution['standalone']['sha256'] == digest(installer)
+          assert signatures['commit'] == '${{ github.sha }}' and signatures['sourceRef'] == 'refs/tags/app-v' + v
+          assert str(signatures['runId']) == '${{ github.run_id }}' and str(signatures['runAttempt']) == '${{ github.run_attempt }}'
+          assert build['source']['commit'] == '${{ github.sha }}' and build['version'] == v
+          proof = {s['file']: s for s in signatures['signatures']}
+          assert len(proof) == 3 and all(s['status'] == 'Valid' and s['signerThumbprint'] and s['timestampThumbprint'] for s in proof.values())
+          assert proof[msix]['sha256'] == digest(msix) and proof[installer]['sha256'] == digest(installer)
+          if os.environ['TRACK'] == 'development':
+              assert signatures['testTrust']['schema'] == 'go-mapi-azure-test-root-fixture-v1'
+              assert signatures['testTrust']['certificateSha256'] == '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
+              assert signatures['testTrust']['store'] == 'LocalMachine/Root' and len(signatures['testTrust']['baseline']) == 1
+          winget = sorted(Path('release/winget').glob('*.yaml'))
+          assert len(winget) == 3
+          installer_manifest = Path('release/winget/MarcFargas.go-mapi.installer.yaml').read_text()
+          assert digest(installer).upper() in installer_manifest.upper()
+          assert f'https://github.com/marcfargas/go-mapi/releases/download/app-v{v}/{installer}' in installer_manifest
+          PY
+      - name: Create immutable GitHub app release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$TRACK" = development ]; then
+            cat > "$RUNNER_TEMP/release-notes.txt" <<'EOF'
+          Experimental 3.2 development user component. Signed with Azure Artifact Signing TEST ONLY profile.
+          Default Windows trust, installation, and automatic update acceptance are not established.
+          Metadata remains unpublished; automatic update checks are not live for this release.
+          EOF
+            flags=(--prerelease --latest=false)
+          else
+            printf '%s\n' 'Stable user component release.' > "$RUNNER_TEMP/release-notes.txt"
+            flags=(--latest)
+          fi
+          gh release create "app-v$VERSION" "release/app/go-mapi-$VERSION-x64.msix" "release/app/go-mapi-user-$VERSION-x64.exe" release/app/app-distribution.json release/app/app-artifacts.json release/app/signatures.json release/winget/*.yaml --repo '${{ github.repository }}' --verify-tag "${flags[@]}" --title "User component $VERSION" --notes-file "$RUNNER_TEMP/release-notes.txt"
+      - name: Verify downloaded public app bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/downloaded"
+          gh release download "app-v$VERSION" --repo '${{ github.repository }}' --dir "$RUNNER_TEMP/downloaded"
+          for file in release/app/go-mapi-"$VERSION"-x64.msix release/app/go-mapi-user-"$VERSION"-x64.exe release/app/app-distribution.json release/app/app-artifacts.json release/app/signatures.json release/winget/*.yaml; do
+            cmp "$file" "$RUNNER_TEMP/downloaded/${file##*/}"
+          done
 
   submit-winget:
-    needs: build-sign-verify
+    needs: [build-sign-verify, publish-app-release]
     if: (github.event_name == 'push' || inputs.publish) && needs.build-sign-verify.outputs.track == 'stable'
     runs-on: windows-latest
     environment: user-component-release
@@ -223,7 +345,7 @@ jobs:
           .\wingetcreate.exe update MarcFargas.go-mapi --urls "https://github.com/${{ github.repository }}/releases/download/app-v${{ needs.build-sign-verify.outputs.version }}/go-mapi-user-${{ needs.build-sign-verify.outputs.version }}-x64.exe" --version '${{ needs.build-sign-verify.outputs.version }}' --submit --no-open
 
   submit-store:
-    needs: build-sign-verify
+    needs: [build-sign-verify, publish-app-release]
     if: (github.event_name == 'push' || inputs.publish) && needs.build-sign-verify.outputs.track == 'stable'
     runs-on: windows-latest
     environment: user-component-release

@@ -92,6 +92,7 @@ func (WindowsDetachedProcessSpawner) SpawnDetached(path, transactionID string) (
 
 type WindowsRunnerRuntime struct {
 	storage *ProtectedStorage
+	suite   bool
 }
 
 func (WindowsRunnerRuntime) SelfIdentity() (ProcessIdentity, error) {
@@ -127,10 +128,20 @@ func (runtime WindowsRunnerRuntime) StartInstaller(msi, transactionID string) (I
 	// This is the complete privileged argument surface. Neither release
 	// metadata nor a caller can add properties, URLs, transforms, or paths.
 	arguments, err := fixedInstallerArguments(msi, logPath, transactionID)
+	if runtime.suite {
+		arguments, err = fixedSuiteInstallerArguments(msi, logPath, transactionID)
+	}
 	if err != nil {
 		return nil, err
 	}
-	command := quoteWindowsArgument(msiexec) + " " + arguments[0] + " " + quoteWindowsArgument(arguments[1]) + " " + arguments[2] + " " + arguments[3] + " " + arguments[4] + " " + quoteWindowsArgument(arguments[5]) + " " + arguments[6] + " " + arguments[7] + " " + arguments[8]
+	words := []string{quoteWindowsArgument(msiexec)}
+	for index, arg := range arguments {
+		if index == 1 || index == 5 {
+			arg = quoteWindowsArgument(arg)
+		}
+		words = append(words, arg)
+	}
+	command := strings.Join(words, " ")
 	commandLine, err := windows.UTF16PtrFromString(command)
 	if err != nil {
 		return nil, err
@@ -323,7 +334,7 @@ func RecoverAuthorizedInstaller(stateStorage *ProtectedStorage) error {
 	if err != nil {
 		return err
 	}
-	pending, err := store.Load(context.Background())
+	pending, err := store.LoadBounded(context.Background())
 	if err != nil || pending == nil {
 		return err
 	}
@@ -357,6 +368,33 @@ func RecoverAuthorizedInstaller(stateStorage *ProtectedStorage) error {
 	if !equalWindowsPath(windows.UTF16ToString(image[:imageLength]), filepath.Join(system32, "msiexec.exe")) {
 		return errors.New("authorized installer image changed")
 	}
+	var admission *SuiteAdmission
+	if pending.SKU == update.Suite {
+		if pending.AppDrainDeadline == nil {
+			return errors.New("authorized suite installer lacks prior drain deadline")
+		}
+		programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+		if err != nil {
+			return err
+		}
+		paths, err := NewProgramDataPaths(programData)
+		if err != nil {
+			return err
+		}
+		statusStorage, err := NewPublicStatusStorage(paths.Status)
+		if err != nil {
+			return err
+		}
+		admission, err = NewSuiteAdmission(statusStorage)
+		if err != nil {
+			return err
+		}
+		closed, _, err := closeSuiteForPending(context.Background(), admission, store, *pending)
+		if err != nil {
+			return err
+		}
+		pending = &closed
+	}
 	thread, err := windows.OpenThread(windows.THREAD_QUERY_LIMITED_INFORMATION|windows.THREAD_SUSPEND_RESUME|windows.SYNCHRONIZE, false, pending.InstallerThread.PID)
 	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
 		// The exact process is still open, but its initial thread has exited.
@@ -377,6 +415,15 @@ func RecoverAuthorizedInstaller(stateStorage *ProtectedStorage) error {
 	ownerPID, _, callErr := getProcessIDOfThread.Call(uintptr(thread))
 	if ownerPID == 0 || uint32(ownerPID) != pending.Installer.PID {
 		return fmt.Errorf("authorized installer thread owner mismatch: %w", callErr)
+	}
+	if pending.SKU == update.Suite {
+		graceEnd, forceEnd := suiteDrainBounds(time.Now(), *pending.AppDrainDeadline)
+		if err := drainSuiteProcesses(context.Background(), graceEnd, forceEnd); err != nil {
+			return err
+		}
+		if err := confirmSuiteBeforeResume(context.Background(), admission, *pending, forceEnd); err != nil {
+			return err
+		}
 	}
 	previous, err := windows.ResumeThread(thread)
 	if err != nil {
@@ -426,6 +473,21 @@ func RunProductionUpdateRunner(transactionID string) error {
 	if err != nil {
 		return err
 	}
+	statusStorage, err := NewPublicStatusStorage(paths.Status)
+	if err != nil {
+		return err
+	}
+	admission, err := NewSuiteAdmission(statusStorage)
+	if err != nil {
+		return err
+	}
+	var forceEnd time.Time
+	authorize := func(ctx context.Context, p PendingV1) error {
+		if err := authorizePendingMachineInstaller(ctx, p); err != nil {
+			return err
+		}
+		return confirmSuiteBeforeResume(ctx, admission, p, forceEnd)
+	}
 	ready, err := NewFileRunnerReadyStore(stateStorage)
 	if err != nil {
 		return err
@@ -434,10 +496,18 @@ func RunProductionUpdateRunner(transactionID string) error {
 	if err != nil {
 		return err
 	}
-	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: ProductionInstallerVerifier{}, VerifyIdentity: verifyStagedMSIIdentity, Runtime: WindowsRunnerRuntime{storage: updateStorage}, Clock: systemClock{}, AuthorizePending: authorizePendingMachineInstaller}).Run(context.Background(), transactionID)
+	transaction, err := pending.Load(context.Background())
+	if err != nil {
+		return err
+	}
+	if transaction == nil || transaction.TransactionID != transactionID {
+		return ErrStateConflict
+	}
+	runtime := WindowsRunnerRuntime{storage: updateStorage, suite: transaction.SKU == update.Suite}
+	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: ProductionInstallerVerifier{}, VerifyIdentity: verifyStagedMSIIdentity, Runtime: runtime, Clock: systemClock{}, AuthorizePending: authorize, SuiteQuiesce: suiteQuiescer(admission, pending, &forceEnd), ExpectedSKU: transaction.SKU}).Run(context.Background(), transactionID)
 }
 
-func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedStorage) (*DetachedRunnerLauncher, error) {
+func NewProductionDetachedRunnerLauncher(sku update.SKU, stateStorage, updateStorage *ProtectedStorage) (*DetachedRunnerLauncher, error) {
 	ready, err := NewFileRunnerReadyStore(stateStorage)
 	if err != nil {
 		return nil, err
@@ -446,7 +516,11 @@ func NewProductionDetachedRunnerLauncher(stateStorage, updateStorage *ProtectedS
 	if err != nil {
 		return nil, err
 	}
-	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: 30 * time.Second}, executable)
+	timeout := 30 * time.Second
+	if sku == update.Suite {
+		timeout = 75 * time.Second
+	}
+	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: timeout}, executable)
 	if err != nil {
 		return nil, err
 	}

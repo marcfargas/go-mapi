@@ -19,6 +19,7 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Config = "Debug",
     [switch]$Tests,
+    [switch]$RunTests,
     [switch]$Clean,
     [string]$Version,
     # `-Config Release` controls compiler optimisation; it is also useful for
@@ -28,6 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($RunTests) { $Tests = $true }
 
 function Test-CanonicalSemVer([string]$Value) {
     if ($Value -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { return $false }
@@ -186,6 +188,10 @@ Write-Host "Building..."
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Build failed"
     exit 1
+}
+if ($RunTests) {
+    & ctest --test-dir $buildDir --output-on-failure --build-config $Config --no-tests=error
+    if ($LASTEXITCODE -ne 0) { throw "CTest failed with exit code $LASTEXITCODE" }
 }
 
 Write-Host ""

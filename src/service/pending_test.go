@@ -82,3 +82,57 @@ func validPending(now time.Time) PendingV1 {
 		Attempt:        1,
 	}
 }
+
+func TestPendingSuiteDrainDeadlineIsDurableAndSystemCannotUseIt(t *testing.T) {
+	now := time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC)
+	pending := validPending(now)
+	deadline := now.Add(30 * time.Second)
+	pending.Runner = &ProcessIdentity{PID: 41, CreatedAtUnixNano: 1001}
+	pending.AppDrainDeadline = &deadline
+	if _, err := MarshalPending(pending); err == nil {
+		t.Fatal("system transaction accepted suite drain deadline")
+	}
+	pending.SKU = update.Suite
+	pending.Old.SKU = update.Suite
+	pending.Old.Contained["app"] = "4.0.1"
+	pending.Candidate.SKU = update.Suite
+	pending.Candidate.Contained["app"] = "4.0.2"
+	pending.Replay.Namespace = string(update.Suite)
+	data, err := MarshalPending(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalPending(data)
+	if err != nil || got.AppDrainDeadline == nil || !got.AppDrainDeadline.Equal(deadline) {
+		t.Fatalf("deadline roundtrip=%#v err=%v", got.AppDrainDeadline, err)
+	}
+	tooLate := now.Add(32 * time.Second)
+	pending.AppDrainDeadline = &tooLate
+	if _, err := MarshalPending(pending); err == nil {
+		t.Fatal("accepted new grace outside absolute initial bound")
+	}
+}
+
+func TestSuitePreparedRetryRetainsOriginalDrainDeadlineWithoutRunner(t *testing.T) {
+	now := time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC)
+	pending := validPending(now)
+	pending.SKU = update.Suite
+	pending.Old.SKU = update.Suite
+	pending.Old.Contained["app"] = "4.0.1"
+	pending.Candidate.SKU = update.Suite
+	pending.Candidate.Contained["app"] = "4.0.2"
+	pending.Replay.Namespace = string(update.Suite)
+	original := now.Add(30 * time.Second)
+	retry := now.Add(10 * time.Minute)
+	pending.AppDrainDeadline = &original
+	pending.RetryDeadline = &retry
+	pending.Attempt = 2
+	pending.UpdatedAt = now.Add(2 * time.Minute)
+	if _, err := MarshalPending(pending); err != nil {
+		t.Fatalf("lost prior deadline during retry: %v", err)
+	}
+	pending.Attempt = 1
+	if _, err := MarshalPending(pending); err == nil {
+		t.Fatal("accepted anonymous first attempt with drain deadline")
+	}
+}

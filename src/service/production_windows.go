@@ -49,6 +49,10 @@ func NewProductionResidentSchedule() (Schedule, error) {
 	if err != nil {
 		return nil, err
 	}
+	admission, err := NewSuiteAdmission(statusStorage)
+	if err != nil {
+		return nil, err
+	}
 	pendingStore, err := NewFileStateStore(stateStorage)
 	if err != nil {
 		return nil, err
@@ -117,7 +121,8 @@ func NewProductionResidentSchedule() (Schedule, error) {
 			LastResult: string(currentStatus.LastResult), LastResultAt: currentStatus.LastResultAt,
 			Capability: "unavailable", Checker: checkerResult, UpdatedAt: currentStatus.UpdatedAt, HealthObservedAt: healthObservedAt,
 		}
-		if len(engines) != 0 {
+		if len(engines) != 0 && currentStatus.Health == "healthy" &&
+			(currentStatus.Code == EventPending || currentStatus.Code == EventCommitted || currentStatus.Code == EventRolledBack) {
 			statusV2.Capability = "discovery"
 			if coordinators[currentStatus.SKU] != nil {
 				statusV2.Capability = "automatic"
@@ -136,7 +141,11 @@ func NewProductionResidentSchedule() (Schedule, error) {
 	}
 	healthCheck := func(ctx context.Context) (checkErr error) {
 		status := residentStatus{Updates: "unknown", Code: EventRepairNeeded, Health: "repair-required", UpdatedAt: time.Now().UTC()}
+		preparedOnly := false
 		defer func() {
+			if err := closeUnhealthySuiteAdmission(ctx, admission, preparedOnly, status.Health); err != nil {
+				checkErr = errors.Join(checkErr, err)
+			}
 			statusMu.Lock()
 			currentStatus = status
 			if status.Health == "healthy" {
@@ -147,6 +156,13 @@ func NewProductionResidentSchedule() (Schedule, error) {
 				checkErr = errors.Join(checkErr, fmt.Errorf("publish resident status: %w", err))
 			}
 		}()
+		// Classify the merely-prepared exception even if recovery fails before
+		// the normal pending read. Unreadable state must close an earlier O.
+		initialPending, err := pendingStore.LoadBounded(ctx)
+		if err != nil {
+			return fmt.Errorf("load pending transaction: %w", err)
+		}
+		preparedOnly = merelyPreparedSuitePending(initialPending)
 		// A replacement service may inherit a durably authorized suspended
 		// installer. Finish that exact thread before observing product health.
 		if err := RecoverAuthorizedInstaller(stateStorage); err != nil {
@@ -166,16 +182,19 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		if last != nil {
 			status.LastResult, status.LastResultAt = last.Result, last.FinishedAt
 		}
-		pending, err := pendingStore.Load(ctx)
+		pending, err := pendingStore.LoadBounded(ctx)
 		if err != nil {
+			preparedOnly = false
 			return fmt.Errorf("load pending transaction: %w", err)
 		}
+		preparedOnly = merelyPreparedSuitePending(pending)
 		if pending != nil {
 			status.SKU = pending.SKU
-			outcome, retired, err := reconcileResidentTerminal(ctx, *pending, pendingStore.Load,
+			outcome, retired, currentPrepared, err := reconcileResidentSuitePending(ctx, *pending, pendingStore.Load, pendingStore.LoadBounded,
 				func(ctx context.Context, transaction PendingV1) (Outcome, error) {
-					return reconcileProductionPending(ctx, inventory, pendingStore, replayStore, lastResultStore, stateStorage, updateStorage, transaction)
-				})
+					return reconcileProductionPending(ctx, inventory, pendingStore, replayStore, lastResultStore, stateStorage, updateStorage, admission, transaction)
+				}, admission.Close)
+			preparedOnly = currentPrepared
 			if err != nil {
 				return fmt.Errorf("reconcile resident transaction: %w", err)
 			}
@@ -209,6 +228,11 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		if err := verifyProductionInstalledHealth(ctx, snapshot, registration, marker); err != nil {
 			return err
 		}
+		if snapshot.SKU == update.Suite {
+			if err := openHealthySuite(ctx, admission, pendingStore, stateStorage, inventory, snapshot); err != nil {
+				return err
+			}
+		}
 		status.ServiceVersion = marker.ServiceVersion
 		status.InterceptorVersion = marker.InterceptorVersion
 		status.AppVersion = marker.AppVersion
@@ -231,9 +255,17 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		if observeErr == nil {
 			snapshot, observeErr = installedProductSnapshot(registration, marker)
 		}
-		pending, pendingErr := pendingStore.Load(ctx)
+		pending, pendingErr := pendingStore.LoadBounded(ctx)
+		admissionOpen := true
+		if snapshot.SKU == update.Suite {
+			var gateErr error
+			admissionOpen, gateErr = admission.IsOpen(ctx)
+			if gateErr != nil {
+				admissionOpen = false
+			}
+		}
 		statusMu.Lock()
-		changed := observeErr != nil || pendingErr != nil || pending != nil || currentStatus.SKU != snapshot.SKU ||
+		changed := observeErr != nil || pendingErr != nil || pending != nil || !admissionOpen || currentStatus.Health != "healthy" || currentStatus.SKU != snapshot.SKU ||
 			currentStatus.PackageVersion != snapshot.PackageVersion || currentStatus.ServiceVersion != marker.ServiceVersion ||
 			currentStatus.InterceptorVersion != marker.InterceptorVersion || currentStatus.AppVersion != marker.AppVersion
 		statusMu.Unlock()
@@ -411,6 +443,16 @@ func NewProductionResidentSchedule() (Schedule, error) {
 	return residentManagedSchedule(healthCheck, discoveryCheck, installCheck, heartbeat), nil
 }
 
+func closeUnhealthySuiteAdmission(ctx context.Context, admission *SuiteAdmission, merelyPrepared bool, health string) error {
+	if health == "healthy" || merelyPrepared {
+		return nil
+	}
+	if err := admission.Close(context.WithoutCancel(ctx)); err != nil {
+		return fmt.Errorf("close unhealthy suite admission: %w", err)
+	}
+	return nil
+}
+
 func observeMachineForUpdate(ctx context.Context, inventory InstallerInventory) (ProductSnapshot, bool, error) {
 	enabled, err := readMachineAutoUpdate()
 	if err != nil {
@@ -442,7 +484,7 @@ func (productionTransactionIDs) NewID() string {
 func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage *ProtectedStorage,
 	pending *FileStateStore, replay *FileReplayStore, lastResult *FileLastResultStore,
 	inventory InstallerInventory) (*Coordinator, error) {
-	launcher, err := NewProductionDetachedRunnerLauncher(stateStorage, updateStorage)
+	launcher, err := NewProductionDetachedRunnerLauncher(sku, stateStorage, updateStorage)
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +552,7 @@ func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage
 	})
 }
 
-func reconcileProductionPending(ctx context.Context, inventory InstallerInventory, pending PendingStore, replay ReplayStore, lastResult LastResultStore, stateStorage, updateStorage *ProtectedStorage, transaction PendingV1) (Outcome, error) {
+func reconcileProductionPending(ctx context.Context, inventory InstallerInventory, pending PendingStore, replay ReplayStore, lastResult LastResultStore, stateStorage, updateStorage *ProtectedStorage, admission *SuiteAdmission, transaction PendingV1) (Outcome, error) {
 	products := productInventoryFunc(func(ctx context.Context) ([]InstalledProduct, error) {
 		reg, err := inventory.Installed(ctx)
 		if err != nil {
@@ -550,8 +592,24 @@ func reconcileProductionPending(ctx context.Context, inventory InstallerInventor
 		Replay: replay, LastResult: lastResult, Events: discardEvents{}, Clock: wallClock{},
 		Boot: WindowsBootIdentity{},
 	}
+	if transaction.SKU == update.Suite {
+		stateFile, ok := pending.(*FileStateStore)
+		resultFile, okResult := lastResult.(*FileLastResultStore)
+		if ok && okResult {
+			deps.RecoveryLock = func() (func(), error) {
+				lock, err := tryOwnRunnerLock(stateStorage)
+				if err != nil {
+					return nil, err
+				}
+				return func() { _ = lock.Close() }, nil
+			}
+			deps.RetireRepair = func(ctx context.Context, expected PendingV1, observed ProductSnapshot) error {
+				return retireProvedSuiteRepair(ctx, admission, stateFile, resultFile, expected, observed)
+			}
+		}
+	}
 	if transaction.Schema == PendingSchemaV2 && transaction.Phase == PhasePrepared && transaction.Attempt > 1 && transaction.RetryDeadline != nil && time.Now().UTC().Before(*transaction.RetryDeadline) {
-		launcher, err := NewProductionDetachedRunnerLauncher(stateStorage, updateStorage)
+		launcher, err := NewProductionDetachedRunnerLauncher(transaction.SKU, stateStorage, updateStorage)
 		if err != nil {
 			return "", err
 		}

@@ -270,7 +270,7 @@ func TestInstalledAdminManifestMatchesVersionGateContract(t *testing.T) {
 	customAction := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
 	for _, want := range []string{
 		"go-mapi-installed-interceptor-v1", "queue-v1", "minInclusive", "peProductVersion",
-        `x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256", "GoMapiComponentVersion",
+		`x86\go-mapi.dll`, `AMD64\go-mapi.dll`, "sha256", "GoMapiComponentVersion",
 	} {
 		if !strings.Contains(schema, want) && !strings.Contains(customAction, want) {
 			t.Errorf("installed component contract missing %q", want)
@@ -309,9 +309,13 @@ func TestMachineValidationRetiresLegacyPublicationAndFailsClosed(t *testing.T) {
 	workflow := readAdminContractFile(t, repoRoot, ".github", "workflows", "admin-release.yml")
 	parts := strings.Split(workflow, "\n  validate-machine-package:")
 	if len(parts) != 2 {
-		t.Fatal("expected one separate non-publishing machine validation job")
+		t.Fatal("expected one separate machine build and validation job")
 	}
-	legacy, machine := parts[0], parts[1]
+	publishing := strings.Split(parts[1], "\n  publish-machine-release:")
+	if len(publishing) != 2 {
+		t.Fatal("expected one separate machine publication job")
+	}
+	legacy, machine, publisher := parts[0], publishing[0], publishing[1]
 	for _, want := range []string{
 		"tags: ['admin-v*']", "if: github.event_name == 'push' || inputs.sku == 'admin'",
 		"exit 1",
@@ -321,12 +325,12 @@ func TestMachineValidationRetiresLegacyPublicationAndFailsClosed(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"inputs.sku != 'admin'", "inputs.publish", "Machine publication remains gated",
+		"inputs.sku != 'admin'", "inputs.publish", "Public machine release requires the exact signed 3.2 development tag",
 		"go run ./internal/mapi/cmd/machine-package", "go-mapi-machine-signed-input-v1",
 		"src/service/VERSION", "src/interceptor/interceptor-version.txt",
-		"src/app/VERSION", "inputs.sku == 'suite'", "-MachineDistribution",
+		"src/app/VERSION", "inputs.sku == 'suite'", "just build-user-machine",
 		"azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82",
-		"-RequireSignedInputs", "verify.ps1 -MsiPath $path -SKU $sku",
+		"-RequireSignedInputs", "just $verifyRecipe -MsiPath $path",
 		"go-mapi-machine-validation-provenance-v1", "publishable=$false",
 		"unsignedSha256", "signedSha256", "productCode=$identity.productCode",
 		"productVersion=$identity.productVersion", "upgradeCode=$contract.upgradeCode",
@@ -337,7 +341,12 @@ func TestMachineValidationRetiresLegacyPublicationAndFailsClosed(t *testing.T) {
 	}
 	for _, forbidden := range []string{"softprops/action-gh-release", "wingetcreate.exe", "ADMIN_RELEASE_TARGETS_PRIVATE_KEY_PEM_B64"} {
 		if strings.Contains(machine, forbidden) {
-			t.Errorf("non-publishing machine validation must not contain %q", forbidden)
+			t.Errorf("machine builder must not contain %q", forbidden)
+		}
+	}
+	for _, want := range []string{"contents: write", "actions/download-artifact@v4", "already exists; immutable assets cannot be replaced", "--verify-tag", "gh release create", "cmp \"$file\""} {
+		if !strings.Contains(strings.ToLower(publisher), strings.ToLower(want)) {
+			t.Errorf("separate machine publisher is missing %q", want)
 		}
 	}
 }

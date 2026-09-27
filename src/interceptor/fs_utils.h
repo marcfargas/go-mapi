@@ -41,6 +41,10 @@ public:
     static bool WriteMissingAppWarning(AppPresenceStatus status);
     static bool RemoveMissingAppWarning();
 
+    // Best-effort activation after a successful queue publication. Only the
+    // protected installed suite DLL can launch the fixed suite app.
+    static bool ActivateSuiteAppAfterPublication();
+
     static std::wstring GetComponentMismatchWarningPath();
     static bool WriteComponentMismatchWarning(const std::string& interceptorVersion,
                                               const std::string& architecture,
