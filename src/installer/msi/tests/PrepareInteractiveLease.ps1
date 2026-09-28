@@ -54,11 +54,16 @@ if ($Mode -eq 'Verify' -and -not $feature.Installed) {
 
 Write-Output "LEASE_OS=$($os.Caption) VERSION=$($os.Version) BUILD=$($os.BuildNumber)"
 Write-Output "DOTNET_RELEASE=$netRelease RDSH_INSTALLED=$($feature.Installed) DESKTOP_SESSIONS=$($desktop.Count)"
-& change.exe user /query
+$modeOutput = @(& change.exe user /query)
+$modeOutput | Write-Output
 $changeUserExit = $LASTEXITCODE
 Write-Output "RDS_MODE_QUERY_EXIT=$changeUserExit"
-if ($feature.Installed -and $changeUserExit -ne 0) {
-    throw 'RDS install/execute mode query failed.'
+if ($feature.Installed) {
+    # Server 2022 can report a valid mode while change.exe exits 1.
+    $recognizedMode = @($modeOutput | Where-Object { $_ -match '^Application (EXECUTE|INSTALL) mode is enabled\.' }).Count -eq 1
+    if ($changeUserExit -notin @(0, 1) -or -not $recognizedMode) {
+        throw 'RDS install/execute mode query did not report a recognized mode.'
+    }
 }
 if ($Mode -eq 'Verify') {
     Write-Output 'RDSH_READY'
