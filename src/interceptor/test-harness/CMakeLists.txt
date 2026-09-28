@@ -22,6 +22,11 @@ add_executable(go-mapi-test-harness
 
 add_dependencies(go-mapi-test-harness go-mapi)
 
+# Manual installed-state probe: dispatch through the Windows system mapi32 stub.
+# Deliberately absent from CTest, which runs without an installed provider.
+add_executable(installed_mapi_probe src/installed_mapi_probe.cpp)
+target_include_directories(installed_mapi_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
 # Include directories (interceptor is now parent directory)
 target_include_directories(go-mapi-test-harness PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/.."
@@ -31,13 +36,20 @@ target_include_directories(go-mapi-test-harness PRIVATE
 if(MSVC)
     target_compile_options(go-mapi-test-harness PRIVATE /W4 /WX-)
     target_link_libraries(go-mapi-test-harness PRIVATE kernel32.lib user32.lib shell32.lib)
+    target_compile_options(installed_mapi_probe PRIVATE /W4)
 elseif(MINGW)
     target_compile_options(go-mapi-test-harness PRIVATE -Wall -Wextra -Wno-unused-parameter)
     target_link_libraries(go-mapi-test-harness PRIVATE kernel32 user32 shell32 -static-libgcc -static-libstdc++)
     target_link_options(go-mapi-test-harness PRIVATE -static)
+    target_compile_options(installed_mapi_probe PRIVATE -Wall -Wextra)
+    target_link_libraries(installed_mapi_probe PRIVATE -static-libgcc -static-libstdc++)
+    target_link_options(installed_mapi_probe PRIVATE -static)
 endif()
 
 # Set output directory
 set_target_properties(go-mapi-test-harness PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+set_target_properties(installed_mapi_probe PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )

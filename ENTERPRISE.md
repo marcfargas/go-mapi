@@ -52,7 +52,12 @@ To suppress SmartScreen warnings for managed deployments:
 A future signed release will replace this section with verification
 guidance (Authenticode chain, `Get-AuthenticodeSignature` snippet).
 
-## Install modes
+## Legacy combined-installer install modes
+
+This section describes the legacy combined installer. For current system,
+suite, and per-user packages, see the [package matrix](README.md#install).
+The Clients\\Mail provider registration below is for Simple MAPI; it does
+not register a MAILTO link handler in Windows Default Apps.
 
 ### All Users (the only mode)
 
@@ -72,7 +77,7 @@ Registry footprint:
 - `HKLM\SOFTWARE\WOW6432Node\Clients\Mail\go-mapi` (32-bit MAPI registration)
 - `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\go-mapi` (Add/Remove Programs)
 
-The installer backs up the previous default mail client name to
+The installer backs up the previous Simple MAPI provider name to
 `%ProgramData%\go-mapi\uninst\previous-mail-client.json` and restores it on
 uninstall.
 

@@ -15,8 +15,6 @@
   import {
     fetchSettingsState,
     saveSettings,
-    openDefaultAppsSettings,
-    dismissDefaultAppsPrompt,
     fetchStartupState,
     setAutostartEnabled,
     openStartupSettings,
@@ -86,7 +84,6 @@
   let componentHealth = $state<ComponentHealth | null>(null);
   let adminInstallState = $state<AdminInstallState | null>(null);
   let settingsIssue = $state<{ kind: string; message: string; path: string } | null>(null);
-  let showDefaultAppsGuidance = $state(false);
   let startupState = $state<StartupState | null>(null);
   let preferencesOpen = $state(false);
   let startupReadError = $state<string | null>(null);
@@ -127,12 +124,11 @@
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
     const loadedSettings = (initialSettings as {
-      settings: { mode: string; default_apps_prompted: boolean };
+      settings: { mode: string };
       issue?: { kind: string; message: string; path: string };
     });
     settingsIssue = loadedSettings.issue ?? null;
     mode = (loadedSettings.settings.mode === 'auto-draft' ? 'auto-draft' : 'manual');
-    showDefaultAppsGuidance = !loadedSettings.settings.default_apps_prompted;
     paused = initialPaused as boolean;
     updateState = initialUpdate as UpdateState | null;
     componentHealth = initialHealth as ComponentHealth | null;
@@ -310,17 +306,6 @@
     }
   }
 
-  async function handleDefaultApps() {
-    await openDefaultAppsSettings();
-    await dismissDefaultAppsPrompt();
-    showDefaultAppsGuidance = false;
-  }
-
-  async function dismissDefaultApps() {
-    await dismissDefaultAppsPrompt();
-    showDefaultAppsGuidance = false;
-  }
-
   async function readStartupState() {
     if (startupReadPending) return;
     startupReadPending = true;
@@ -456,14 +441,10 @@
   </section>
 {/if}
 
-{#if showDefaultAppsGuidance}
-  <section class="component-health" aria-label="Default mail app guidance">
-    <h2>Make go-mapi your default mail app</h2>
-    <p>Windows controls this choice. Open Default Apps, select go-mapi for supported mail links, then return here.</p>
-    <button type="button" onclick={handleDefaultApps}>Open Default Apps</button>
-    <button type="button" onclick={dismissDefaultApps}>Not now</button>
-  </section>
-{/if}
+<details class="email-guidance">
+  <summary>Email with Send To</summary>
+  <p>Use Windows “Send to → Mail recipient” or an app that supports Simple MAPI to create Gmail drafts. You need the go-mapi system component and the running go-mapi app, signed in to Gmail. A suite installation includes both; installing only the user app does not install the system component. If the system component is missing or incompatible, use the installation or repair guidance shown in this app. go-mapi does not currently handle mailto links and does not register a MAILTO handler in Windows Default Apps. Drafts are never sent automatically.</p>
+</details>
 
 <section class="startup-preferences" aria-label="Startup preferences">
   <button type="button" class="startup-preferences__toggle" aria-expanded={preferencesOpen} aria-controls="startup-preferences-content" onclick={() => { preferencesOpen = !preferencesOpen; }}>Preferences</button>

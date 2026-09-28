@@ -15,8 +15,6 @@ vi.mock('../wailsjs/go/main/App', () => ({
   GetSettings: vi.fn().mockResolvedValue({ mode: 'manual', update_checks_enabled: true }),
   GetSettingsState: vi.fn().mockResolvedValue({ settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true } }),
   SaveSettings: vi.fn().mockResolvedValue(undefined),
-  OpenDefaultAppsSettings: vi.fn().mockResolvedValue(undefined),
-  DismissDefaultAppsPrompt: vi.fn().mockResolvedValue(undefined),
   GetStartupState: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
   SetAutostartEnabled: vi.fn(),
   OpenStartupSettings: vi.fn(),
@@ -52,8 +50,6 @@ vi.mock('../wailsjs/runtime/runtime', () => ({
 vi.mock('./lib/settings', () => ({
   fetchSettingsState: vi.fn().mockResolvedValue({ settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true } }),
   saveSettings: vi.fn().mockResolvedValue(undefined),
-  openDefaultAppsSettings: vi.fn().mockResolvedValue(undefined),
-  dismissDefaultAppsPrompt: vi.fn().mockResolvedValue(undefined),
   fetchStartupState: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
   setAutostartEnabled: vi.fn().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' }),
   openStartupSettings: vi.fn().mockResolvedValue(undefined),
@@ -108,7 +104,7 @@ vi.mock('./lib/auth', () => ({
 
 import { render, fireEvent, screen, waitFor, within } from '@testing-library/svelte';
 import App from './App.svelte';
-import { fetchSettingsState, setMode, openDefaultAppsSettings, dismissDefaultAppsPrompt, fetchStartupState, setAutostartEnabled, saveSettings, openStartupSettings, fetchUpdateState } from './lib/settings';
+import { fetchSettingsState, saveSettings, setMode, fetchStartupState, setAutostartEnabled, openStartupSettings, fetchUpdateState } from './lib/settings';
 import { fetchQueue, subscribeQueue } from './lib/queue';
 import { fetchAuthStatus } from './lib/auth';
 import { GetAdminInstallState, GetComponentHealth, OpenUpdateAction, StartAdminRepair } from '../wailsjs/go/main/App';
@@ -181,14 +177,32 @@ describe('App.svelte — smoke', () => {
     expect(queryByText(/mode: manual/i)).not.toBeInTheDocument();
   });
 
-  it('offers Windows Default Apps guidance and records the choice', async () => {
+  it.each([false, true, undefined])('keeps Send To guidance reachable with legacy dismissal %s', async (dismissed) => {
     vi.mocked(fetchSettingsState).mockResolvedValueOnce({
-      settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: false, update_checks_enabled: true },
+      settings: { mode: 'auto-draft', autostart_enabled: false, default_apps_prompted: dismissed, update_checks_enabled: false },
     } as never);
-    const { findByRole } = render(App);
-    await fireEvent.click(await findByRole('button', { name: /open default apps/i }));
-    expect(openDefaultAppsSettings).toHaveBeenCalledOnce();
-    expect(dismissDefaultAppsPrompt).toHaveBeenCalledOnce();
+    const { findByText, queryByRole } = render(App);
+    const summary = await findByText('Email with Send To');
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    await fireEvent.click(summary);
+    expect(summary.closest('details')).toHaveAttribute('open');
+    expect(summary.closest('details')).toHaveTextContent(/system component.*running go-mapi app.*mailto links.*never sent automatically/i);
+    expect(queryByRole('button', { name: /open default apps/i })).not.toBeInTheDocument();
+    await fireEvent.click(summary);
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(setMode).not.toHaveBeenCalled();
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+    expect(StartAdminRepair).not.toHaveBeenCalled();
+  });
+
+  it('shows Send To guidance when settings fail to load and the component is missing', async () => {
+    vi.mocked(fetchSettingsState).mockRejectedValueOnce(new Error('settings unavailable'));
+    vi.mocked(GetComponentHealth).mockResolvedValueOnce({ healthy: false, issues: [{ code: 'missing', component: 'interceptor', action: 'install', message: 'System component missing' }] } as never);
+    const { findByText } = render(App);
+    expect((await findByText('Email with Send To')).closest('details')).toBeInTheDocument();
+    expect(await findByText(/System component missing/i)).toBeInTheDocument();
+    expect(saveSettings).not.toHaveBeenCalled();
   });
 
   it('shows an actionable startup warning and repairs it on request', async () => {

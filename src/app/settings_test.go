@@ -13,7 +13,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Run(map[bool]string{true: "enabled", false: "disabled"}[enabled], func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("GOMAPI_APPDATA_DIR", dir)
-			want := AppSettings{Mode: "auto-draft", AutostartEnabled: enabled}
+   want := AppSettings{Mode: "auto-draft", AutostartEnabled: enabled}
 			if err := saveSettings(want); err != nil {
 				t.Fatalf("saveSettings: %v", err)
 			}
@@ -22,7 +22,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 				t.Fatalf("loadSettings issue: %+v", result.Issue)
 			}
 			got := result.Settings
-			if got.Mode != want.Mode || got.AutostartEnabled != want.AutostartEnabled {
+   if got.Mode != want.Mode || got.AutostartEnabled != want.AutostartEnabled {
 				t.Errorf("round-trip mismatch: got %+v, want %+v", got, want)
 			}
 		})

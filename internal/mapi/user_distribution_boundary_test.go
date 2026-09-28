@@ -92,13 +92,19 @@ func TestUserReleaseFailsClosedAndPublishesVerifiedArtifacts(t *testing.T) {
 	}
 }
 
-func TestDefaultAppsGuidanceNeverWritesUserChoice(t *testing.T) {
-	source := readDistributionFile(t, "src/app/default_apps_windows.go")
-	if !strings.Contains(source, `browser.OpenURL("ms-settings:defaultapps")`) {
-		t.Error("app must open the Windows-owned Default Apps page")
-	}
-	if strings.Contains(source, "registry.") || strings.Contains(source, "SetStringValue") {
-		t.Error("default-app guidance must not write or impersonate Windows UserChoice")
+func TestCurrentPackagesDoNotRegisterMailtoOrChangeUserChoice(t *testing.T) {
+	for _, relative := range []string{
+		"src/app/packaging/msix/AppxManifest.xml.in",
+		"src/app/packaging/standalone/go-mapi-user.nsi",
+		"src/installer/msi/SharedMachine.wxs",
+		"src/installer/msi/SuiteUser.wxs",
+	} {
+		source := readDistributionFile(t, relative)
+		for _, forbidden := range []string{"UserChoice", "MAILTO", "mailto:", "windows.protocol", "RegisteredApplications"} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s unexpectedly contains association operation %q", relative, forbidden)
+			}
+		}
 	}
 }
 
