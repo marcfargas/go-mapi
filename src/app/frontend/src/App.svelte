@@ -88,6 +88,19 @@
   let settingsIssue = $state<{ kind: string; message: string; path: string } | null>(null);
   let showDefaultAppsGuidance = $state(false);
   let startupState = $state<StartupState | null>(null);
+  let preferencesOpen = $state(false);
+  let startupReadError = $state<string | null>(null);
+  let startupWriteError = $state<string | null>(null);
+  let startupOpenError = $state<string | null>(null);
+  let settingsRepairError = $state<string | null>(null);
+  let startupPending = $state(false);
+  let startupReadPending = $state(false);
+  let settingsRepairPending = $state(false);
+  const canFixStartup = $derived(
+    !settingsIssue && !settingsRepairPending && !!startupState?.requested && !!startupState.warning &&
+    (startupState.backend === 'standalone' && ['missing', 'mismatched', 'disabled', 'error'].includes(startupState.effective) ||
+      startupState.backend === 'msix' && ['disabled', 'error'].includes(startupState.effective))
+  );
 
   // Collect all unsub functions for cleanup
   const unsubs: Array<() => void> = [];
@@ -107,7 +120,7 @@
         fetchUpdateState().catch(() => null),
         GetComponentHealth().catch(() => null),
         GetAdminInstallState().catch(() => null),
-        fetchStartupState().catch(() => ({ backend: 'unknown', requested: true, registered: false, effective: 'error', warning: 'Windows startup state could not be read.' })),
+        fetchStartupState().catch(() => null),
       ]);
 
     auth = initialAuth as AuthStatus;
@@ -124,7 +137,8 @@
     updateState = initialUpdate as UpdateState | null;
     componentHealth = initialHealth as ComponentHealth | null;
     adminInstallState = initialAdminInstall as AdminInstallState | null;
-    startupState = initialStartup as StartupState;
+    startupState = initialStartup as StartupState | null;
+    if (!startupState) startupReadError = 'Windows startup state could not be read.';
 
     // Subscribe to queue updates — prune stale state entries on each update.
     unsubs.push(subscribeQueue(
@@ -275,14 +289,25 @@
   }
 
   async function repairSettingsAsManual() {
-    await saveSettings({
-      mode: 'manual',
-      autostart_enabled: true,
-      default_apps_prompted: false,
-      update_checks_enabled: true,
-    });
-    mode = 'manual';
-    settingsIssue = null;
+    if (!settingsIssue || settingsRepairPending || startupPending || startupReadPending) return;
+    settingsRepairPending = true;
+    settingsRepairError = null;
+    try {
+      await saveSettings({
+        mode: 'manual',
+        autostart_enabled: true,
+        default_apps_prompted: false,
+        update_checks_enabled: true,
+      });
+      mode = 'manual';
+      settingsIssue = null;
+      startupState = null;
+      await readStartupState();
+    } catch (error) {
+      settingsRepairError = `Settings repair failed: ${String(error)}`;
+    } finally {
+      settingsRepairPending = false;
+    }
   }
 
   async function handleDefaultApps() {
@@ -296,12 +321,47 @@
     showDefaultAppsGuidance = false;
   }
 
-  async function handleAutostartChange(enabled: boolean) {
-    startupState = await setAutostartEnabled(enabled);
+  async function readStartupState() {
+    if (startupReadPending) return;
+    startupReadPending = true;
+    try {
+      startupState = await fetchStartupState();
+      startupReadError = null;
+    } catch {
+      startupState = null;
+      startupReadError = 'Windows startup state could not be read.';
+    } finally {
+      startupReadPending = false;
+    }
   }
 
-  async function repairStartup() {
-    startupState = await setAutostartEnabled(true);
+  async function writeStartup(enabled: boolean) {
+    if (settingsIssue || settingsRepairPending || startupReadPending || startupPending || !startupState) return;
+    startupPending = true;
+    try {
+      startupState = await setAutostartEnabled(enabled);
+      startupWriteError = null;
+    } catch (error) {
+      startupWriteError = `Startup preference could not be saved: ${String(error)}`;
+    } finally {
+      startupPending = false;
+    }
+  }
+
+  function handleAutostartChange(event: Event) {
+    const checkbox = event.currentTarget as HTMLInputElement;
+    const enabled = checkbox.checked;
+    checkbox.checked = startupState?.requested ?? false;
+    void writeStartup(enabled);
+  }
+
+  async function openStartupApps() {
+    try {
+      await openStartupSettings();
+      startupOpenError = null;
+    } catch (error) {
+      startupOpenError = `Startup Apps could not be opened: ${String(error)}`;
+    }
   }
 
   // Auth flow handlers — unchanged from Phase 8.
@@ -391,7 +451,8 @@
     <h2>Settings need repair</h2>
     <p>{settingsIssue.message}</p>
     <p><code>{settingsIssue.path}</code></p>
-    <button type="button" onclick={repairSettingsAsManual}>Repair and use manual mode</button>
+    {#if settingsRepairError}<p>{settingsRepairError}</p>{/if}
+    <button type="button" onclick={repairSettingsAsManual} disabled={settingsRepairPending}>Repair and use manual mode</button>
   </section>
 {/if}
 
@@ -404,24 +465,39 @@
   </section>
 {/if}
 
-{#if startupState && !settingsIssue}
-  <section class="component-health" aria-label="Startup preference">
-    <label>
-      <input
-        type="checkbox"
-        checked={startupState.requested}
-        onchange={(event) => handleAutostartChange(event.currentTarget.checked)}
-      />
-      Start go-mapi when I sign in
-    </label>
-    <p>Windows status: {startupState.effective} ({startupState.backend})</p>
-    {#if startupState.warning}
-      <div role="alert">
-        <p>{startupState.warning}</p>
-        {#if startupState.requested && startupState.effective !== 'disabledbyuser' && startupState.effective !== 'disabledbypolicy'}<button type="button" onclick={repairStartup}>Fix startup</button>{/if}
-        <button type="button" onclick={openStartupSettings}>Open Startup Apps</button>
-      </div>
+<section class="startup-preferences" aria-label="Startup preferences">
+  <button type="button" class="startup-preferences__toggle" aria-expanded={preferencesOpen} aria-controls="startup-preferences-content" onclick={() => { preferencesOpen = !preferencesOpen; }}>Preferences</button>
+  <div id="startup-preferences-content">
+    {#if preferencesOpen}
+      {#if startupState}
+        <label>
+          <input type="checkbox" checked={startupState.requested} disabled={!!settingsIssue || settingsRepairPending || startupReadPending || startupPending} onchange={handleAutostartChange} />
+          Start go-mapi when I sign in
+        </label>
+        <p>Windows status: {startupState.effective} ({startupState.backend})</p>
+      {:else}
+        <p>Startup status is unavailable. Editing is paused until it can be read.</p>
+      {/if}
+      {#if settingsIssue || settingsRepairPending}<p>Repair settings before changing startup preferences.</p>{/if}
     {/if}
+  </div>
+</section>
+
+{#if startupState?.warning || startupReadError || startupWriteError || startupOpenError}
+  <section class="component-health" role="alert" aria-label="Startup warning">
+    <h2>Startup needs attention</h2>
+    {#if startupState?.warning}<p>{startupState.warning}</p>{/if}
+    {#if startupReadError}<p>{startupReadError}</p>{/if}
+    {#if startupWriteError}<p>{startupWriteError}</p>{/if}
+    {#if startupOpenError}<p>{startupOpenError}</p>{/if}
+    {#if settingsIssue || settingsRepairPending}
+      <p>Repair settings first, then review startup status.</p>
+    {:else if startupState?.warning && !startupState.requested}
+      <p>Startup is off by your choice. Review Preferences or Windows Startup Apps to resolve this warning.</p>
+    {/if}
+    {#if canFixStartup}<button type="button" onclick={() => { void writeStartup(true); }} disabled={startupPending}>Fix startup</button>{/if}
+    {#if startupReadError}<button type="button" onclick={() => { void readStartupState(); }} disabled={startupReadPending || settingsRepairPending}>Retry startup status</button>{/if}
+    <button type="button" onclick={openStartupApps}>Open Startup Apps</button>
   </section>
 {/if}
 

@@ -96,16 +96,19 @@ vi.mock('./lib/queue', () => ({
 // Mock auth module
 vi.mock('./lib/auth', () => ({
   fetchAuthStatus: vi.fn().mockResolvedValue({ authenticated: false }),
-  subscribeAuth: vi.fn(() => () => {}),
+  subscribeAuth: vi.fn((cb: (s: unknown) => void) => {
+    eventHandlers['auth-changed'] = [cb as (...args: unknown[]) => void];
+    return () => { eventHandlers['auth-changed'] = []; };
+  }),
   hasSeenPreAuthExplainer: vi.fn().mockReturnValue(false),
   markPreAuthExplainerSeen: vi.fn(),
   signIn: vi.fn(),
   signOut: vi.fn(),
 }));
 
-import { render, fireEvent } from '@testing-library/svelte';
+import { render, fireEvent, screen, waitFor, within } from '@testing-library/svelte';
 import App from './App.svelte';
-import { fetchSettingsState, setMode, openDefaultAppsSettings, dismissDefaultAppsPrompt, fetchStartupState, setAutostartEnabled } from './lib/settings';
+import { fetchSettingsState, setMode, openDefaultAppsSettings, dismissDefaultAppsPrompt, fetchStartupState, setAutostartEnabled, saveSettings, openStartupSettings, fetchUpdateState } from './lib/settings';
 import { fetchQueue, subscribeQueue } from './lib/queue';
 import { fetchAuthStatus } from './lib/auth';
 import { GetAdminInstallState, GetComponentHealth, OpenUpdateAction, StartAdminRepair } from '../wailsjs/go/main/App';
@@ -113,6 +116,16 @@ import { GetAdminInstallState, GetComponentHealth, OpenUpdateAction, StartAdminR
 beforeEach(() => {
   // Reset all event handler maps between tests to prevent cross-test bleed.
   Object.keys(eventHandlers).forEach((k) => { eventHandlers[k] = []; });
+  vi.mocked(fetchAuthStatus).mockReset().mockResolvedValue({ authenticated: false });
+  vi.mocked(fetchQueue).mockReset().mockResolvedValue([]);
+  vi.mocked(fetchSettingsState).mockReset().mockResolvedValue({ settings: { mode: 'manual', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true } } as never);
+  vi.mocked(fetchStartupState).mockReset().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' });
+  vi.mocked(setAutostartEnabled).mockReset().mockResolvedValue({ backend: 'standalone', requested: true, registered: true, effective: 'enabled' });
+  vi.mocked(saveSettings).mockReset().mockResolvedValue(undefined);
+  vi.mocked(openStartupSettings).mockReset().mockResolvedValue(undefined);
+  vi.mocked(fetchUpdateState).mockReset().mockResolvedValue({ currentVersion: '3.0.0', latestVersion: '', latestReleaseUrl: '', installerUrl: '', updateAvailable: false, lastCheckedAt: '', enabled: true });
+  vi.mocked(GetComponentHealth).mockReset().mockResolvedValue({ healthy: true, issues: [] });
+  vi.mocked(GetAdminInstallState).mockReset().mockResolvedValue({ phase: 'healthy', retryable: false });
 });
 
 afterEach(() => {
@@ -184,10 +197,191 @@ describe('App.svelte — smoke', () => {
       effective: 'disabled', warning: 'Windows has disabled go-mapi startup.',
     } as never);
     const { findByRole } = render(App);
-    const alert = await findByRole('alert');
+    const alert = await findByRole('alert', { name: /startup warning/i });
     expect(alert).toHaveTextContent(/Windows has disabled go-mapi startup/i);
     await fireEvent.click(await findByRole('button', { name: /fix startup/i }));
     expect(setAutostartEnabled).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('App.svelte — startup preferences', () => {
+  const state = (backend: string, requested: boolean, effective: string, warning?: string) =>
+    ({ backend, requested, registered: effective === 'enabled', effective, ...(warning ? { warning } : {}) });
+
+  it.each([
+    ['standalone', true, 'enabled'], ['machine', true, 'enabled'], ['msix', true, 'enabled'],
+    ['standalone', false, 'missing'], ['machine', false, 'disabled'], ['msix', false, 'disabled'],
+  ])('keeps healthy %s requested=%s neutral and reopenable', async (backend, requested, effective) => {
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state(backend, requested, effective));
+    render(App);
+    const button = screen.getByRole('button', { name: 'Preferences' });
+    await waitFor(() => expect(fetchStartupState).toHaveBeenCalled());
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('checkbox', { name: /start go-mapi/i })).toBeNull();
+    expect(screen.queryByRole('alert', { name: /startup warning/i })).toBeNull();
+    await fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('checkbox', { name: /start go-mapi/i })).toHaveProperty('checked', requested);
+    expect(screen.getByText(`Windows status: ${effective} (${backend})`)).toBeInTheDocument();
+    await fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('checkbox', { name: /start go-mapi/i })).toBeNull();
+    await fireEvent.click(button);
+    expect(screen.getByRole('checkbox', { name: /start go-mapi/i })).toHaveProperty('checked', requested);
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+    expect(saveSettings).not.toHaveBeenCalled();
+  });
+
+  it('keeps disclosure open through authentication changes and resets on remount', async () => {
+    vi.mocked(fetchStartupState).mockResolvedValue(state('standalone', false, 'missing'));
+    const view = render(App);
+    const button = await screen.findByRole('button', { name: 'Preferences' });
+    await fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /start go-mapi/i })).not.toBeChecked());
+    eventHandlers['auth-changed']?.forEach((cb) => cb({ authenticated: true, email: 'test@example.com' }));
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    eventHandlers['auth-changed']?.forEach((cb) => cb({ authenticated: false }));
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    view.unmount();
+    render(App);
+    expect(screen.getByRole('button', { name: 'Preferences' })).toHaveAttribute('aria-expanded', 'false');
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+  });
+
+  it('uses returned state for a write and retains confirmed choice after rejection', async () => {
+    vi.mocked(setAutostartEnabled).mockResolvedValueOnce(state('standalone', false, 'missing')).mockRejectedValueOnce(new Error('disk full'));
+    render(App);
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    const checkbox = await screen.findByRole('checkbox', { name: /start go-mapi/i });
+    await fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    expect(setAutostartEnabled).toHaveBeenCalledWith(false);
+    await fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByRole('alert', { name: /startup warning/i })).toHaveTextContent(/disk full/));
+    expect(checkbox).not.toBeChecked();
+    expect(setAutostartEnabled).toHaveBeenCalledWith(true);
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    expect(screen.getByRole('alert', { name: /startup warning/i })).toHaveTextContent(/disk full/);
+  });
+
+  it('serializes pending writes even if a second checkbox event is fired', async () => {
+    let finish!: (value: ReturnType<typeof state>) => void;
+    vi.mocked(setAutostartEnabled).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    render(App);
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    const checkbox = await screen.findByRole('checkbox', { name: /start go-mapi/i });
+    await fireEvent.click(checkbox);
+    expect(checkbox).toBeDisabled();
+    await fireEvent.change(checkbox, { target: { checked: false } });
+    expect(setAutostartEnabled).toHaveBeenCalledOnce();
+    finish(state('standalone', false, 'missing'));
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
+  });
+
+  it.each([
+    ['standalone', true, 'missing', true], ['standalone', false, 'mismatched', false],
+    ['machine', true, 'missing', false], ['msix', true, 'disabledbyuser', false],
+    ['msix', true, 'disabledbypolicy', false], ['msix', true, 'unknown', false],
+    ['msix', true, 'disabled', true],
+  ])('shows %s warning independently and repair eligibility for %s/%s', async (backend, requested, effective, canFix) => {
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state(backend, requested, effective, 'Choose Fix startup or inspect Windows Startup Apps.'));
+    render(App);
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    expect(alert).toHaveTextContent(/Choose Fix startup/);
+    expect(within(alert).queryByRole('button', { name: /fix startup/i }) !== null).toBe(canFix);
+    expect(within(alert).getByRole('button', { name: /open startup apps/i })).toBeInTheDocument();
+    if (!requested) expect(alert).toHaveTextContent(/Review Preferences or Windows Startup Apps/);
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+  });
+
+  it('reports failed reads and retries without presenting an invented saved value', async () => {
+    vi.mocked(fetchStartupState).mockRejectedValueOnce(new Error('read failed')).mockResolvedValueOnce(state('machine', false, 'disabled'));
+    render(App);
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    expect(screen.queryByRole('checkbox', { name: /start go-mapi/i })).toBeNull();
+    await fireEvent.click(within(alert).getByRole('button', { name: /retry startup status/i }));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /start go-mapi/i })).not.toBeChecked());
+    expect(screen.queryByRole('alert', { name: /startup warning/i })).toBeNull();
+  });
+
+  it('guards settings repair through the reread and leaves failed saves invalid', async () => {
+    vi.mocked(fetchSettingsState).mockResolvedValueOnce({ settings: { mode: '', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true }, issue: { kind: 'invalid', message: 'Invalid settings', path: 'settings.json' } } as never);
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state('standalone', true, 'missing', 'Choose Fix startup.'));
+    let finishSave!: () => void;
+    let finishRead!: (value: ReturnType<typeof state>) => void;
+    vi.mocked(saveSettings).mockImplementationOnce(() => new Promise((resolve) => { finishSave = () => resolve(undefined); }));
+    vi.mocked(fetchStartupState).mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    render(App);
+    const repair = await screen.findByRole('button', { name: /repair and use manual mode/i });
+    expect(screen.getByRole('alert', { name: /startup warning/i })).toHaveTextContent(/Repair settings first/);
+    expect(screen.queryByRole('button', { name: /fix startup/i })).toBeNull();
+    await fireEvent.click(repair);
+    await fireEvent.click(repair);
+    expect(saveSettings).toHaveBeenCalledOnce();
+    finishSave();
+    await waitFor(() => expect(fetchStartupState).toHaveBeenCalledTimes(2));
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    expect(screen.queryByRole('checkbox', { name: /start go-mapi/i })).toBeNull();
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+    finishRead(state('standalone', true, 'enabled'));
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /start go-mapi/i })).toBeEnabled());
+  });
+
+  it('keeps settings issue after repair save failure', async () => {
+    vi.mocked(fetchSettingsState).mockResolvedValueOnce({ settings: { mode: '', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true }, issue: { kind: 'invalid', message: 'Invalid settings', path: 'settings.json' } } as never);
+    vi.mocked(saveSettings).mockRejectedValueOnce(new Error('save failed'));
+    render(App);
+    await fireEvent.click(await screen.findByRole('button', { name: /repair and use manual mode/i }));
+    await waitFor(() => expect(screen.getByRole('alert', { name: /invalid settings/i })).toHaveTextContent(/save failed/));
+    expect(fetchStartupState).toHaveBeenCalledOnce();
+  });
+
+  it('reports a failed post-repair read as unknown while leaving settings repaired', async () => {
+    vi.mocked(fetchSettingsState).mockResolvedValueOnce({ settings: { mode: '', autostart_enabled: true, default_apps_prompted: true, update_checks_enabled: true }, issue: { kind: 'invalid', message: 'Invalid settings', path: 'settings.json' } } as never);
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state('standalone', false, 'missing')).mockRejectedValueOnce(new Error('read failed'));
+    render(App);
+    await fireEvent.click(await screen.findByRole('button', { name: /repair and use manual mode/i }));
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    await waitFor(() => expect(alert).toHaveTextContent(/could not be read/));
+    expect(screen.queryByRole('alert', { name: /invalid settings/i })).toBeNull();
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    expect(screen.queryByRole('checkbox', { name: /start go-mapi/i })).toBeNull();
+    expect(setAutostartEnabled).not.toHaveBeenCalled();
+  });
+
+  it('adopts a saved request even when Windows returns a platform warning', async () => {
+    vi.mocked(setAutostartEnabled).mockResolvedValueOnce(state('standalone', false, 'mismatched', 'Registration still exists.'));
+    render(App);
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    const checkbox = await screen.findByRole('checkbox', { name: /start go-mapi/i });
+    await fireEvent.click(checkbox);
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    expect(alert).toHaveTextContent(/Registration still exists/);
+    expect(alert).toHaveTextContent(/Startup is off by your choice/);
+  });
+
+  it('keeps a failed Fix action visible after closing Preferences', async () => {
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state('standalone', true, 'missing', 'Registration missing.'));
+    vi.mocked(setAutostartEnabled).mockRejectedValueOnce(new Error('admission denied'));
+    render(App);
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    await fireEvent.click(within(alert).getByRole('button', { name: /fix startup/i }));
+    await waitFor(() => expect(alert).toHaveTextContent(/admission denied/));
+    expect(setAutostartEnabled).toHaveBeenCalledWith(true);
+  });
+
+  it('reports Startup Apps failure without clearing a save failure', async () => {
+    vi.mocked(setAutostartEnabled).mockRejectedValueOnce(new Error('save failed'));
+    vi.mocked(openStartupSettings).mockRejectedValueOnce(new Error('open failed'));
+    render(App);
+    await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
+    await fireEvent.click(await screen.findByRole('checkbox', { name: /start go-mapi/i }));
+    const alert = await screen.findByRole('alert', { name: /startup warning/i });
+    await fireEvent.click(within(alert).getByRole('button', { name: /open startup apps/i }));
+    await waitFor(() => expect(alert).toHaveTextContent(/open failed/));
+    expect(alert).toHaveTextContent(/save failed/);
   });
 });
 

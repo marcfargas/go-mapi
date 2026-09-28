@@ -9,20 +9,23 @@ import (
 // TestSaveLoadRoundTrip: save → load returns the same AppSettings.
 // Subtests cannot t.Parallel — they mutate process-wide env vars.
 func TestSaveLoadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("GOMAPI_APPDATA_DIR", dir)
-
-	want := AppSettings{Mode: "auto-draft", AutostartEnabled: true}
-	if err := saveSettings(want); err != nil {
-		t.Fatalf("saveSettings: %v", err)
-	}
-	result := loadSettings()
-	if result.Issue != nil {
-		t.Fatalf("loadSettings issue: %+v", result.Issue)
-	}
-	got := result.Settings
-	if got.Mode != want.Mode {
-		t.Errorf("round-trip mismatch: got %+v, want %+v", got, want)
+	for _, enabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "enabled", false: "disabled"}[enabled], func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("GOMAPI_APPDATA_DIR", dir)
+			want := AppSettings{Mode: "auto-draft", AutostartEnabled: enabled}
+			if err := saveSettings(want); err != nil {
+				t.Fatalf("saveSettings: %v", err)
+			}
+			result := loadSettings()
+			if result.Issue != nil {
+				t.Fatalf("loadSettings issue: %+v", result.Issue)
+			}
+			got := result.Settings
+			if got.Mode != want.Mode || got.AutostartEnabled != want.AutostartEnabled {
+				t.Errorf("round-trip mismatch: got %+v, want %+v", got, want)
+			}
+		})
 	}
 }
 
