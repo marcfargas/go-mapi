@@ -17,6 +17,13 @@ if ($os.ProductType -eq 1 -or $os.Version -notlike '10.0.20348*' -or -not [Envir
 }
 
 $desktop = @(Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 })
+if ($Mode -eq 'Verify' -and $desktop.Count -eq 0) {
+    $deadline = (Get-Date).AddMinutes(2)
+    do {
+        Start-Sleep -Seconds 5
+        $desktop = @(Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 })
+    } while ($desktop.Count -eq 0 -and (Get-Date) -lt $deadline)
+}
 if ($desktop.Count -eq 0) {
     throw 'No interactive Desktop Experience Explorer session is active.'
 }
