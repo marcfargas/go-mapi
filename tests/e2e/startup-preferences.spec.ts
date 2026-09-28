@@ -68,7 +68,7 @@ test('simulated backend warning and rejected write remain visible with Preferenc
   await expect(alert.getByRole('button', { name: 'Open Startup Apps' })).toBeVisible();
   await app.page.getByRole('button', { name: 'Preferences' }).click();
   const checkbox = app.page.getByRole('checkbox', { name: /Start go-mapi when I sign in/ });
-  await checkbox.uncheck();
+  await checkbox.click();
   await expect(alert).toContainText('Startup preference could not be saved');
   await expect(checkbox).toBeChecked();
   await app.page.getByRole('button', { name: 'Preferences' }).click();
