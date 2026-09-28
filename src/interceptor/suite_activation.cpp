@@ -41,6 +41,8 @@ bool TrustedObjectACL(HANDLE handle, SE_OBJECT_TYPE kind) {
         void* ace = nullptr;
         if (!GetAce(dacl, i, &ace)) { trusted = false; break; }
         const auto* header = static_cast<ACE_HEADER*>(ace);
+        // Inherit-only ACEs apply to children, not to this protected object.
+        if (header->AceFlags & INHERIT_ONLY_ACE) continue;
         if (header->AceType == ACCESS_DENIED_ACE_TYPE) continue;
         if (header->AceType != ACCESS_ALLOWED_ACE_TYPE) { trusted = false; break; }
         const auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
