@@ -86,3 +86,18 @@ main { padding: var(--space-md); font-size: 14px; line-height: 1.5; }
   margin: var(--space-xs) 0 0;
   color: var(--c-text-muted);
 }
+
+/* Startup controls stay focusable while a startup read/write is pending
+   (aria-disabled instead of disabled) so keyboard focus is not dropped to the
+   document. Dim them, but keep the focus indicator visible. */
+.startup-preferences [aria-disabled="true"],
+.component-health [aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.startup-preferences [aria-disabled="true"]:focus-visible,
+.component-health [aria-disabled="true"]:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}

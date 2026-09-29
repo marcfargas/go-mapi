@@ -285,11 +285,31 @@ describe('App.svelte — startup preferences', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Preferences' }));
     const checkbox = await screen.findByRole('checkbox', { name: /start go-mapi/i });
     await fireEvent.click(checkbox);
-    expect(checkbox).toBeDisabled();
+    // Pending writes keep the checkbox focusable (aria-disabled, not disabled)
+    // so WebView2 focus fixup cannot drop keyboard focus to the document.
+    expect(checkbox).toHaveAttribute('aria-disabled', 'true');
+    expect(checkbox).not.toBeDisabled();
     await fireEvent.change(checkbox, { target: { checked: false } });
+    await fireEvent.click(checkbox);
     expect(setAutostartEnabled).toHaveBeenCalledOnce();
     finish(state('standalone', false, 'missing'));
-    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    await waitFor(() => expect(checkbox).not.toHaveAttribute('aria-disabled'));
+    expect(checkbox).not.toBeDisabled();
+  });
+
+  it('keeps Fix startup focusable but inert while its write is pending', async () => {
+    let finish!: (value: ReturnType<typeof state>) => void;
+    vi.mocked(fetchStartupState).mockResolvedValueOnce(state('standalone', true, 'missing', 'Choose Fix startup.'));
+    vi.mocked(setAutostartEnabled).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    render(App);
+    const fix = await screen.findByRole('button', { name: /fix startup/i });
+    await fireEvent.click(fix);
+    expect(fix).toHaveAttribute('aria-disabled', 'true');
+    expect(fix).not.toBeDisabled();
+    await fireEvent.click(fix);
+    expect(setAutostartEnabled).toHaveBeenCalledOnce();
+    finish(state('standalone', true, 'enabled'));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /fix startup/i })).toBeNull());
   });
 
   it.each([

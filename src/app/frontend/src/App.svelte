@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { CreateDraftForID, DismissEmail, GetAdminInstallState, GetComponentHealth, StartAdminRepair } from '../wailsjs/go/main/App';
   import { subscribeQueue, fetchQueue, type EmailWithId } from './lib/queue';
@@ -93,6 +93,10 @@
   let startupPending = $state(false);
   let startupReadPending = $state(false);
   let settingsRepairPending = $state(false);
+  // Focus targets used when a keyboard-activated startup control is removed
+  // after its write (for example Fix startup once startup is healthy).
+  let preferencesToggle = $state<HTMLButtonElement | null>(null);
+  let startupCheckbox = $state<HTMLInputElement | null>(null);
   const canFixStartup = $derived(
     !settingsIssue && !settingsRepairPending && !!startupState?.requested && !!startupState.warning &&
     (startupState.backend === 'standalone' && ['missing', 'mismatched', 'disabled', 'error'].includes(startupState.effective) ||
@@ -306,7 +310,28 @@
     }
   }
 
-  async function readStartupState() {
+  /**
+   * Keep keyboard focus usable after a startup read/write finishes. Focus stays
+   * on the activated control; if that control was removed (for example Fix
+   * startup after a successful fix), it moves to the startup checkbox when
+   * Preferences is open, otherwise to the always-rendered Preferences button.
+   * Focus the user deliberately moved elsewhere is never taken back.
+   */
+  async function restoreStartupFocus(activated?: HTMLElement) {
+    await tick();
+    if (!activated) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== activated) return;
+    if (activated.isConnected) {
+      activated.focus();
+    } else if (startupCheckbox?.isConnected) {
+      startupCheckbox.focus();
+    } else {
+      preferencesToggle?.focus();
+    }
+  }
+
+  async function readStartupState(activated?: HTMLElement) {
     if (startupReadPending) return;
     startupReadPending = true;
     try {
@@ -317,10 +342,11 @@
       startupReadError = 'Windows startup state could not be read.';
     } finally {
       startupReadPending = false;
+      await restoreStartupFocus(activated);
     }
   }
 
-  async function writeStartup(enabled: boolean) {
+  async function writeStartup(enabled: boolean, activated?: HTMLElement) {
     if (settingsIssue || settingsRepairPending || startupReadPending || startupPending || !startupState) return;
     startupPending = true;
     try {
@@ -330,6 +356,7 @@
       startupWriteError = `Startup preference could not be saved: ${String(error)}`;
     } finally {
       startupPending = false;
+      await restoreStartupFocus(activated);
     }
   }
 
@@ -337,7 +364,7 @@
     const checkbox = event.currentTarget as HTMLInputElement;
     const enabled = checkbox.checked;
     checkbox.checked = startupState?.requested ?? false;
-    void writeStartup(enabled);
+    void writeStartup(enabled, checkbox);
   }
 
   async function openStartupApps() {
@@ -447,12 +474,19 @@
 </details>
 
 <section class="startup-preferences" aria-label="Startup preferences">
-  <button type="button" class="startup-preferences__toggle" aria-expanded={preferencesOpen} aria-controls="startup-preferences-content" onclick={() => { preferencesOpen = !preferencesOpen; }}>Preferences</button>
+  <button type="button" class="startup-preferences__toggle" bind:this={preferencesToggle} aria-expanded={preferencesOpen} aria-controls="startup-preferences-content" onclick={() => { preferencesOpen = !preferencesOpen; }}>Preferences</button>
   <div id="startup-preferences-content">
     {#if preferencesOpen}
       {#if startupState}
         <label>
-          <input type="checkbox" checked={startupState.requested} disabled={!!settingsIssue || settingsRepairPending || startupReadPending || startupPending} onchange={handleAutostartChange} />
+          <input
+            type="checkbox"
+            bind:this={startupCheckbox}
+            checked={startupState.requested}
+            disabled={!!settingsIssue || settingsRepairPending}
+            aria-disabled={startupPending || startupReadPending ? 'true' : undefined}
+            onchange={handleAutostartChange}
+          />
           Start go-mapi when I sign in
         </label>
         <p>Windows status: {startupState.effective} ({startupState.backend})</p>
@@ -476,8 +510,8 @@
     {:else if startupState?.warning && !startupState.requested}
       <p>Startup is off by your choice. Review Preferences or Windows Startup Apps to resolve this warning.</p>
     {/if}
-    {#if canFixStartup}<button type="button" onclick={() => { void writeStartup(true); }} disabled={startupPending}>Fix startup</button>{/if}
-    {#if startupReadError}<button type="button" onclick={() => { void readStartupState(); }} disabled={startupReadPending || settingsRepairPending}>Retry startup status</button>{/if}
+    {#if canFixStartup}<button type="button" onclick={(event) => { void writeStartup(true, event.currentTarget); }} aria-disabled={startupPending ? 'true' : undefined}>Fix startup</button>{/if}
+    {#if startupReadError}<button type="button" onclick={(event) => { void readStartupState(event.currentTarget); }} disabled={settingsRepairPending} aria-disabled={startupReadPending ? 'true' : undefined}>Retry startup status</button>{/if}
     <button type="button" onclick={openStartupApps}>Open Startup Apps</button>
   </section>
 {/if}
