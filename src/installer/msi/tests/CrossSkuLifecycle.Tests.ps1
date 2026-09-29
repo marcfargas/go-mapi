@@ -286,7 +286,8 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
         $_ -match '(?i)Scheduling reboot operation|Must reboot|ReplacedInUseFiles = 1' })
     $stopLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'go-mapi suite app stop complete: stopped=') { $index } })
     $removeLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'Action start [0-9:]+: RemoveExistingProducts\.') { $index } })
-    $after = MachineSnapshot
+    # Final uninstall removes the machine marker; a snapshot then has nothing to read.
+    $after = if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\go-mapi\MachineProduct') { MachineSnapshot } else { $null }
     $evidence = [ordered]@{
         Step = $Name; Verb = $Verb; Expected = $Expected; Exit = $exit
         RunningBefore = @($running | ForEach-Object { [ordered]@{ Pid = $_.ProcessId; Session = $_.SessionId } })
