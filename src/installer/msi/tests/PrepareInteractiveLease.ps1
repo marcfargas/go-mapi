@@ -1,9 +1,13 @@
 param(
-    [ValidateSet('Inspect', 'InstallRDSH', 'Verify')]
-    [string]$Mode = 'Inspect'
+    [ValidateSet('Inspect', 'InstallRDSH', 'Verify', 'EnableLogging', 'RestoreLogging')]
+    [string]$Mode = 'Inspect',
+    # Holds the saved Windows Installer logging policy between EnableLogging and RestoreLogging.
+    [string]$StateDirectory = (Join-Path $env:ProgramData 'go-mapi-interactive-lease')
 )
 
 $ErrorActionPreference = 'Stop'
+$installerPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+$loggingState = Join-Path $StateDirectory 'installer-logging-policy.json'
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -14,6 +18,36 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $os = Get-CimInstance Win32_OperatingSystem
 if ($os.ProductType -eq 1 -or $os.Version -notlike '10.0.20348*' -or -not [Environment]::Is64BitOperatingSystem) {
     throw "Expected x64 Windows Server 2022; observed $($os.Caption) $($os.Version)."
+}
+
+if ($Mode -eq 'EnableLogging') {
+    # Verbose per-attempt MSI logs also for launches that do not pass /l*vx (Explorer double-click).
+    New-Item -ItemType Directory -Path $StateDirectory -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $loggingState)) {
+        $previous = Get-ItemProperty -Path $installerPolicy -Name Logging -ErrorAction SilentlyContinue
+        [ordered]@{ Exists = [bool]$previous; Value = if ($previous) { [string]$previous.Logging } else { '' } } |
+            ConvertTo-Json | Set-Content -LiteralPath $loggingState -Encoding UTF8
+    }
+    New-Item -Path $installerPolicy -Force | Out-Null
+    New-ItemProperty -Path $installerPolicy -Name Logging -PropertyType String -Value 'voicewarmupx' -Force | Out-Null
+    Write-Output "INSTALLER_LOGGING_ENABLED saved=$loggingState"
+    exit 0
+}
+if ($Mode -eq 'RestoreLogging') {
+    if (-not (Test-Path -LiteralPath $loggingState)) {
+        throw "No saved logging policy at $loggingState; refusing to guess the prior state."
+    }
+    $previous = Get-Content -LiteralPath $loggingState -Raw | ConvertFrom-Json
+    if ($previous.Exists) {
+        New-Item -Path $installerPolicy -Force | Out-Null
+        New-ItemProperty -Path $installerPolicy -Name Logging -PropertyType String -Value $previous.Value -Force | Out-Null
+    } else {
+        Remove-ItemProperty -Path $installerPolicy -Name Logging -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $loggingState -Force
+    $now = Get-ItemProperty -Path $installerPolicy -Name Logging -ErrorAction SilentlyContinue
+    Write-Output "INSTALLER_LOGGING_RESTORED exists=$([bool]$now) value=$(if ($now) { $now.Logging })"
+    exit 0
 }
 
 $desktop = @(Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 })
