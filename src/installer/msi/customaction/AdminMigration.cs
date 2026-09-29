@@ -1006,6 +1006,22 @@ namespace GoMapi.AdminCustomActions
                     client.SetValue("DLLPath", snapshot.OwnedDllPath, RegistryValueKind.String);
                 }
             }
+            else if (restoreOwnedGoMapi
+                && string.Equals(snapshot.Value, ProductName, StringComparison.OrdinalIgnoreCase)
+                && snapshot.OwnedClientExisted
+                && string.Equals(snapshot.OwnedDllPath, ActiveDllPath, StringComparison.OrdinalIgnoreCase))
+            {
+                // A failed repair of the current product: Windows Installer rolls
+                // back its own interceptor files, so restore the constant
+                // registration that RemoveOwnedClient deleted instead of leaving
+                // the installed product without its mail provider.
+                using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
+                using (var client = baseKey.CreateSubKey(ClientKey, true))
+                {
+                    client.SetValue(null, ProductName, RegistryValueKind.String);
+                    client.SetValue("DLLPath", ActiveDllPath, RegistryValueKind.ExpandString);
+                }
+            }
             using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
             using (var key = baseKey.CreateSubKey(MailRoot, true))
             {

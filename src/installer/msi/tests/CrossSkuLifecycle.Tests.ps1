@@ -184,6 +184,10 @@ AssertSnapshot $suiteInitial 'rollback-disabled suite repair'
 AssertExit (RunMsi '/i' $suitePath 'suite-enable-update' @('REINSTALL=ALL', 'REINSTALLMODE=amus', 'GOMAPI_AUTO_UPDATE=1')) 0 'suite explicit update enable'
 if ((MachineSnapshot).AutoUpdateEnabled -ne 1) { throw 'Suite explicit setting enable failed' }
 AssertExit (RunMsi '/fa' $suitePath 'suite-repair-preserve-enabled') 0 'suite repair preserving enabled setting'
+$suiteBeforeFailedRepair = MachineSnapshot
+AssertExit (RunMsi '/i' $suitePath 'suite-repair-after-registration-fault' @('REINSTALL=ALL', 'REINSTALLMODE=amus', 'GOMAPI_TEST_FAILURE_POINT=after-registration')) 1603 'suite failed repair after registration'
+AssertMachine 'suite' $sentinel
+AssertSnapshot $suiteBeforeFailedRepair 'suite failed repair after registration'
 $suiteBeforeUpgrade = MachineSnapshot
 AssertExit (RunMsi '/i' $newerSuitePath 'suite-upgrade-after-registration-fault' @('GOMAPI_TEST_FAILURE_POINT=after-registration')) 1603 'newer suite rollback after registration'
 AssertMachine 'suite' $sentinel
