@@ -109,7 +109,7 @@ if ($SKU -eq 'suite') {
 }
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
-foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall')) {
+foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall','StopSuiteApps','SetStopSuiteApps')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
 }
 # Execution bits: immediate actions impersonate the caller and must not write;
@@ -118,13 +118,20 @@ function ActionType([string]$Name) { return [int](@($actions | Where-Object { $_
 foreach ($immediate in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','PrepareAdminUninstall')) {
     if ((ActionType $immediate) -band 0x0F00) { Fail "$immediate must be an immediate read-only action" }
 }
-foreach ($deferred in @('SnapshotAdminMigration','ApplyAdminMigration','VerifyAdminRegistration','BeginResidentUninstallFence','FinalizeAdminUninstall')) {
+foreach ($deferred in @('SnapshotAdminMigration','ApplyAdminMigration','VerifyAdminRegistration','BeginResidentUninstallFence','FinalizeAdminUninstall','StopSuiteApps')) {
     if (((ActionType $deferred) -band 0x0F00) -ne 0x0C00) { Fail "$deferred must be deferred and non-impersonated" }
 }
 foreach ($rollback in @('RollbackAdminMigration','RollbackServiceConfiguration','RollbackResidentUninstallFence','RollbackAdminUninstall')) {
     if (((ActionType $rollback) -band 0x0F00) -ne 0x0D00) { Fail "$rollback must be a non-impersonated rollback action" }
 }
 if (((ActionType 'CommitAdminUninstall') -band 0x0F00) -ne 0x0E00) { Fail 'CommitAdminUninstall must be a non-impersonated commit action' }
+# The suite app stop reads only fixed CustomActionData set by a script-free
+# type-51 action; directory properties avoid custom-action bitness.
+$stopData = @($actions | Where-Object { $_ -match '^SetStopSuiteApps\|' })[0] -split '\|'
+if (([int]$stopData[1] -band 0x3F) -ne 51 -or $stopData[2] -ne 'StopSuiteApps' -or
+    $stopData[3] -ne 'FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]') {
+    Fail 'StopSuiteApps must receive exactly its fixed CustomActionData from a type-51 action'
+}
 foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_X64','Wix4ExecServiceConfig_X64')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing WiX Util service recovery action $required" }
 }
@@ -173,13 +180,27 @@ if (-not $findSequence -or -not $launchSequence -or -not $validateSequence -or -
     [int]$initializeSequence[2] -ge [int]$removeSequence[2]) {
     Fail 'foreign-product detection and rejection must precede early transactional removal'
 }
+# Windows Installer allows an early RemoveExistingProducts only directly after
+# InstallInitialize or between InstallExecute and InstallFinalize. The suite app
+# stop is the only script executed by the early InstallExecute, so the old
+# product is removed after every installed app stopped, in one transaction.
 $betweenInitializeAndRemoval = @($sequence | Where-Object {
     $parts = $_ -split '\|'
     [int]$parts[2] -gt [int]$initializeSequence[2] -and [int]$parts[2] -lt [int]$removeSequence[2]
-})
-if ($betweenInitializeAndRemoval.Count -ne 0) {
-    Fail "early RemoveExistingProducts must follow InstallInitialize with no scripted action between: $($betweenInitializeAndRemoval -join ';')"
+} | Sort-Object { [int](($_ -split '\|')[2]) } | ForEach-Object { ($_ -split '\|')[0] })
+if (($betweenInitializeAndRemoval -join ',') -cne 'StopSuiteApps,InstallExecute') {
+    Fail "early RemoveExistingProducts must directly follow the InstallExecute that runs only StopSuiteApps after InstallInitialize: $($betweenInitializeAndRemoval -join ';')"
 }
+if (@($sequence | Where-Object { $_ -match '^InstallExecute(Again)?\|' }).Count -ne 1) { Fail 'machine sequence must contain exactly one InstallExecute' }
+$stopSequence = SequenceRow 'StopSuiteApps'
+if ($stopSequence[1] -cne 'NOT UPGRADINGPRODUCTCODE' -or (SequenceRow 'InstallExecute')[1] -ne '') {
+    Fail 'StopSuiteApps must run in every outer machine transaction and never inside a nested old-product removal'
+}
+foreach ($later in @('BeginResidentUninstallFence','StopServices','RemoveFiles','InstallFiles')) {
+    if ([int]$stopSequence[2] -ge [int](SequenceRow $later)[2]) { Fail "StopSuiteApps must precede $later" }
+}
+$setStopSequence = SequenceRow 'SetStopSuiteApps'
+if (-not $setStopSequence -or [int]$setStopSequence[2] -ge [int]$initializeSequence[2]) { Fail 'StopSuiteApps data must be set before InstallInitialize' }
 if ($rollbackSequence[1] -ne 'REMOVE~="ALL" AND UPGRADINGPRODUCTCODE' -or
     [int]$rollbackSequence[2] -ge [int]$deleteServicesSequence[2] -or
     [int]$rollbackSequence[2] -le [int]$removeSequence[2]) {

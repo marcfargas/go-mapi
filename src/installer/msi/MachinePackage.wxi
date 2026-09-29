@@ -1,6 +1,9 @@
 <Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <!-- Shared machine transaction contract. SKU payloads remain in the entry files. -->
-  <MajorUpgrade Schedule="afterInstallInitialize"
+  <!-- Shared machine transaction contract. SKU payloads remain in the entry files.
+       RemoveExistingProducts directly follows an early InstallExecute that runs
+       StopSuiteApps, so the old product is removed in the same rollback
+       transaction but only after every installed suite app has stopped. -->
+  <MajorUpgrade Schedule="afterInstallExecute"
     DowngradeErrorMessage="A newer go-mapi machine package is already installed."
     AllowSameVersionUpgrades="yes" />
   <Upgrade Id="$(var.ForeignUpgradeCode)">
@@ -32,9 +35,12 @@
   <CustomActionRef Id="RollbackAdminUninstall" />
   <CustomActionRef Id="FinalizeAdminUninstall" />
   <CustomActionRef Id="CommitAdminUninstall" />
+  <CustomActionRef Id="StopSuiteApps" />
   <InstallExecuteSequence>
     <FindRelatedProducts Before="LaunchConditions" />
     <Custom Action="ValidateMachineTransaction" After="InstallValidate" />
+    <Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />
+    <InstallExecute After="StopSuiteApps" />
     <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
     <Custom Action="ResolveAutoUpdateChoice" After="ValidateMachineTransaction" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />

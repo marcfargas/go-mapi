@@ -64,5 +64,11 @@
     <CustomAction Id="RollbackAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminUninstall" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="FinalizeAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="FinalizeAdminUninstall" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="CommitAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="CommitAdminUninstall" Execute="commit" Impersonate="no" Return="ignore" HideTarget="yes" />
+    <!-- Deferred SYSTEM stop of the installed suite app in every session.
+         Its fixed data is set before InstallInitialize, so no script is
+         generated between InstallInitialize and the early InstallExecute. -->
+    <CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"
+      Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]" />
   </Fragment>
 </Wix>

@@ -16,7 +16,7 @@ using WixToolset.Dtf.WindowsInstaller;
 
 namespace GoMapi.AdminCustomActions
 {
-    public static class AdminMigration
+    public static partial class AdminMigration
     {
         private const string ProductName = "go-mapi";
         private const string MailRoot = @"SOFTWARE\Clients\Mail";
@@ -837,6 +837,7 @@ namespace GoMapi.AdminCustomActions
                 case "prepare-uninstall": return "prepare the uninstall";
                 case "begin-resident-uninstall-fence": return "stop the go-mapi service for uninstall";
                 case "finalize-uninstall": return "restore the previous mail provider";
+                case "stop-suite-apps": return "close the running go-mapi app";
                 default: return "configure go-mapi";
             }
         }
