@@ -129,7 +129,9 @@ namespace GoMapi.AdminCustomActions
             {
                 if (!session.GetMode(InstallRunMode.RollbackEnabled) ||
                     !string.IsNullOrEmpty(session["RollbackDisabled"]))
-                    throw new InvalidOperationException("Machine transaction requires Windows Installer rollback support");
+                    throw new SetupBlockedException("Machine transaction requires Windows Installer rollback support",
+                        "go-mapi setup requires Windows Installer rollback, which is disabled on this computer. " +
+                        "Ask your administrator to allow installer rollback (DisableRollback policy), then run setup again.");
 
                 var sku = session["GoMapiSku"];
                 if (sku != "system" && sku != "suite")
@@ -160,7 +162,9 @@ namespace GoMapi.AdminCustomActions
                 }
                 if (session["GOMAPI_MIGRATE_SKU"] != "1" || removalList.Length != 1 ||
                     !string.Equals(removalList[0], foreign[0], StringComparison.Ordinal))
-                    throw new InvalidOperationException("Explicit SKU migration and exact foreign removal list are required");
+                    throw new SetupBlockedException("Explicit SKU migration and exact foreign removal list are required",
+                        "Another go-mapi machine package is installed. An administrator must explicitly authorize replacing it " +
+                        "(GOMAPI_MIGRATE_SKU=1) or uninstall it first, then run setup again.");
             });
         }
 
@@ -225,7 +229,8 @@ namespace GoMapi.AdminCustomActions
                     choice = "1";
             }
             if (choice != "0" && choice != "1")
-                throw new InvalidDataException("Machine automatic update setting must be 0 or 1");
+                throw new SetupBlockedException("Machine automatic update setting must be 0 or 1",
+                    "The GOMAPI_AUTO_UPDATE setting must be 0 or 1. Correct the setup command, then run setup again.");
             session["GOMAPI_AUTO_UPDATE"] = choice;
         }
 
@@ -235,6 +240,11 @@ namespace GoMapi.AdminCustomActions
             return Guard(session, "auto-update-choice", () => ResolveAutoUpdate(session));
         }
 
+        // Immediate actions impersonate the installer caller. Under UAC/RDSH
+        // that caller can be a filtered, non-elevated token, so this action only
+        // reads and marshals fixed inputs. Every protected write happens in the
+        // deferred SYSTEM snapshot, which is protected by the rollback queued
+        // before it.
         [CustomAction]
         public static ActionResult PrepareAdminMigration(Session session)
         {
@@ -242,56 +252,114 @@ namespace GoMapi.AdminCustomActions
             {
                 ResolveAutoUpdate(session);
                 var paths = Paths.Create();
+                var machineRoot = Path.GetDirectoryName(paths.JournalDirectory);
+                var data = new CustomActionData
+                {
+                    ["TransactionId"] = Guid.NewGuid().ToString("D"),
+                    ["JournalPath"] = paths.JournalPath,
+                    ["InstallRoot"] = paths.InstallRoot,
+                    ["Version"] = session["GoMapiComponentVersion"],
+                    ["RequiredAppMin"] = session["GoMapiRequiredAppMin"],
+                    ["RequiredAppMax"] = session["GoMapiRequiredAppMax"],
+                    ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
+                    ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
+                    ["MachineRootExisted"] = Directory.Exists(machineRoot) ? "1" : "0",
+                    ["JournalDirectoryExisted"] = Directory.Exists(paths.JournalDirectory) ? "1" : "0",
+                }.ToString();
+                session["RollbackAdminMigration"] = data;
+                session["SnapshotAdminMigration"] = data;
+                session["ApplyAdminMigration"] = data;
+                session["VerifyAdminRegistration"] = data;
+            });
+        }
+
+        // Deferred, non-impersonated preparation. Values known only here live in
+        // the protected journal owned by this transaction; nothing flows back to
+        // Session properties. The previous journal and its backups stay valid
+        // until the replacement journal is atomically written.
+        [CustomAction]
+        public static ActionResult SnapshotAdminMigration(Session session)
+        {
+            return Guard(session, "snapshot", () =>
+            {
+                var data = session.CustomActionData;
+                var paths = RequireFixedPaths(data);
+                var transactionId = data["TransactionId"];
+                MaybeFail(data, "before-prepare");
+
                 EnsureProtectedJournalDirectory(paths.JournalDirectory);
+                var transactionDirectory = TransactionDirectory(paths, transactionId);
+                Directory.CreateDirectory(transactionDirectory);
+                RejectReparseTree(Path.Combine(paths.JournalDirectory, "backup"));
+
                 var installedManifest = Path.Combine(paths.InstallRoot, "installed-component-v1.json");
-                var manifestBackup = Path.Combine(paths.JournalDirectory, "backup", "rollback-installed-component-v1.json");
+                var manifestBackup = Path.Combine(transactionDirectory, "rollback-installed-component-v1.json");
                 var hadInstalledManifest = File.Exists(installedManifest);
-                var manifestBackupSha256 = "";
+                string manifestBackupSha256 = null;
                 if (hadInstalledManifest)
                 {
-                    var info = new FileInfo(installedManifest);
-                    if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024)
-                        throw new InvalidDataException("Installed component manifest is not a bounded regular file");
-                    var backupDirectory = Path.GetDirectoryName(manifestBackup);
-                    EnsureProtectedJournalDirectory(backupDirectory);
-                    DeleteFileIfExists(manifestBackup);
+                    RequireBoundedRegularFile(installedManifest, "Installed component manifest");
                     File.Copy(installedManifest, manifestBackup, true);
                     manifestBackupSha256 = Sha256(installedManifest);
                     if (Sha256(manifestBackup) != manifestBackupSha256)
                         throw new InvalidDataException("Installed component manifest backup hash mismatch");
                 }
-                else
-                    DeleteFileIfExists(manifestBackup);
 
-                var previous = LoadJournal(paths.JournalPath);
+                var rollbackProviders = new[]
+                {
+                    CaptureProvider(RegistryView.Registry64, transactionDirectory, "rollback"),
+                    CaptureProvider(RegistryView.Registry32, transactionDirectory, "rollback"),
+                };
+                MaybeFail(data, "after-partial-snapshot");
+
+                MigrationJournal previous = null;
+                string previousJournalBackup = null;
+                string previousJournalSha256 = null;
+                if (File.Exists(paths.JournalPath))
+                {
+                    RequireBoundedRegularFile(paths.JournalPath, "Migration journal");
+                    previousJournalBackup = Path.Combine(transactionDirectory, "previous-journal.json");
+                    File.Copy(paths.JournalPath, previousJournalBackup, true);
+                    previousJournalSha256 = Sha256(previousJournalBackup);
+                    try
+                    {
+                        previous = JsonConvert.DeserializeObject<MigrationJournal>(File.ReadAllText(previousJournalBackup));
+                    }
+                    catch (JsonException error)
+                    {
+                        // A malformed journal is stale state: preserve its bytes
+                        // for rollback, but never reuse its snapshots.
+                        session.Log("go-mapi admin migration ignores unreadable previous journal: {0}", error.Message);
+                    }
+                }
                 var keepOriginal = previous != null
                     && previous.Schema == JournalSchema
                     && previous.State == "committed"
                     && IsGoMapiActive(RegistryView.Registry64)
                     && IsGoMapiActive(RegistryView.Registry32);
 
-                var rollbackProviders = new[]
-                {
-                    CaptureProvider(RegistryView.Registry64, paths.JournalDirectory, "rollback"),
-                    CaptureProvider(RegistryView.Registry32, paths.JournalDirectory, "rollback"),
-                };
                 var journal = new MigrationJournal
                 {
                     Schema = JournalSchema,
-                    ProductVersion = session["GoMapiComponentVersion"],
+                    TransactionId = transactionId,
+                    ProductVersion = data["Version"],
                     CreatedAtUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     State = "prepared",
                     PreviousProviders = keepOriginal
                         ? previous.PreviousProviders
                         : new[]
                         {
-                            CaptureProvider(RegistryView.Registry64, paths.JournalDirectory, "original"),
-                            CaptureProvider(RegistryView.Registry32, paths.JournalDirectory, "original"),
+                            CaptureProvider(RegistryView.Registry64, transactionDirectory, "original"),
+                            CaptureProvider(RegistryView.Registry32, transactionDirectory, "original"),
                         },
                     RollbackProviders = rollbackProviders,
+                    HadInstalledManifest = hadInstalledManifest,
+                    ManifestBackup = hadInstalledManifest ? manifestBackup : null,
+                    ManifestBackupSha256 = manifestBackupSha256,
+                    PreviousJournalBackup = previousJournalBackup,
+                    PreviousJournalSha256 = previousJournalSha256,
                     Operations = new List<JournalOperation>(),
                 };
-
                 foreach (var resource in LoadInventory().Resources)
                 {
                     journal.Operations.Add(new JournalOperation
@@ -302,23 +370,9 @@ namespace GoMapi.AdminCustomActions
                         Status = "planned",
                     });
                 }
-
                 SaveJournal(paths.JournalPath, journal);
-                var data = new CustomActionData
-                {
-                    ["JournalPath"] = paths.JournalPath,
-                    ["InstallRoot"] = paths.InstallRoot,
-                    ["Version"] = session["GoMapiComponentVersion"],
-                    ["RequiredAppMin"] = session["GoMapiRequiredAppMin"],
-                    ["RequiredAppMax"] = session["GoMapiRequiredAppMax"],
-                    ["FailurePoint"] = session["GOMAPI_TEST_FAILURE_POINT"] ?? "",
-                    ["ExistingProduct"] = string.IsNullOrEmpty(session["Installed"]) ? "0" : "1",
-                    ["HadInstalledManifest"] = hadInstalledManifest ? "1" : "0",
-                    ["ManifestBackupSha256"] = manifestBackupSha256,
-                }.ToString();
-                session["RollbackAdminMigration"] = data;
-                session["ApplyAdminMigration"] = data;
-                session["VerifyAdminRegistration"] = data;
+                MaybeFail(data, "after-snapshot");
+                PruneTransactionBackups(session, paths, journal, previous, previousJournalBackup != null);
             });
         }
 
@@ -327,10 +381,13 @@ namespace GoMapi.AdminCustomActions
         {
             return Guard(session, "cleanup", () =>
             {
-                var journalPath = session.CustomActionData["JournalPath"];
-                var journal = RequireJournal(journalPath);
-                MaybeFail(session.CustomActionData, "before-cleanup");
-                var existingProduct = session.CustomActionData["ExistingProduct"] == "1";
+                var data = session.CustomActionData;
+                var paths = RequireFixedPaths(data);
+                var journal = RequireTransactionJournal(paths.JournalPath, data["TransactionId"]);
+                if (journal.State != "prepared")
+                    throw new InvalidDataException("Migration journal is not prepared for this transaction");
+                MaybeFail(data, "before-cleanup");
+                var existingProduct = data["ExistingProduct"] == "1";
                 foreach (var resource in LoadInventory().Resources)
                 {
                     // Maintenance must not delete MSI-owned files or registration while
@@ -342,8 +399,8 @@ namespace GoMapi.AdminCustomActions
                     operation.Status = "removed-or-absent";
                 }
                 journal.State = "cleaned";
-                SaveJournal(journalPath, journal);
-                MaybeFail(session.CustomActionData, "after-cleanup");
+                SaveJournal(paths.JournalPath, journal);
+                MaybeFail(data, "after-cleanup");
             });
         }
 
@@ -353,8 +410,8 @@ namespace GoMapi.AdminCustomActions
             return Guard(session, "verify-and-commit", () =>
             {
                 var data = session.CustomActionData;
-                var journalPath = data["JournalPath"];
-                var installRoot = data["InstallRoot"];
+                var paths = RequireFixedPaths(data);
+                var installRoot = paths.InstallRoot;
                 var version = data["Version"];
                 var requiredAppMin = data["RequiredAppMin"];
                 var requiredAppMax = data["RequiredAppMax"];
@@ -362,6 +419,7 @@ namespace GoMapi.AdminCustomActions
                     throw new InvalidDataException("Required app minimum version is absent");
                 if (string.IsNullOrWhiteSpace(requiredAppMax))
                     throw new InvalidDataException("Required app maximum version is absent");
+                RequireTransactionJournal(paths.JournalPath, data["TransactionId"]);
                 var x86 = Path.Combine(installRoot, "x86", "go-mapi.dll");
                 var x64 = Path.Combine(installRoot, "AMD64", "go-mapi.dll");
 
@@ -390,10 +448,10 @@ namespace GoMapi.AdminCustomActions
 
                 var manifestPath = Path.Combine(installRoot, "installed-component-v1.json");
                 AtomicWriteJson(manifestPath, manifest);
-                var journal = RequireJournal(journalPath);
+                var journal = RequireTransactionJournal(paths.JournalPath, data["TransactionId"]);
                 journal.State = "committed";
                 journal.InstalledManifest = manifestPath;
-                SaveJournal(journalPath, journal);
+                SaveJournal(paths.JournalPath, journal);
             });
         }
 
@@ -404,37 +462,186 @@ namespace GoMapi.AdminCustomActions
                 throw new InvalidOperationException("Requested validation failure point: " + point);
         }
 
+        // Rollback owns only this transaction. With no journal, a partial
+        // snapshot or another transaction's journal, nothing was changed
+        // destructively; only this transaction's backup residue is removed and
+        // the previous healthy journal is left untouched.
         [CustomAction]
         public static ActionResult RollbackAdminMigration(Session session)
         {
             return Guard(session, "rollback", () =>
             {
                 var data = session.CustomActionData;
-                var journalPath = data["JournalPath"];
-                var journal = LoadJournal(journalPath);
-                if (journal == null)
+                var paths = RequireFixedPaths(data);
+                var transactionId = data["TransactionId"];
+                var transactionDirectory = TransactionDirectory(paths, transactionId);
+                MigrationJournal journal = null;
+                if (File.Exists(paths.JournalPath))
+                {
+                    try
+                    {
+                        journal = LoadJournal(paths.JournalPath);
+                    }
+                    catch (Exception error) when (error is JsonException || error is InvalidDataException)
+                    {
+                        session.Log("go-mapi admin migration rollback leaves unreadable journal untouched: {0}", error.Message);
+                    }
+                }
+                if (journal == null || !string.Equals(journal.TransactionId, transactionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    RemoveTransactionResidue(paths, transactionDirectory, data);
                     return;
+                }
 
                 RemoveOwnedClient(RegistryView.Registry64);
                 RemoveOwnedClient(RegistryView.Registry32);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry64, true);
                 RestoreProvider(journal.RollbackProviders, RegistryView.Registry32, true);
-                var installedManifest = Path.Combine(data["InstallRoot"], "installed-component-v1.json");
-                var manifestBackup = Path.Combine(Path.GetDirectoryName(journalPath), "backup", "rollback-installed-component-v1.json");
-                if (data["HadInstalledManifest"] == "1")
+                var installedManifest = Path.Combine(paths.InstallRoot, "installed-component-v1.json");
+                if (journal.HadInstalledManifest)
                 {
-                    var info = new FileInfo(manifestBackup);
-                    if (!info.Exists || (info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024 ||
-                        Sha256(manifestBackup) != data["ManifestBackupSha256"])
-                        throw new InvalidDataException("Rollback component manifest backup is absent or invalid");
-                    Directory.CreateDirectory(data["InstallRoot"]);
-                    File.Copy(manifestBackup, installedManifest, true);
+                    var backup = RequireTransactionFile(transactionDirectory, journal.ManifestBackup, journal.ManifestBackupSha256,
+                        "Rollback component manifest backup");
+                    Directory.CreateDirectory(paths.InstallRoot);
+                    File.Copy(backup, installedManifest, true);
                 }
                 else
                     DeleteFileIfExists(installedManifest);
-                journal.State = "rolled-back";
-                SaveJournal(journalPath, journal);
+
+                if (!string.IsNullOrEmpty(journal.PreviousJournalBackup))
+                {
+                    var backup = RequireTransactionFile(transactionDirectory, journal.PreviousJournalBackup, journal.PreviousJournalSha256,
+                        "Previous migration journal backup");
+                    AtomicWriteBytes(paths.JournalPath, File.ReadAllBytes(backup));
+                    ProtectJournalFile(paths.JournalPath);
+                }
+                else
+                    DeleteFileIfExists(paths.JournalPath);
+                RemoveTransactionResidue(paths, transactionDirectory, data);
             });
+        }
+
+        private static Paths RequireFixedPaths(CustomActionData data)
+        {
+            var paths = Paths.Create();
+            if (!string.Equals(data["JournalPath"], paths.JournalPath, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(data["InstallRoot"], paths.InstallRoot, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Deferred machine paths do not match the fixed machine layout");
+            Guid transaction;
+            if (!data.ContainsKey("TransactionId") || !Guid.TryParseExact(data["TransactionId"], "D", out transaction))
+                throw new InvalidDataException("Deferred machine transaction identity is invalid");
+            return paths;
+        }
+
+        private static string TransactionDirectory(Paths paths, string transactionId)
+        {
+            return Path.Combine(paths.JournalDirectory, "backup", Guid.ParseExact(transactionId, "D").ToString("D"));
+        }
+
+        private static MigrationJournal RequireTransactionJournal(string path, string transactionId)
+        {
+            var journal = RequireJournal(path);
+            if (!string.Equals(journal.TransactionId, transactionId, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Migration journal belongs to another transaction");
+            return journal;
+        }
+
+        private static string RequireTransactionFile(string transactionDirectory, string path, string sha256, string label)
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(sha256) ||
+                !string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.GetFullPath(transactionDirectory), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(label + " is not owned by this transaction");
+            if (!File.Exists(path))
+                throw new InvalidDataException(label + " is absent");
+            RequireBoundedRegularFile(path, label);
+            if (Sha256(path) != sha256)
+                throw new InvalidDataException(label + " hash mismatch");
+            return path;
+        }
+
+        private static void RequireBoundedRegularFile(string path, string label)
+        {
+            var info = new FileInfo(path);
+            if ((info.Attributes & System.IO.FileAttributes.ReparsePoint) != 0 || info.Length <= 0 || info.Length > 1024 * 1024)
+                throw new InvalidDataException(label + " is not a bounded regular file");
+        }
+
+        private static void RemoveTransactionResidue(Paths paths, string transactionDirectory, CustomActionData data)
+        {
+            DeleteTransactionDirectory(paths, transactionDirectory);
+            var backupRoot = Path.Combine(paths.JournalDirectory, "backup");
+            if (data["JournalDirectoryExisted"] != "1")
+            {
+                DeleteDirectoryIfEmpty(backupRoot);
+                DeleteDirectoryIfEmpty(paths.JournalDirectory);
+                if (data["MachineRootExisted"] != "1")
+                    DeleteDirectoryIfEmpty(Path.GetDirectoryName(paths.JournalDirectory));
+            }
+        }
+
+        private static void DeleteTransactionDirectory(Paths paths, string directory)
+        {
+            if (!Directory.Exists(directory))
+                return;
+            var full = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar);
+            var backupRoot = Path.GetFullPath(Path.Combine(paths.JournalDirectory, "backup")).TrimEnd(Path.DirectorySeparatorChar);
+            Guid ignored;
+            if (!string.Equals(Path.GetDirectoryName(full), backupRoot, StringComparison.OrdinalIgnoreCase) ||
+                !Guid.TryParseExact(Path.GetFileName(full), "D", out ignored))
+                throw new InvalidDataException("Refusing non-transaction directory: " + full);
+            RejectReparseTree(full);
+            Directory.Delete(full, true);
+        }
+
+        private static void DeleteDirectoryIfEmpty(string path)
+        {
+            if (!Directory.Exists(path))
+                return;
+            if ((File.GetAttributes(path) & System.IO.FileAttributes.ReparsePoint) != 0)
+                return;
+            if (!Directory.EnumerateFileSystemEntries(path).Any())
+                Directory.Delete(path, false);
+        }
+
+        // Removes backups of earlier, finished transactions. The previous
+        // journal's own transaction and every backup the new or previous journal
+        // references are kept, so any later rollback consumer stays valid.
+        // Legacy root-level backup files are left for final uninstall cleanup.
+        private static void PruneTransactionBackups(Session session, Paths paths, MigrationJournal current,
+            MigrationJournal previous, bool previousJournalExisted)
+        {
+            if (previousJournalExisted && previous == null)
+                return;
+            try
+            {
+                var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { current.TransactionId };
+                foreach (var journal in new[] { current, previous })
+                {
+                    if (journal == null)
+                        continue;
+                    if (!string.IsNullOrEmpty(journal.TransactionId))
+                        keep.Add(journal.TransactionId);
+                    foreach (var snapshot in (journal.PreviousProviders ?? new ProviderSnapshot[0]).Concat(journal.RollbackProviders ?? new ProviderSnapshot[0]))
+                    {
+                        if (string.IsNullOrEmpty(snapshot?.OwnedDllBackup))
+                            continue;
+                        var parent = Path.GetFileName(Path.GetDirectoryName(Path.GetFullPath(snapshot.OwnedDllBackup)));
+                        if (!string.IsNullOrEmpty(parent))
+                            keep.Add(parent);
+                    }
+                }
+                foreach (var directory in Directory.EnumerateDirectories(Path.Combine(paths.JournalDirectory, "backup")))
+                {
+                    Guid ignored;
+                    var name = Path.GetFileName(directory);
+                    if (Guid.TryParseExact(name, "D", out ignored) && !keep.Contains(name))
+                        DeleteTransactionDirectory(paths, directory);
+                }
+            }
+            catch (Exception error)
+            {
+                session.Log("go-mapi admin migration left earlier transaction backups in place: {0}", error.Message);
+            }
         }
 
         [CustomAction]
@@ -523,6 +730,10 @@ namespace GoMapi.AdminCustomActions
                 SafeDeleteDirectory(Path.Combine(machineRoot, "updates"));
                 SafeDeleteDirectory(Path.Combine(machineRoot, "status"));
                 SafeDeleteDirectory(Path.Combine(machineRoot, "service"));
+                // The migration journal and its backups have no consumer after
+                // the final uninstall commits.
+                SafeDeleteDirectory(Path.Combine(machineRoot, "installer-journal"));
+                DeleteDirectoryIfEmpty(machineRoot);
                 using (var root = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64))
                 {
                     root.DeleteSubKeyTree(VolatileBootKey, false);
@@ -579,8 +790,65 @@ namespace GoMapi.AdminCustomActions
             catch (Exception error)
             {
                 session.Log("go-mapi admin migration phase {0} failed: {1}", phase, error);
+                ReportFailure(session, phase, error);
                 return ActionResult.Failure;
             }
+        }
+
+        // Emits a sanitized, actionable reason through Windows Installer so the
+        // installer UI level decides whether it is shown (/qn stays silent).
+        // Exception details remain only in the verbose log. Rollback phases
+        // log only: the user-facing failure was already reported.
+        private static void ReportFailure(Session session, string phase, Exception error)
+        {
+            if (phase.StartsWith("rollback", StringComparison.Ordinal))
+                return;
+            var blocked = error as SetupBlockedException;
+            var text = blocked != null
+                ? blocked.UserMessage
+                : "go-mapi setup could not complete the step \"" + PhaseDescription(phase) + "\". " +
+                  "Windows Installer will undo the changes made by this setup. Run setup again; if the problem continues, " +
+                  "create a verbose log (msiexec /i <package> /l*vx <log file>) and send it to your administrator or go-mapi support.";
+            try
+            {
+                using (var record = new Record(1))
+                {
+                    record.FormatString = "[1]";
+                    record.SetString(1, text);
+                    session.Message(InstallMessage.Error | (InstallMessage)MessageButtons.OK | (InstallMessage)MessageIcon.Error, record);
+                }
+            }
+            catch (Exception messageError)
+            {
+                session.Log("go-mapi admin migration could not report failure to the installer UI: {0}", messageError.Message);
+            }
+        }
+
+        private static string PhaseDescription(string phase)
+        {
+            switch (phase)
+            {
+                case "validate-machine-transaction": return "check installed go-mapi machine products";
+                case "auto-update-choice": return "resolve the automatic update setting";
+                case "prepare": return "prepare the machine installation";
+                case "snapshot": return "save the current mail provider state";
+                case "cleanup": return "remove earlier go-mapi installations";
+                case "verify-and-commit": return "register go-mapi as the mail provider";
+                case "prepare-uninstall": return "prepare the uninstall";
+                case "begin-resident-uninstall-fence": return "stop the go-mapi service for uninstall";
+                case "finalize-uninstall": return "restore the previous mail provider";
+                default: return "configure go-mapi";
+            }
+        }
+
+        private sealed class SetupBlockedException : InvalidOperationException
+        {
+            public SetupBlockedException(string message, string userMessage) : base(message)
+            {
+                UserMessage = userMessage;
+            }
+
+            public string UserMessage { get; private set; }
         }
 
         private static void CleanupResource(InventoryResource resource, Session session)
@@ -680,7 +948,7 @@ namespace GoMapi.AdminCustomActions
             return views.Select(value => (RegistryView)Enum.Parse(typeof(RegistryView), value, false)).ToArray();
         }
 
-        private static ProviderSnapshot CaptureProvider(RegistryView view, string journalDirectory, string backupPrefix)
+        private static ProviderSnapshot CaptureProvider(RegistryView view, string backupDirectory, string backupPrefix)
         {
             using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view))
             using (var key = baseKey.OpenSubKey(MailRoot, false))
@@ -704,10 +972,10 @@ namespace GoMapi.AdminCustomActions
                         && File.Exists(snapshot.OwnedDllPath)
                         && IsOwnedLegacyDllPath(snapshot.OwnedDllPath))
                     {
-                        var backupDirectory = Path.Combine(journalDirectory, "backup");
                         Directory.CreateDirectory(backupDirectory);
                         snapshot.OwnedDllBackup = Path.Combine(backupDirectory, backupPrefix + "-" + view + "-go-mapi.dll");
                         File.Copy(snapshot.OwnedDllPath, snapshot.OwnedDllBackup, true);
+                        snapshot.OwnedDllBackupSha256 = Sha256(snapshot.OwnedDllBackup);
                     }
                 }
                 return snapshot;
@@ -725,6 +993,8 @@ namespace GoMapi.AdminCustomActions
                 && !string.IsNullOrWhiteSpace(snapshot.OwnedDllPath)
                 && !string.IsNullOrWhiteSpace(snapshot.OwnedDllBackup)
                 && File.Exists(snapshot.OwnedDllBackup)
+                && (File.GetAttributes(snapshot.OwnedDllBackup) & System.IO.FileAttributes.ReparsePoint) == 0
+                && (snapshot.OwnedDllBackupSha256 == null || Sha256(snapshot.OwnedDllBackup) == snapshot.OwnedDllBackupSha256)
                 && IsOwnedLegacyDllPath(snapshot.OwnedDllPath))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(snapshot.OwnedDllPath));
@@ -896,6 +1166,7 @@ namespace GoMapi.AdminCustomActions
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "service"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "status"),
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "uninst"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "go-mapi", "installer-journal"),
             }.Select(item => Path.GetFullPath(item).TrimEnd(Path.DirectorySeparatorChar));
             if (!allowed.Contains(full, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException("Refusing non-owned directory: " + full);
@@ -932,6 +1203,7 @@ namespace GoMapi.AdminCustomActions
         {
             if (!File.Exists(path))
                 return null;
+            RequireBoundedRegularFile(path, "Migration journal");
             return JsonConvert.DeserializeObject<MigrationJournal>(File.ReadAllText(path));
         }
 
@@ -1030,6 +1302,17 @@ namespace GoMapi.AdminCustomActions
                 File.Move(temporary, path);
         }
 
+        private static void AtomicWriteBytes(string path, byte[] value)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new InvalidDataException("Path has no directory"));
+            var temporary = path + ".tmp." + Guid.NewGuid().ToString("N");
+            File.WriteAllBytes(temporary, value);
+            if (File.Exists(path))
+                File.Replace(temporary, path, null);
+            else
+                File.Move(temporary, path);
+        }
+
         private sealed class Paths
         {
             public string InstallRoot { get; private set; }
@@ -1076,6 +1359,8 @@ namespace GoMapi.AdminCustomActions
         {
             [JsonProperty("schema")]
             public string Schema { get; set; }
+            [JsonProperty("transactionId", NullValueHandling = NullValueHandling.Ignore)]
+            public string TransactionId { get; set; }
             [JsonProperty("productVersion")]
             public string ProductVersion { get; set; }
             [JsonProperty("createdAtUtc")]
@@ -1090,6 +1375,16 @@ namespace GoMapi.AdminCustomActions
             public List<JournalOperation> Operations { get; set; }
             [JsonProperty("installedManifest", NullValueHandling = NullValueHandling.Ignore)]
             public string InstalledManifest { get; set; }
+            [JsonProperty("hadInstalledManifest")]
+            public bool HadInstalledManifest { get; set; }
+            [JsonProperty("manifestBackup", NullValueHandling = NullValueHandling.Ignore)]
+            public string ManifestBackup { get; set; }
+            [JsonProperty("manifestBackupSha256", NullValueHandling = NullValueHandling.Ignore)]
+            public string ManifestBackupSha256 { get; set; }
+            [JsonProperty("previousJournalBackup", NullValueHandling = NullValueHandling.Ignore)]
+            public string PreviousJournalBackup { get; set; }
+            [JsonProperty("previousJournalSha256", NullValueHandling = NullValueHandling.Ignore)]
+            public string PreviousJournalSha256 { get; set; }
         }
 
         private sealed class ProviderSnapshot
@@ -1108,6 +1403,8 @@ namespace GoMapi.AdminCustomActions
             public string OwnedDllPath { get; set; }
             [JsonProperty("ownedDllBackup", NullValueHandling = NullValueHandling.Ignore)]
             public string OwnedDllBackup { get; set; }
+            [JsonProperty("ownedDllBackupSha256", NullValueHandling = NullValueHandling.Ignore)]
+            public string OwnedDllBackupSha256 { get; set; }
         }
 
         private sealed class JournalOperation

@@ -113,6 +113,22 @@ function AssertSnapshot($Before, [string]$Step) {
         throw "$Step changed the original machine product; inspect $LogDirectory"
     }
 }
+# Install-time preparation must leave the committed journal byte-identical and
+# no transaction backup directory behind when MSI rolls back.
+function JournalSnapshot() {
+    $journalRoot = Join-Path $env:ProgramData 'go-mapi\installer-journal'
+    $journal = Join-Path $journalRoot 'admin-migration-v1.json'
+    $backupRoot = Join-Path $journalRoot 'backup'
+    return [pscustomobject]@{
+        JournalHash = if (Test-Path -LiteralPath $journal) { (Get-FileHash -LiteralPath $journal -Algorithm SHA256).Hash } else { '' }
+        TransactionBackups = if (Test-Path -LiteralPath $backupRoot) { (@(Get-ChildItem -LiteralPath $backupRoot -Directory | ForEach-Object Name | Sort-Object) -join ',') } else { '' }
+    }
+}
+function AssertJournal($Before, [string]$Step) {
+    if (($Before | ConvertTo-Json -Compress) -ne ((JournalSnapshot) | ConvertTo-Json -Compress)) {
+        throw "$Step left the migration journal or transaction backups changed; inspect $LogDirectory"
+    }
+}
 function WithRollbackDisabled([scriptblock]$Test) {
     $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
     $key = Get-ItemProperty -LiteralPath $path -Name DisableRollback -ErrorAction SilentlyContinue
@@ -172,6 +188,13 @@ $suiteBeforeUpgrade = MachineSnapshot
 AssertExit (RunMsi '/i' $newerSuitePath 'suite-upgrade-after-registration-fault' @('GOMAPI_TEST_FAILURE_POINT=after-registration')) 1603 'newer suite rollback after registration'
 AssertMachine 'suite' $sentinel
 AssertSnapshot $suiteBeforeUpgrade 'newer suite failed upgrade'
+$suiteJournalBeforeUpgrade = JournalSnapshot
+foreach ($point in @('before-prepare', 'after-partial-snapshot', 'after-snapshot')) {
+    AssertExit (RunMsi '/i' $newerSuitePath ('suite-upgrade-' + $point + '-fault') @('GOMAPI_TEST_FAILURE_POINT=' + $point)) 1603 ('newer suite rollback at ' + $point)
+    AssertMachine 'suite' $sentinel
+    AssertSnapshot $suiteBeforeUpgrade ('newer suite ' + $point + ' fault')
+    AssertJournal $suiteJournalBeforeUpgrade ('newer suite ' + $point + ' fault')
+}
 AssertExit (RunMsi '/i' $newerSuitePath 'suite-upgrade') 0 'suite manual same-SKU upgrade'
 AssertMachine 'suite' $sentinel
 if ((MachineSnapshot).AutoUpdateEnabled -ne 1) { throw 'Suite upgrade did not preserve enabled setting' }
@@ -198,6 +221,13 @@ AssertSnapshot $systemBeforeMigration 'rollback-disabled system to suite migrati
 AssertExit (RunMsi '/i' $suitePath 'suite-after-old-removal-before-cleanup-fault' @('GOMAPI_MIGRATE_SKU=1', 'GOMAPI_TEST_FAILURE_POINT=before-cleanup')) 1603 'suite migration rollback after old-product removal'
 AssertMachine 'system' $sentinel
 AssertSnapshot $systemBeforeMigration 'suite migration before-cleanup fault'
+$systemJournalBeforeMigration = JournalSnapshot
+foreach ($point in @('before-prepare', 'after-partial-snapshot', 'after-snapshot')) {
+    AssertExit (RunMsi '/i' $suitePath ('suite-migration-' + $point + '-fault') @('GOMAPI_MIGRATE_SKU=1', ('GOMAPI_TEST_FAILURE_POINT=' + $point))) 1603 ('suite migration rollback at ' + $point)
+    AssertMachine 'system' $sentinel
+    AssertSnapshot $systemBeforeMigration ('suite migration ' + $point + ' fault')
+    AssertJournal $systemJournalBeforeMigration ('suite migration ' + $point + ' fault')
+}
 AssertExit (RunMsi '/i' $suitePath 'suite-after-registration-fault' @('GOMAPI_MIGRATE_SKU=1', 'GOMAPI_TEST_FAILURE_POINT=after-registration')) 1603 'suite migration rollback after registration'
 AssertMachine 'system' $sentinel
 AssertSnapshot $systemBeforeMigration 'suite migration after-registration fault'

@@ -23,6 +23,7 @@
   <CustomActionRef Id="PrepareAdminMigration" />
   <CustomActionRef Id="RollbackAdminMigration" />
   <CustomActionRef Id="RollbackServiceConfiguration" />
+  <CustomActionRef Id="SnapshotAdminMigration" />
   <CustomActionRef Id="ApplyAdminMigration" />
   <CustomActionRef Id="VerifyAdminRegistration" />
   <CustomActionRef Id="PrepareAdminUninstall" />
@@ -37,7 +38,10 @@
     <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
     <Custom Action="ResolveAutoUpdateChoice" After="ValidateMachineTransaction" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
-    <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <!-- Immediate read-only marshaling runs as the caller; the protected
+         journal snapshot is deferred SYSTEM work queued after its rollback. -->
+    <Custom Action="RollbackAdminMigration" Before="SnapshotAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <Custom Action="SnapshotAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminUninstall" Before="RollbackAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />

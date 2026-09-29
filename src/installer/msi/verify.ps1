@@ -109,9 +109,22 @@ if ($SKU -eq 'suite') {
 }
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
-foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall')) {
+foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
 }
+# Execution bits: immediate actions impersonate the caller and must not write;
+# every machine mutation is in-script (0x400) and non-impersonated (0x800).
+function ActionType([string]$Name) { return [int](@($actions | Where-Object { $_ -match "^$Name\|" })[0] -split '\|')[1] }
+foreach ($immediate in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','PrepareAdminUninstall')) {
+    if ((ActionType $immediate) -band 0x0F00) { Fail "$immediate must be an immediate read-only action" }
+}
+foreach ($deferred in @('SnapshotAdminMigration','ApplyAdminMigration','VerifyAdminRegistration','BeginResidentUninstallFence','FinalizeAdminUninstall')) {
+    if (((ActionType $deferred) -band 0x0F00) -ne 0x0C00) { Fail "$deferred must be deferred and non-impersonated" }
+}
+foreach ($rollback in @('RollbackAdminMigration','RollbackServiceConfiguration','RollbackResidentUninstallFence','RollbackAdminUninstall')) {
+    if (((ActionType $rollback) -band 0x0F00) -ne 0x0D00) { Fail "$rollback must be a non-impersonated rollback action" }
+}
+if (((ActionType 'CommitAdminUninstall') -band 0x0F00) -ne 0x0E00) { Fail 'CommitAdminUninstall must be a non-impersonated commit action' }
 foreach ($required in @('Wix4SchedServiceConfig_X64','Wix4RollbackServiceConfig_X64','Wix4ExecServiceConfig_X64')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing WiX Util service recovery action $required" }
 }
@@ -126,9 +139,21 @@ if (-not $beginFenceSequence -or -not $rollbackFenceSequence -or -not $stopServi
     $rollbackFenceSequence[1] -ne 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' -or
     [int]$rollbackFenceSequence[2] -ge [int]$beginFenceSequence[2] -or
     [int]$beginFenceSequence[2] -ge [int]$stopServicesSequence[2]) { Fail 'final uninstall fence must precede service stop with an earlier rollback action' }
-foreach ($required in @('ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration')) {
+foreach ($required in @('ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration')) {
     if (-not ($sequence -match "^$required\|")) { Fail "custom action $required is not sequenced" }
 }
+function SequenceRow([string]$Name) { return @($sequence | Where-Object { $_ -match "^$Name\|" })[0] -split '\|' }
+$migrationOrder = @('RemoveExistingProducts','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','ApplyAdminMigration')
+for ($index = 1; $index -lt $migrationOrder.Count; $index++) {
+    $row = SequenceRow $migrationOrder[$index]
+    if ($row[1] -ne 'NOT (REMOVE~="ALL")') { Fail "$($migrationOrder[$index]) must be conditioned to install and maintenance" }
+    if ([int](SequenceRow $migrationOrder[$index - 1])[2] -ge [int]$row[2]) {
+        Fail "migration order must be $($migrationOrder -join ' < ') (rollback queued before the snapshot it protects)"
+    }
+}
+$verifyRow = SequenceRow 'VerifyAdminRegistration'
+if ($verifyRow[1] -ne 'NOT (REMOVE~="ALL")' -or [int](SequenceRow 'WriteRegistryValues')[2] -ge [int]$verifyRow[2] -or
+    [int](SequenceRow 'ApplyAdminMigration')[2] -ge [int]$verifyRow[2]) { Fail 'registration verification must follow WriteRegistryValues and migration apply' }
 $rollbackSequence = @($sequence | Where-Object { $_ -match '^RollbackServiceConfiguration\|' })[0] -split '\|'
 $removeSequence = @($sequence | Where-Object { $_ -match '^RemoveExistingProducts\|' })[0] -split '\|'
 $deleteServicesSequence = @($sequence | Where-Object { $_ -match '^DeleteServices\|' })[0] -split '\|'

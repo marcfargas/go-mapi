@@ -66,6 +66,123 @@ func TestAdminMsiCleanupAndRollbackAreMandatory(t *testing.T) {
 	}
 }
 
+// Immediate custom actions impersonate the installer caller, which under
+// UAC/RDSH can be a filtered, non-elevated token. Protected journal writes must
+// therefore be deferred SYSTEM work protected by an earlier-queued rollback.
+func TestMachineMigrationPreparationIsDeferredAndTransactionOwned(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	sequence := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "MachinePackage.wxi")
+	project := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "GoMapi.AdminCustomActions.csproj")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	actions := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
+	lifecycle := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "CrossSkuLifecycle.Tests.ps1")
+
+	for _, want := range []string{"'before-prepare', 'after-partial-snapshot', 'after-snapshot'", "AssertJournal $suiteJournalBeforeUpgrade", "AssertJournal $systemJournalBeforeMigration"} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("native lifecycle test missing preparation fault coverage %q", want)
+		}
+	}
+	for _, want := range []string{
+		`<CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />`,
+		`<CustomAction Id="SnapshotAdminMigration" BinaryRef="AdminCustomActions" DllEntry="SnapshotAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />`,
+	} {
+		if !strings.Contains(shared, want) {
+			t.Errorf("migration action authoring missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`<CustomActionRef Id="SnapshotAdminMigration" />`,
+		`<Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="RollbackAdminMigration" Before="SnapshotAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="SnapshotAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+	} {
+		if !strings.Contains(sequence, want) {
+			t.Errorf("migration sequence missing %q", want)
+		}
+	}
+	if !strings.Contains(project, `<PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />`) {
+		t.Error("custom actions must use the DTF SfxCA that extracts to user temp when not elevated")
+	}
+	for _, want := range []string{"SnapshotAdminMigration", "0x0C00", "0x0D00", "0x0E00", "rollback queued before the snapshot it protects", "WriteRegistryValues"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled MSI verifier missing migration execution check %q", want)
+		}
+	}
+
+	prepare := customActionBody(t, actions, "PrepareAdminMigration")
+	for _, forbidden := range []string{"EnsureProtectedJournalDirectory", "SaveJournal", "CaptureProvider", "File.Copy", "ProtectJournalFile", "Delete"} {
+		if strings.Contains(prepare, forbidden) {
+			t.Errorf("immediate PrepareAdminMigration must stay read-only; found %q", forbidden)
+		}
+	}
+	for _, want := range []string{`["TransactionId"] = Guid.NewGuid().ToString("D")`, `session["SnapshotAdminMigration"] = data;`, `session["RollbackAdminMigration"] = data;`} {
+		if !strings.Contains(prepare, want) {
+			t.Errorf("immediate PrepareAdminMigration missing marshaling %q", want)
+		}
+	}
+	snapshot := customActionBody(t, actions, "SnapshotAdminMigration")
+	for _, want := range []string{
+		"RequireFixedPaths(data)", `MaybeFail(data, "before-prepare")`, "EnsureProtectedJournalDirectory",
+		`MaybeFail(data, "after-partial-snapshot")`, "previous-journal.json", "SaveJournal(paths.JournalPath, journal)",
+		`MaybeFail(data, "after-snapshot")`, "PruneTransactionBackups",
+	} {
+		if !strings.Contains(snapshot, want) {
+			t.Errorf("deferred snapshot missing %q", want)
+		}
+	}
+	if strings.Index(snapshot, "SaveJournal(") < strings.Index(snapshot, "after-partial-snapshot") {
+		t.Error("previous journal must remain until the replacement snapshot is complete")
+	}
+	if strings.Contains(snapshot, `session["`) {
+		t.Error("deferred snapshot must not read or propagate Session properties")
+	}
+	for name, want := range map[string]string{
+		"ApplyAdminMigration":     "RequireTransactionJournal(paths.JournalPath, data[\"TransactionId\"])",
+		"VerifyAdminRegistration": "RequireTransactionJournal(paths.JournalPath, data[\"TransactionId\"])",
+		"RollbackAdminMigration":  "RemoveTransactionResidue(paths, transactionDirectory, data)",
+	} {
+		if !strings.Contains(customActionBody(t, actions, name), want) {
+			t.Errorf("%s is not bound to its own transaction: missing %q", name, want)
+		}
+	}
+	rollback := customActionBody(t, actions, "RollbackAdminMigration")
+	for _, want := range []string{"journal.PreviousJournalSha256", "AtomicWriteBytes(paths.JournalPath", "ProtectJournalFile(paths.JournalPath)"} {
+		if !strings.Contains(rollback, want) {
+			t.Errorf("migration rollback does not restore the previous journal: missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`"go-mapi", "installer-journal"),`, `SafeDeleteDirectory(Path.Combine(machineRoot, "installer-journal"));`,
+		"OwnedDllBackupSha256", "RequireBoundedRegularFile(path, \"Migration journal\")",
+		"session.Message(InstallMessage.Error", "SetupBlockedException", "DisableRollback", "GOMAPI_MIGRATE_SKU=1", "/l*vx",
+	} {
+		if !strings.Contains(actions, want) {
+			t.Errorf("custom actions missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"MessageBox", "UILevel"} {
+		if strings.Contains(actions, forbidden) {
+			t.Errorf("custom actions must let Windows Installer govern UI; found %q", forbidden)
+		}
+	}
+}
+
+func customActionBody(t *testing.T, source, name string) string {
+	t.Helper()
+	start := strings.Index(source, "public static ActionResult "+name+"(Session session)")
+	if start < 0 {
+		t.Fatalf("custom action %s not found", name)
+	}
+	end := strings.Index(source[start+1:], "[CustomAction]")
+	if end < 0 {
+		return source[start:]
+	}
+	return source[start : start+1+end]
+}
+
 func TestSystemMsiOwnsExactlyOneResidentService(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	wxs := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
