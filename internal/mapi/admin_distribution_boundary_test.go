@@ -315,7 +315,7 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 			`<Property Id="GOMAPI_MIGRATE_SKU" Secure="yes" />`,
 			`Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;`,
 			`<FindRelatedProducts Before="LaunchConditions" />`,
-			`Schedule="afterInstallInitialize"`,
+			`Schedule="afterInstallExecute"`,
 			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE"`,
 		} {
 			if !strings.Contains(entry, want) {
@@ -339,6 +339,82 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 	for _, guid := range []string{"D56189EF-0DA1-4AA1-A764-D90610EC8441", "541217D4-4C8D-4D4C-83E5-9CD4CDCF7694", "1247251F-F476-4520-81A5-25985450B9F8", "1E335EC1-0CCC-54A2-ACC2-96EB8FB2E134"} {
 		if !strings.Contains(shared, guid) {
 			t.Errorf("cross-SKU shared component identity drifted: %s", guid)
+		}
+	}
+}
+
+// Every machine transaction stops the installed suite app in all sessions
+// before the old product is removed or any file is replaced (Ticket 529).
+// Windows Installer permits an early RemoveExistingProducts only directly
+// after InstallInitialize or after InstallExecute, so the stop is executed by
+// an early InstallExecute that RemoveExistingProducts directly follows.
+func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	lifecycle := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "CrossSkuLifecycle.Tests.ps1")
+	stop := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "SuiteAppStop.cs")
+	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
+		entry := readMachinePackageAuthoring(t, repoRoot, filename)
+		for _, want := range []string{
+			`<MajorUpgrade Schedule="afterInstallExecute"`,
+			`<CustomActionRef Id="StopSuiteApps" />`,
+			`<Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />`,
+			`<InstallExecute After="StopSuiteApps" />`,
+		} {
+			if !strings.Contains(entry, want) {
+				t.Errorf("%s missing suite app stop contract %q", filename, want)
+			}
+		}
+	}
+	suite := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuitePackage.wxs")
+	if !strings.Contains(suite, `<Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />`) {
+		t.Error("suite must not let Restart Manager close programs that hold the interceptor")
+	}
+	for _, want := range []string{
+		`<CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />`,
+		`<SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"`,
+		`Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]"`,
+	} {
+		if !strings.Contains(shared, want) {
+			t.Errorf("suite app stop authoring missing %q", want)
+		}
+	}
+	for _, want := range []string{"'StopSuiteApps,InstallExecute'", "exactly one InstallExecute", "StopSuiteApps must precede $later", "'SetStopSuiteApps'"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled MSI verifier missing suite app stop check %q", want)
+		}
+	}
+	body := customActionBody(t, stop, "StopSuiteApps")
+	for _, want := range []string{"CloseSuiteAdmission", "DrainSuiteApps", `MaybeFail(data, "after-suite-stop")`, `"suite-stop-bound"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("StopSuiteApps missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`@"go-mapi\user\go-mapi.exe"`, `@"go-mapi\status\suite-admission-v1"`,
+		"QueryFullProcessImageName", "TerminateProcess", "NumberOfLinks != 1", `"S-1-5-80-"`,
+		"TimeSpan.FromSeconds(30)", "SetupBlockedException",
+	} {
+		if !strings.Contains(stop, want) {
+			t.Errorf("suite app stop implementation missing %q", want)
+		}
+	}
+	// The resident service is the only writer of O; the installer only closes.
+	if strings.Contains(stop, "(byte)'O'") {
+		t.Error("installer custom action must never reopen suite admission")
+	}
+	for _, want := range []string{
+		"Invoke-RunningAppTransaction '/fa' $suitePath",
+		"Invoke-RunningAppTransaction '/i' $newerSuitePath 'suite-upgrade'",
+		"Invoke-RunningAppTransaction '/x' $newerSuitePath 'suite-final-uninstall'",
+		"Invoke-RunningAppTransaction '/i' $systemPath 'system-migration'",
+		"GOMAPI_TEST_FAILURE_POINT=after-suite-stop", "GOMAPI_TEST_FAILURE_POINT=suite-stop-bound",
+		"GOMAPI_TEST_FAILURE_POINT=after-uninstall-finalize') -Expected 1603",
+		"Assert-LaunchRestored", "Start-Decoy", "RequireOtherSession",
+	} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("native lifecycle missing running suite app coverage %q", want)
 		}
 	}
 }
