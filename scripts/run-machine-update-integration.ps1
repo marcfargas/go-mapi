@@ -102,8 +102,35 @@ function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties
         Record 'administrator-msi-timeout' ([ordered]@{ label=$Label; pid=$process.Id; log=$log })
         throw "$Label exceeded the ten-minute MSI deadline; inspect the live installer and log before cleanup"
     }
+    $script:lastAdministratorMsiUtc = [DateTime]::UtcNow
     Record 'administrator-msi' ([ordered]@{ label=$Label; exitCode=$process.ExitCode; log=$log })
     if ($process.ExitCode -ne 0) { throw "$Label returned $($process.ExitCode); postboot proof is required for 3010/1641" }
+}
+# The resident service is the only writer of O. After an administrator MSI
+# transaction it reopens suite admission as soon as Windows Installer is idle;
+# the time counts from the msiexec exit.
+function ReadAdmissionGate {
+    $path = Join-Path $env:ProgramData 'go-mapi\status\suite-admission-v1'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return 'absent' }
+    try {
+        $stream = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        try { if ($stream.Length -ne 1) { return 'malformed' }; return [string][char]$stream.ReadByte() } finally { $stream.Dispose() }
+    } catch [IO.IOException] { return 'locked' }
+}
+function AssertAdmissionReopened([string]$Label, [int]$Seconds) {
+    if ($SKU -ne 'suite') { return }
+    $since = $script:lastAdministratorMsiUtc
+    $state = ReadAdmissionGate
+    while ($state -ne 'O' -and [DateTime]::UtcNow -lt $since.AddSeconds($Seconds)) {
+        Start-Sleep -Milliseconds 250
+        $state = ReadAdmissionGate
+    }
+    $elapsed = [math]::Round(([DateTime]::UtcNow - $since).TotalSeconds, 2)
+    if ($state -ne 'O') {
+        Record 'admission-closed' ([ordered]@{ label=$Label; seconds=$elapsed; state=$state; snapshot=(Snapshot) })
+        throw "suite admission stayed closed $elapsed s after $Label"
+    }
+    Record 'admission-reopened' ([ordered]@{ label=$Label; seconds=$elapsed })
 }
 function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU) {
     $package = if ($Key -eq 'systemB' -and $SKU -eq 'suite' -and $wrongSkuSystem) {
@@ -424,6 +451,7 @@ try {
         Msi '/i' $manifest.packages.$caseC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
         $disabled = AssertHealthy $caseC
         if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }
+        AssertAdmissionReopened 'administrator-disable' 15
         $requestsBefore = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         Restart-Service go-mapi -Force
         if ([DateTime]::UtcNow.AddSeconds(185) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }

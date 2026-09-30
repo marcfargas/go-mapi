@@ -41,6 +41,7 @@ function RunMsi([string]$Verb, [string]$Path, [string]$Name, [string[]]$Properti
     $arguments = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart', 'MSIRMSHUTDOWN=0') + $Properties +
         @('/l*v', ('"' + (Join-Path $LogDirectory ($Name + '.log')) + '"'))
     $process = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru
+    $script:LastMsiExitTime = Get-Date
     return $process.ExitCode
 }
 function AssertMachine([string]$SKU, [string]$Sentinel) {
@@ -200,16 +201,25 @@ function Get-GateState() {
     }
     throw 'Suite admission gate stayed locked'
 }
-# The resident service is the only writer of O. It reopens the gate on its
-# heartbeat once the installed product is healthy and Windows Installer is idle.
-function Wait-GateOpen([string]$Step, [int]$Seconds = 120) {
-    $deadline = (Get-Date).AddSeconds($Seconds)
+# The resident service is the only writer of O. It reopens the gate as soon as
+# Windows Installer is idle after it has proved the installed product healthy;
+# its one-minute heartbeat is the backstop.
+# Seconds from $Since until the gate reads O, or $null after $Seconds.
+function Measure-GateOpen([datetime]$Since, [int]$Seconds) {
+    $deadline = $Since.AddSeconds($Seconds)
     do {
-        $state = Get-GateState
-        if ($state -eq 'O') { return }
-        Start-Sleep -Seconds 2
+        if ((Get-GateState) -eq 'O') { return [math]::Round(((Get-Date) - $Since).TotalSeconds, 2) }
+        Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
-    throw "$Step`: suite admission did not reopen within $Seconds s (state $state)"
+    return $null
+}
+# -FromMsiExit counts from the exit of the last RunMsi, not from this call.
+function Wait-GateOpen([string]$Step, [int]$Seconds = 120, [switch]$FromMsiExit) {
+    $since = if ($FromMsiExit) { $script:LastMsiExitTime } else { Get-Date }
+    if ($null -eq (Measure-GateOpen $since $Seconds)) {
+        $from = if ($FromMsiExit) { ' of the msiexec exit' } else { '' }
+        throw "$Step`: suite admission did not reopen within $Seconds s$from (state $(Get-GateState))"
+    }
 }
 function Get-InstalledApps() {
     @(Get-CimInstance Win32_Process -Filter "Name='go-mapi.exe'" | Where-Object {
@@ -352,6 +362,16 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
     [pscustomobject]@{ Event = 'RunningAppTransaction'; Step = $Name; Exit = $exit; Survivors = $survivors.Count;
         NewPendingRenames = $newRenames.Count; Failures = $failures } | ConvertTo-Json -Compress -Depth 4
     if ($failures.Count) { throw "$Name with installed apps running failed: $($failures -join '; '); inspect $LogDirectory" }
+    # With a suite installed afterwards, admission reopens within 15 s of the
+    # msiexec exit. After a rollback the time is recorded only; the launch
+    # check keeps its own 120 s bound.
+    if (@(RelatedProducts $suiteCode).Count -eq 1) {
+        $bound = if ($Expected -eq 0) { 15 } else { 120 }
+        $evidence.GateOpenSeconds = Measure-GateOpen $script:LastMsiExitTime $bound
+        Write-Evidence ($Name + '-running-apps') $evidence
+        [pscustomobject]@{ Event = 'GateOpen'; Step = $Name; Exit = $exit; Seconds = $evidence.GateOpenSeconds; Bound = $bound } | ConvertTo-Json -Compress
+        if ($Expected -eq 0) { Wait-GateOpen $Name 15 -FromMsiExit }
+    }
     Stop-Decoy
 }
 # On-demand launch through the installed interceptor (the system MAPI stub

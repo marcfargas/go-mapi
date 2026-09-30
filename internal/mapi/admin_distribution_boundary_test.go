@@ -417,6 +417,8 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		}
 	}
 	// The resident service is the only writer of O; the installer only closes.
+	// The service reopens the gate as soon as Windows Installer is idle, with
+	// its one-minute heartbeat as the backstop.
 	if strings.Contains(stop, "(byte)'O'") {
 		t.Error("installer custom action must never reopen suite admission")
 	}
@@ -449,9 +451,23 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		"Invoke-RunningAppTransaction '/x' $newerAppSuitePath 'suite-app-upgrade-uninstall'",
 		"'suite app pre-stop did not finish before the outer CostInitialize'",
 		"Assert-ServiceConfiguration 'suite final uninstall rollback'",
+		// Admission reopens within 15 s of the msiexec exit after every
+		// successful suite transaction (Ticket 529 V1).
+		"$script:LastMsiExitTime = Get-Date", "Wait-GateOpen $Name 15 -FromMsiExit", "GateOpenSeconds",
 	} {
 		if !strings.Contains(lifecycle, want) {
 			t.Errorf("native lifecycle missing running suite app coverage %q", want)
+		}
+	}
+	machineUpdate := readAdminContractFile(t, repoRoot, "scripts", "run-machine-update-integration.ps1")
+	for _, want := range []string{
+		// The administrator repair keeps its unchanged health assertion and
+		// must also reopen admission promptly.
+		"        $disabled = AssertHealthy $caseC\n        if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }\n        AssertAdmissionReopened 'administrator-disable' 15\n",
+		"$script:lastAdministratorMsiUtc = [DateTime]::UtcNow",
+	} {
+		if !strings.Contains(machineUpdate, want) {
+			t.Errorf("machine update integration missing suite admission reopen check %q", want)
 		}
 	}
 	// Hosted CI must run an upgrade that replaces the running app file.

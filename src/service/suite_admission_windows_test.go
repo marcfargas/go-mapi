@@ -155,8 +155,8 @@ func TestHealthyOpenSuiteIgnoresUnrelatedBusyInstallerServer(t *testing.T) {
 	}
 	server := &fakeInstallerServerProbe{busyOnCall: 1}
 	// A closed gate must wait for an idle server before any O publication.
-	if err := openHealthySuiteWithServer(ctx, gate, state, storage, InstallerInventory{}, ProductSnapshot{}, server); err == nil {
-		t.Fatal("busy server allowed a closed gate to open")
+	if err := openHealthySuiteWithServer(ctx, gate, state, storage, InstallerInventory{}, ProductSnapshot{}, server); !errors.Is(err, ErrSuiteInstallerBusy) {
+		t.Fatalf("busy server refusal = %v, want ErrSuiteInstallerBusy", err)
 	}
 	if open, err := gate.IsOpen(ctx); err != nil || open || server.calls != 1 || len(server.requireStopped) != 1 || server.requireStopped[0] {
 		t.Fatalf("closed proof: open=%v err=%v server=%+v", open, err, server)
@@ -172,5 +172,33 @@ func TestHealthyOpenSuiteIgnoresUnrelatedBusyInstallerServer(t *testing.T) {
 	}
 	if open, err := gate.IsOpen(ctx); err != nil || !open || server.calls != 0 {
 		t.Fatalf("existing O was disturbed: open=%v err=%v server calls=%d", open, err, server.calls)
+	}
+}
+
+// A chained transaction can take the installer between the proof's second
+// idle check and the gate lock. The last idle check runs under the gate and
+// state locks, so its C always lands after an O, never before it.
+func TestSuiteOpenRechecksInstallerIdleUnderTheGateLock(t *testing.T) {
+	ctx := context.Background()
+	gate := testSuiteGate(t)
+	storage := mustStorage(t, testStorageRoot(t, "service"), privateStorage)
+	state, err := NewFileStateStore(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// idle, idle, then busy on the third call (the one under the lock)
+	server := &fakeInstallerServerProbe{busyOnCall: 3, calls: 2}
+	if err := publishSuiteOpenWhenIdle(ctx, gate, state, server); !errors.Is(err, ErrSuiteInstallerBusy) {
+		t.Fatalf("busy installer under the gate lock = %v, want ErrSuiteInstallerBusy", err)
+	}
+	if open, err := gate.IsOpen(ctx); err != nil || open || server.calls != 3 || server.requireStopped[0] {
+		t.Fatalf("gate after busy recheck: open=%v err=%v server=%+v", open, err, server)
+	}
+	server = &fakeInstallerServerProbe{}
+	if err := publishSuiteOpenWhenIdle(ctx, gate, state, server); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := gate.IsOpen(ctx); err != nil || !open || server.calls != 1 {
+		t.Fatalf("gate after idle recheck: open=%v err=%v calls=%d", open, err, server.calls)
 	}
 }
