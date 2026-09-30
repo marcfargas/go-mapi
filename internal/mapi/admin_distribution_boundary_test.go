@@ -475,6 +475,27 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 	if !strings.Contains(hosted, "-NewerAppSuiteMsi $fixture.packages.suiteC.msi") {
 		t.Error("hosted machine integration must pass the app-changing suite fixture to the lifecycle test")
 	}
+	// The interceptor starts the resident app as the sender's child, and
+	// Start-Process -Wait waits for descendants: the launch probe sender must
+	// be waited for alone and with a bound (Ticket 529 V2).
+	senderStarts := 0
+	for _, line := range strings.Split(lifecycle, "\n") {
+		if !strings.Contains(line, "Start-Process -FilePath $powerShell") {
+			continue
+		}
+		senderStarts++
+		if !strings.Contains(line, "-PassThru") || strings.Contains(line, "-Wait") {
+			t.Errorf("launch probe sender must start with -PassThru and without -Wait: %s", strings.TrimSpace(line))
+		}
+	}
+	if senderStarts != 1 {
+		t.Errorf("launch probe sender starts = %d, want 1", senderStarts)
+	}
+	for _, want := range []string{"$senderProcess.WaitForExit(30000)", "Stop-Process -Id $senderProcess.Id", "SenderExited = $senderExited"} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("launch probe sender lacks its bounded wait %q", want)
+		}
+	}
 }
 
 func TestAdminLegacyInventoryIsExplicitAndOwned(t *testing.T) {

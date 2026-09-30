@@ -412,24 +412,45 @@ $message.NoteText = 'Installed interceptor launch check.'
     $known = @(Get-InstalledApps | ForEach-Object ProcessId)
     $powerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$sender`" -Result `"$result`""
+    $senderProcess = $null
     if ($users.Count) {
         $principal = New-ScheduledTaskPrincipal -UserId $users[0].User -LogonType Interactive -RunLevel Limited
         Start-TestTask 'send' $powerShell $arguments $principal | Out-Null
     } else {
-        Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden -Wait
+        # Without another session (hosted runners) the sender runs here. The
+        # interceptor starts the resident app as the sender's child, and
+        # Start-Process -Wait would wait for that descendant too: never wait
+        # for the tree, only for the sender itself.
+        $senderProcess = Start-Process -FilePath $powerShell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        $null = $senderProcess.Handle # keeps the exit code readable after exit
     }
+    $senderExited = $null
+    $senderExitCode = $null
     $deadline = (Get-Date).AddSeconds(60)
     $launched = @()
-    do {
-        Start-Sleep -Seconds 1
-        $launched = @(Get-InstalledApps | Where-Object { $known -notcontains $_.ProcessId })
-        $code = if (Test-Path -LiteralPath $result) { (Get-Content -LiteralPath $result -Raw).Trim() } else { $null }
-    } while (((-not $launched.Count) -or $null -eq $code) -and (Get-Date) -lt $deadline)
+    try {
+        do {
+            Start-Sleep -Seconds 1
+            $launched = @(Get-InstalledApps | Where-Object { $known -notcontains $_.ProcessId })
+            $code = if (Test-Path -LiteralPath $result) { (Get-Content -LiteralPath $result -Raw).Trim() } else { $null }
+        } while (((-not $launched.Count) -or $null -eq $code) -and (Get-Date) -lt $deadline)
+    } finally {
+        if ($senderProcess) {
+            # Process.WaitForExit(int) waits for this process only.
+            $senderExited = $senderProcess.WaitForExit(30000)
+            if ($senderExited) { $senderExitCode = $senderProcess.ExitCode }
+            else { Stop-Process -Id $senderProcess.Id -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    $clientExplorer = [bool](@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.SessionId -eq $clientSession }).Count)
     [pscustomobject]@{ Event = 'LaunchRestored'; Step = $Step; MapiResult = $code;
-        Launched = @($launched | ForEach-Object { [pscustomobject]@{ Pid = $_.ProcessId; Session = $_.SessionId } }) } |
+        Launched = @($launched | ForEach-Object { [pscustomobject]@{ Pid = $_.ProcessId; Session = $_.SessionId } });
+        SenderInClientSession = [bool]$senderProcess; SenderExited = $senderExited; SenderExitCode = $senderExitCode;
+        ClientSession = $clientSession; ClientSessionExplorer = $clientExplorer } |
         ConvertTo-Json -Compress -Depth 4
     if ($code -ne '0') { throw "$Step`: MAPISendMail through the installed interceptor returned '$code'" }
     if (-not $launched.Count) { throw "$Step`: the interceptor did not launch the installed app on demand" }
+    if ($senderProcess -and -not $senderExited) { throw "$Step`: the launch probe sender did not exit within 30 s after the probe" }
 }
 function Remove-TestResidue() {
     Remove-TestTasks
