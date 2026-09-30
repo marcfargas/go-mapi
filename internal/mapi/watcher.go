@@ -400,6 +400,12 @@ func (ew *EmailWatcher) processFile(filename string) {
 // files staged beside it. This is the consumer-side counterpart of the native
 // producer's <stem>/ attachment staging convention and prevents a descriptor
 // from causing the app to read arbitrary local files.
+//
+// The attachment folder and each attachment are resolved to the object that
+// the file system actually opens (resolveFinalPath), so symbolic links,
+// junctions and ".." cannot move an attachment out of the folder. Links above
+// the folder, such as a user profile that is a volume mount point, resolve
+// identically for the folder and its files and are therefore accepted.
 func (ew *EmailWatcher) validateAttachmentPaths(filename string, mail *MailMessage) error {
 	if len(mail.Attachments) == 0 {
 		return nil
@@ -407,24 +413,33 @@ func (ew *EmailWatcher) validateAttachmentPaths(filename string, mail *MailMessa
 
 	stem := strings.TrimSuffix(filename, filepath.Ext(filename))
 	attachmentsDir := filepath.Clean(filepath.Join(ew.watchDir, stem))
-	resolvedAttachmentsDir, err := filepath.EvalSymlinks(attachmentsDir)
+	resolvedAttachmentsDir, err := resolveFinalPath(attachmentsDir)
 	if err != nil {
 		return fmt.Errorf("resolve attachment directory %q: %w", attachmentsDir, err)
 	}
 
 	for _, attachment := range mail.Attachments {
 		path := filepath.Clean(attachment.Path)
-		resolvedPath, err := filepath.EvalSymlinks(path)
+		resolvedPath, err := resolveFinalPath(path)
 		if err != nil {
 			return fmt.Errorf("resolve attachment %q: %w", attachment.Filename, err)
 		}
-		rel, err := filepath.Rel(resolvedAttachmentsDir, resolvedPath)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if !pathInsideDir(resolvedAttachmentsDir, resolvedPath) {
 			return fmt.Errorf("attachment %q is outside %q", attachment.Filename, resolvedAttachmentsDir)
 		}
 	}
 
 	return nil
+}
+
+// pathInsideDir reports whether path names an entry strictly below dir. Both
+// arguments must come from resolveFinalPath.
+func pathInsideDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (ew *EmailWatcher) handleRemove(filename string) {
