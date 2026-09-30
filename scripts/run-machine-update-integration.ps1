@@ -84,12 +84,12 @@ function AssertHealthy([string]$Key) {
     }
     $snapshot
 }
-function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes) {
+function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes, [int]$PollMilliseconds = 5000) {
     $end = [DateTime]::UtcNow.AddMinutes($Minutes)
     if ($end -gt $script:overallDeadline) { $end = $script:overallDeadline }
     while ([DateTime]::UtcNow -lt $end) {
         try { $result = & $Condition; if ($result) { return $result } } catch { Record 'poll-error' "$Label`: $($_.Exception.Message)" }
-        Start-Sleep -Seconds 5
+        Start-Sleep -Milliseconds $PollMilliseconds
     }
     Record 'deadline-snapshot' (Snapshot)
     throw "Deadline waiting for $Label"
@@ -452,10 +452,13 @@ try {
         AssertNoInteractiveUser
         Record 'no-user-A-B-C-committed' $c
     } elseif ($Phase -eq 'InterruptSameBoot') {
+        # The runner/installer pair is live only while msiexec runs (a few
+        # seconds). A 5-second poll phase-locks to the service's fixed startup
+        # delay and can miss that window on every attempt; poll sub-second.
         $pending = Until 'matching runner and installer liveness' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
             if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12
+        } 12 200
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
         Stop-Process -Id $pending.runner.pid -Force
@@ -470,7 +473,7 @@ try {
         $pending = Until 'matching pending before external reboot' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
             if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12
+        } 12 200
         $owner = ReadJson $ownerPath
         $task = "go-mapi-ci-fixture-$($owner.runId)"
         $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument ("-NoProfile -File `"$PSScriptRoot\machine-update-https-fixture.ps1`" -PackageManifest `"$PackageManifest`" -FixtureDirectory `"$fixture`" -Port $FixturePort")
