@@ -290,7 +290,9 @@ function Get-PendingRenames() {
 # Runs one transaction with installed apps running and records every
 # behavioral fact before any assertion, then asserts them in that order.
 function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Name, [string[]]$Properties = @(), [int]$Expected = 0,
-    [switch]$AllowSurvivors, [string]$ExpectMessage) {
+    [switch]$AllowSurvivors, [string]$ExpectMessage,
+    # A stop that ends at its bound logs the bound line instead of completing.
+    [string]$StopMarker = 'go-mapi suite app stop complete: stopped=') {
     $before = MachineSnapshot
     $renamesBefore = Get-PendingRenames
     $running = Start-InstalledSuiteApps $Name
@@ -303,7 +305,7 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
     $lines = if (Test-Path -LiteralPath $log) { @(Get-Content -LiteralPath $log) } else { @() }
     $inUse = @($lines | Where-Object { ($_ -match '(?i)go-mapi\.exe' -and $_ -match '(?i)in use|held in use|reboot') -or
         $_ -match '(?i)Scheduling reboot operation|Must reboot|ReplacedInUseFiles = 1' })
-    $stopLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'go-mapi suite app stop complete: stopped=') { $index } })
+    $stopLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index].Contains($StopMarker)) { $index } })
     $removeLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'Action start [0-9:]+: RemoveExistingProducts\.') { $index } })
     # The best-effort pre-stop must finish before the outer transaction costs
     # files, because Windows Installer records files in use during costing.
@@ -545,6 +547,7 @@ AssertMachine 'suite' $sentinel
 AssertSnapshot $suiteBeforeUpgrade 'newer suite rollback after suite app stop'
 Assert-LaunchRestored 'newer suite rollback after suite app stop'
 Invoke-RunningAppTransaction '/i' $newerSuitePath 'suite-upgrade-suite-stop-bound-fault' @('GOMAPI_TEST_FAILURE_POINT=suite-stop-bound') -Expected 1603 -AllowSurvivors `
+    -StopMarker 'go-mapi suite app stop bound exceeded' `
     -ExpectMessage 'go-mapi setup could not close the running go-mapi app in every user session'
 AssertMachine 'suite' $sentinel
 AssertSnapshot $suiteBeforeUpgrade 'newer suite bounded suite app stop failure'
