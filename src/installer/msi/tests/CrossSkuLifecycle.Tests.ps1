@@ -30,6 +30,10 @@ function RelatedProducts([string]$UpgradeCode) {
     @($installer.GetType().InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($UpgradeCode)) | Where-Object { $_ })
 }
 function RunMsi([string]$Verb, [string]$Path, [string]$Name, [string[]]$Properties = @()) {
+    # msiexec /fa drops every property, including the REBOOT=ReallySuppress
+    # of /norestart: a repair that needs a reboot then restarts the machine
+    # (exit 1641). Run the identical repair through /i so they apply.
+    if ($Verb -eq '/fa') { $Verb = '/i'; $Properties = @('REINSTALL=ALL', 'REINSTALLMODE=a') + $Properties }
     $arguments = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart', 'MSIRMSHUTDOWN=0') + $Properties +
         @('/l*v', ('"' + (Join-Path $LogDirectory ($Name + '.log')) + '"'))
     $process = Start-Process -FilePath msiexec.exe -ArgumentList $arguments -Wait -PassThru
