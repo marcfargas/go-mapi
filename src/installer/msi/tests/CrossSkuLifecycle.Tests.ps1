@@ -327,7 +327,7 @@ function Assert-LaunchRestored([string]$Step) {
     Wait-GateOpen $Step
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     $acl = Get-Acl -LiteralPath $testRoot
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule('*S-1-5-32-545', 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule([Security.Principal.SecurityIdentifier]'S-1-5-32-545', 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     Set-Acl -LiteralPath $testRoot -AclObject $acl
     $result = Join-Path $testRoot ('send-' + [guid]::NewGuid().ToString('N') + '.txt')
     $sender = Join-Path $testRoot 'mapi-send.ps1'
