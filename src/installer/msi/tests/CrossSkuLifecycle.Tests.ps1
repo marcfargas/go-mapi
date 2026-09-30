@@ -106,6 +106,17 @@ function AssertMachine([string]$SKU, [string]$Sentinel) {
         SuiteProducts = $suite.Count; Service = $service[0].State; ProfileSentinel = 'unchanged' } |
         ConvertTo-Json -Compress
 }
+# A rolled-back removal must restore the resident service's SCM settings;
+# without them its health proof fails and suite admission stays closed.
+function Assert-ServiceConfiguration([string]$Step) {
+    $registry = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\go-mapi'
+    $sidType = (& sc.exe qsidtype go-mapi | Out-String)
+    $failure = (& sc.exe qfailure go-mapi | Out-String)
+    if ($registry.DelayedAutoStart -ne 1 -or $sidType -notmatch 'SERVICE_SID_TYPE:\s+UNRESTRICTED' -or
+        @([regex]::Matches($failure, 'RESTART --')).Count -ne 2) {
+        throw "$Step left the resident service configuration unrestored: delayed=$($registry.DelayedAutoStart) $($sidType -replace '\s+', ' ') $($failure -replace '\s+', ' ')"
+    }
+}
 function AssertExit([int]$Actual, [int]$Expected, [string]$Step) {
     if ($Actual -eq 3010) { throw "$Step requires a reboot on this same lease and postboot verification; inspect $LogDirectory" }
     if ($Actual -ne $Expected) { throw "$Step returned $Actual, expected $Expected; inspect $LogDirectory" }
@@ -559,6 +570,7 @@ $suiteBeforeFinalUninstall = MachineSnapshot
 Invoke-RunningAppTransaction '/x' $newerSuitePath 'suite-final-after-destructive-fault' @('GOMAPI_TEST_FAILURE_POINT=after-uninstall-finalize') -Expected 1603
 AssertMachine 'suite' $sentinel
 AssertSnapshot $suiteBeforeFinalUninstall 'suite final uninstall fault'
+Assert-ServiceConfiguration 'suite final uninstall rollback'
 Assert-LaunchRestored 'suite final uninstall rollback'
 Invoke-RunningAppTransaction '/x' $newerSuitePath 'suite-final-uninstall'
 if (@(RelatedProducts $suiteCode).Count -ne 0 -or (Get-Service go-mapi -ErrorAction SilentlyContinue)) { throw 'Suite final uninstall left product or service' }

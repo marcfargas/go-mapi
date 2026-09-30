@@ -222,9 +222,9 @@ foreach ($table in @('InstallUISequence','AdminUISequence','AdminExecuteSequence
 }
 $setStopSequence = SequenceRow 'SetStopSuiteApps'
 if (-not $setStopSequence -or [int]$setStopSequence[2] -ge [int]$initializeSequence[2]) { Fail 'StopSuiteApps data must be set before InstallInitialize' }
-if ($rollbackSequence[1] -ne 'REMOVE~="ALL" AND UPGRADINGPRODUCTCODE' -or
+if ($rollbackSequence[1] -cne 'REMOVE~="ALL"' -or
     [int]$rollbackSequence[2] -ge [int]$deleteServicesSequence[2] -or
     [int]$rollbackSequence[2] -le [int]$removeSequence[2]) {
-    Fail 'old-product service configuration rollback must precede DeleteServices without splitting early removal'
+    Fail 'service configuration rollback must precede DeleteServices on every removal without splitting early removal'
 }
 Write-Host "Verified immutable $SKU identity, mutually exclusive machine Upgrade rows, ordered migration gate, interceptor/service payload, one delayed resident service, bounded recovery, migration actions, and Default Apps boundary."

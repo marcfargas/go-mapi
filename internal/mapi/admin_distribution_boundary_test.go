@@ -316,7 +316,8 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 			`Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;`,
 			`<FindRelatedProducts Before="LaunchConditions" />`,
 			`Schedule="afterInstallExecute"`,
-			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE"`,
+			// Covers the old product's removal inside an upgrade or migration.
+			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;"`,
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("%s missing migration contract %q", filename, want)
@@ -365,6 +366,9 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 			// WiX 4 rejects After together with Before; verify.ps1 checks the
 			// compiled LaunchConditions < PreStopSuiteApps < CostInitialize order.
 			`<Custom Action="PreStopSuiteApps" After="LaunchConditions" Condition="NOT UPGRADINGPRODUCTCODE" />`,
+			// A rolled-back final uninstall must restore the service's SCM
+			// settings too, or its health proof keeps suite admission closed.
+			`<Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;" />`,
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("%s missing suite app stop contract %q", filename, want)
@@ -444,6 +448,7 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		"Invoke-RunningAppTransaction '/i' $newerAppSuitePath 'suite-upgrade-app'",
 		"Invoke-RunningAppTransaction '/x' $newerAppSuitePath 'suite-app-upgrade-uninstall'",
 		"'suite app pre-stop did not finish before the outer CostInitialize'",
+		"Assert-ServiceConfiguration 'suite final uninstall rollback'",
 	} {
 		if !strings.Contains(lifecycle, want) {
 			t.Errorf("native lifecycle missing running suite app coverage %q", want)

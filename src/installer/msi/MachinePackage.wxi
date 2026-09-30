@@ -43,7 +43,10 @@
     <Custom Action="ValidateMachineTransaction" After="InstallValidate" />
     <Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />
     <InstallExecute After="StopSuiteApps" />
-    <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
+    <!-- Rolling back DeleteServices recreates the service without its
+         MsiServiceConfig and WiX Util settings, both for the old product's
+         removal inside an upgrade and for a rolled-back final uninstall. -->
+    <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;" />
     <Custom Action="ResolveAutoUpdateChoice" After="ValidateMachineTransaction" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <!-- Immediate read-only marshaling runs as the caller; the protected

@@ -170,8 +170,10 @@ namespace GoMapi.AdminCustomActions
 
         // MSI's rollback of ServiceInstall recreates the service, but does not
         // replay MsiServiceConfig or WiX Util's failure-action custom action.
-        // The *old* product schedules this rollback before DeleteServices for
-        // upgrade-driven removal, so it runs after its own service restoration.
+        // Every removal (the old product inside an upgrade, and a final
+        // uninstall) schedules this rollback before DeleteServices, so it runs
+        // after the service is restored. Without it the resident service's
+        // health proof fails and suite admission stays closed.
         [CustomAction]
         public static ActionResult RollbackServiceConfiguration(Session session)
         {
