@@ -4,7 +4,7 @@ package service
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
@@ -33,8 +33,9 @@ func retireProvedSuiteRepair(ctx context.Context, gate *SuiteAdmission, store *F
 }
 
 // openHealthySuite is the only writer of O. It repeats full health with runner
-// exclusion, then checks the cheap marker and empty state under admission ->
-// state.lock before the flushed publication.
+// exclusion, then checks the cheap marker, empty state and an idle Windows
+// Installer under admission -> state.lock before the flushed publication. A
+// busy installer returns an error that wraps ErrSuiteInstallerBusy.
 func openHealthySuite(ctx context.Context, gate *SuiteAdmission, store *FileStateStore, stateStorage *ProtectedStorage, inventory InstallerInventory, expected ProductSnapshot) error {
 	return openHealthySuiteWithServer(ctx, gate, store, stateStorage, inventory, expected, WindowsInstallerServerProbe{})
 }
@@ -60,7 +61,7 @@ func openHealthySuiteWithServer(ctx context.Context, gate *SuiteAdmission, store
 		return err
 	}
 	if !idle {
-		return errors.New("installer server is not idle")
+		return fmt.Errorf("installer server is not idle: %w", ErrSuiteInstallerBusy)
 	}
 	registration, err := inventory.Installed(ctx)
 	if err != nil {
@@ -85,7 +86,7 @@ func openHealthySuiteWithServer(ctx context.Context, gate *SuiteAdmission, store
 		return err
 	}
 	if !idle {
-		return errors.New("installer server changed during health proof")
+		return fmt.Errorf("installer server changed during health proof: %w", ErrSuiteInstallerBusy)
 	}
 	registration, err = inventory.Installed(ctx)
 	if err != nil {
@@ -102,16 +103,36 @@ func openHealthySuiteWithServer(ctx context.Context, gate *SuiteAdmission, store
 	if !sameProduct(confirmed, observed) {
 		return ErrStateConflict
 	}
+	return publishSuiteOpenWhenIdle(ctx, gate, store, server, func() error {
+		marker, err := readMachineProductMarker()
+		if err != nil {
+			return err
+		}
+		if !markerMatchesSuite(observed, marker) {
+			return ErrStateConflict
+		}
+		return nil
+	})
+}
+
+// publishSuiteOpenWhenIdle repeats the installer idle check under the gate
+// and state locks, immediately before O is written. A machine transaction
+// writes C under the same gate lock after it owns the installer: one that
+// owns the installer before this check makes it fail, and one that starts
+// later writes its C after this O. Each idle probe briefly owns the MSI
+// execute mutex, as every earlier probe does.
+func publishSuiteOpenWhenIdle(ctx context.Context, gate *SuiteAdmission, store *FileStateStore, server InstallerServerProbe, checks ...func() error) error {
 	return gate.withExclusive(ctx, func(lock *suiteAdmissionLock) error {
-		return store.PublishSuiteOpen(ctx, lock.write, func() error {
-			marker, err := readMachineProductMarker()
+		idle := func() error {
+			idle, err := server.Idle(ctx, false)
 			if err != nil {
 				return err
 			}
-			if !markerMatchesSuite(observed, marker) {
-				return ErrStateConflict
+			if !idle {
+				return fmt.Errorf("installer server became busy before admission opened: %w", ErrSuiteInstallerBusy)
 			}
 			return nil
-		})
+		}
+		return store.PublishSuiteOpen(ctx, lock.write, append(append([]func() error{}, checks...), idle)...)
 	})
 }

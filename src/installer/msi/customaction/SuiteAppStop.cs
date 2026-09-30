@@ -20,9 +20,12 @@ namespace GoMapi.AdminCustomActions
     //
     // Success and rollback do not reopen the gate here: the installed
     // resident service is the only writer of 'O' (openHealthySuite). It
-    // reopens a closed gate on its one-minute heartbeat after it has proved
-    // the installed product healthy and Windows Installer is idle, the same
-    // path the final-uninstall fence already relies on after its rollback.
+    // reopens a closed gate as soon as Windows Installer is idle, after it
+    // has proved the installed product healthy, and repeats the idle check
+    // under the gate lock this action writes 'C' under, so a later
+    // transaction's 'C' always follows it. Its one-minute heartbeat is the
+    // backstop, the same path the final-uninstall fence relies on after its
+    // rollback.
     //
     // Windows Installer records a file as in use while it costs files, before
     // any deferred action can run, and then lists or prompts for every process
