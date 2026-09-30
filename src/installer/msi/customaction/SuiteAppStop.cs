@@ -23,6 +23,13 @@ namespace GoMapi.AdminCustomActions
     // reopens a closed gate on its one-minute heartbeat after it has proved
     // the installed product healthy and Windows Installer is idle, the same
     // path the final-uninstall fence already relies on after its rollback.
+    //
+    // Windows Installer records a file as in use while it costs files, before
+    // any deferred action can run, and then lists or prompts for every process
+    // with the same module name. A best-effort immediate pre-stop therefore
+    // closes the installed app before costing. It runs as the installer
+    // caller, so it may not reach other users' instances; the deferred stop
+    // above stays the only transactional, fail-closed stop.
     public static partial class AdminMigration
     {
         private const string SuiteAppRelativePath = @"go-mapi\user\go-mapi.exe";
@@ -31,6 +38,7 @@ namespace GoMapi.AdminCustomActions
         private static readonly TimeSpan SuiteStopGrace = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan SuiteStopBound = TimeSpan.FromSeconds(30);
         private static readonly TimeSpan SuiteAdmissionLockBound = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan SuitePreStopBound = TimeSpan.FromSeconds(10);
 
         private const uint GenericRead = 0x80000000;
         private const uint GenericWrite = 0x40000000;
@@ -134,6 +142,111 @@ namespace GoMapi.AdminCustomActions
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+        // Immediate, authored Return="ignore". It never touches the admission
+        // gate, never reports a setup error and always returns success: every
+        // instance it cannot open, query or stop is logged by PID, session and
+        // Win32 error only and left to the deferred StopSuiteApps.
+        [CustomAction]
+        public static ActionResult PreStopSuiteApps(Session session)
+        {
+            var terminated = 0;
+            var skipped = 0;
+            try
+            {
+                var root = session["ProgramFiles64Folder"];
+                if (string.IsNullOrEmpty(root) || !Path.IsPathRooted(root) || root.StartsWith(@"\\", StringComparison.Ordinal))
+                {
+                    session.Log("go-mapi suite app pre-stop: no fixed 64-bit Program Files folder; nothing stopped");
+                    return ActionResult.Success;
+                }
+                var image = Path.GetFullPath(Path.Combine(root, SuiteAppRelativePath));
+                var debug = WithPrivilege("SeDebugPrivilege", false,
+                    () => PreStopInstalledApps(session, image, ref terminated, ref skipped));
+                if (!debug)
+                    session.Log("go-mapi suite app pre-stop: SeDebugPrivilege is not available to the installer caller");
+                if (string.Equals(session["GOMAPI_TEST_FAILURE_POINT"], "pre-stop-throw", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Requested validation failure point: pre-stop-throw");
+                session.Log("go-mapi suite app pre-stop: terminated={0} skipped={1}", terminated, skipped);
+            }
+            catch (Exception error)
+            {
+                try
+                {
+                    session.Log("go-mapi suite app pre-stop ignored an error after terminated={0} skipped={1}: {2}: {3}",
+                        terminated, skipped, error.GetType().Name, error.Message);
+                }
+                catch (Exception)
+                {
+                    // Logging is best effort as well.
+                }
+            }
+            return ActionResult.Success;
+        }
+
+        // Terminates every exact-image instance this caller can open, then
+        // waits for them within one bound. The second sweep catches an
+        // instance started during the first wait. The per-handle poll has no
+        // 64-handle limit.
+        private static void PreStopInstalledApps(Session session, string image, ref int terminated, ref int skipped)
+        {
+            var instances = new Dictionary<string, SuiteAppInstance>(StringComparer.Ordinal);
+            var reported = new HashSet<string>(StringComparer.Ordinal);
+            var deadline = DateTime.UtcNow + SuitePreStopBound;
+            try
+            {
+                for (var pass = 0; pass < 2; pass++)
+                {
+                    foreach (var item in SweepSuiteApps(image, instances))
+                    {
+                        if (!reported.Add(item))
+                            continue;
+                        skipped++;
+                        session.Log("go-mapi suite app pre-stop: skipped {0}", item);
+                    }
+                    foreach (var key in instances.Keys.ToList())
+                    {
+                        var instance = instances[key];
+                        if (instance.Terminated || WaitForSingleObject(instance.Handle, 0) == WaitObject0)
+                            continue;
+                        if (!TerminateProcess(instance.Handle, 1))
+                        {
+                            var error = Marshal.GetLastWin32Error();
+                            if (WaitForSingleObject(instance.Handle, 0) == WaitObject0)
+                                continue;
+                            skipped++;
+                            session.Log("go-mapi suite app pre-stop: skipped pid {0} session {1} terminate failed ({2})",
+                                instance.ProcessId, instance.Session, error);
+                            CloseHandle(instance.Handle);
+                            instances.Remove(key);
+                            continue;
+                        }
+                        instance.Terminated = true;
+                        terminated++;
+                    }
+                    do
+                    {
+                        ReapExited(instances);
+                        if (instances.Count == 0)
+                            break;
+                        Thread.Sleep(50);
+                    } while (DateTime.UtcNow < deadline);
+                }
+                foreach (var instance in instances.Values)
+                {
+                    skipped++;
+                    if (instance.Terminated)
+                        terminated--;
+                    session.Log("go-mapi suite app pre-stop: skipped pid {0} session {1} did not exit within the bound",
+                        instance.ProcessId, instance.Session);
+                }
+            }
+            finally
+            {
+                foreach (var instance in instances.Values)
+                    CloseHandle(instance.Handle);
+            }
+        }
 
         [CustomAction]
         public static ActionResult StopSuiteApps(Session session)

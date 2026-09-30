@@ -36,8 +36,10 @@
   <CustomActionRef Id="FinalizeAdminUninstall" />
   <CustomActionRef Id="CommitAdminUninstall" />
   <CustomActionRef Id="StopSuiteApps" />
+  <CustomActionRef Id="PreStopSuiteApps" />
   <InstallExecuteSequence>
     <FindRelatedProducts Before="LaunchConditions" />
+    <Custom Action="PreStopSuiteApps" After="LaunchConditions" Condition="NOT UPGRADINGPRODUCTCODE" />
     <Custom Action="ValidateMachineTransaction" After="InstallValidate" />
     <Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />
     <InstallExecute After="StopSuiteApps" />

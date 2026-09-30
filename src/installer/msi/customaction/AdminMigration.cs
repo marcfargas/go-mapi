@@ -1264,33 +1264,62 @@ namespace GoMapi.AdminCustomActions
         // assigning SYSTEM as owner requires it even when the DACL grants access.
         private static void WithRestorePrivilege(Action action)
         {
+            WithPrivilege("SeRestorePrivilege", true, action);
+        }
+
+        // Enables one token privilege around the action and restores it. A
+        // required privilege throws when it cannot be enabled or restored. An
+        // optional one never throws for the privilege itself: the action then
+        // runs without it and the result is false.
+        private static bool WithPrivilege(string privilege, bool required, Action action)
+        {
             if (WindowsIdentity.GetCurrent().User.IsWellKnown(WellKnownSidType.LocalSystemSid))
             {
                 action();
-                return;
+                return true;
             }
 
+            string unavailable = null;
             IntPtr token;
             if (!OpenThreadToken(GetCurrentThread(), TokenQuery | TokenAdjustPrivileges, true, out token))
             {
                 var error = Marshal.GetLastWin32Error();
                 if (error != ErrorNoToken)
-                    throw new InvalidOperationException("Could not open installer thread token: " + error);
-                if (!OpenProcessToken(GetCurrentProcess(), TokenQuery | TokenAdjustPrivileges, out token))
-                    throw new InvalidOperationException("Could not open installer process token: " + Marshal.GetLastWin32Error());
+                    unavailable = "Could not open installer thread token: " + error;
+                else if (!OpenProcessToken(GetCurrentProcess(), TokenQuery | TokenAdjustPrivileges, out token))
+                    unavailable = "Could not open installer process token: " + Marshal.GetLastWin32Error();
+            }
+            if (unavailable != null)
+            {
+                if (required)
+                    throw new InvalidOperationException(unavailable);
+                action();
+                return false;
             }
             try
             {
                 Luid luid;
-                if (!LookupPrivilegeValue(null, "SeRestorePrivilege", out luid))
-                    throw new InvalidOperationException("Could not resolve SeRestorePrivilege: " + Marshal.GetLastWin32Error());
-                var enabled = new TokenPrivileges { PrivilegeCount = 1, Luid = luid, Attributes = SePrivilegeEnabled };
-                TokenPrivileges previous;
-                uint returned;
-                if (!AdjustTokenPrivileges(token, false, ref enabled, (uint)Marshal.SizeOf(typeof(TokenPrivileges)), out previous, out returned))
-                    throw new InvalidOperationException("Could not enable SeRestorePrivilege: " + Marshal.GetLastWin32Error());
-                if (Marshal.GetLastWin32Error() == ErrorNotAllAssigned)
-                    throw new InvalidOperationException("SeRestorePrivilege is not assigned to the installer token");
+                var previous = new TokenPrivileges();
+                if (!LookupPrivilegeValue(null, privilege, out luid))
+                {
+                    unavailable = "Could not resolve " + privilege + ": " + Marshal.GetLastWin32Error();
+                }
+                else
+                {
+                    var enabled = new TokenPrivileges { PrivilegeCount = 1, Luid = luid, Attributes = SePrivilegeEnabled };
+                    uint returned;
+                    if (!AdjustTokenPrivileges(token, false, ref enabled, (uint)Marshal.SizeOf(typeof(TokenPrivileges)), out previous, out returned))
+                        unavailable = "Could not enable " + privilege + ": " + Marshal.GetLastWin32Error();
+                    else if (Marshal.GetLastWin32Error() == ErrorNotAllAssigned)
+                        unavailable = privilege + " is not assigned to the installer token";
+                }
+                if (unavailable != null)
+                {
+                    if (required)
+                        throw new InvalidOperationException(unavailable);
+                    action();
+                    return false;
+                }
                 try
                 {
                     action();
@@ -1298,9 +1327,10 @@ namespace GoMapi.AdminCustomActions
                 finally
                 {
                     if (previous.PrivilegeCount != 0 &&
-                        !RestoreTokenPrivileges(token, false, ref previous, 0, IntPtr.Zero, IntPtr.Zero))
-                        throw new InvalidOperationException("Could not restore SeRestorePrivilege: " + Marshal.GetLastWin32Error());
+                        !RestoreTokenPrivileges(token, false, ref previous, 0, IntPtr.Zero, IntPtr.Zero) && required)
+                        throw new InvalidOperationException("Could not restore " + privilege + ": " + Marshal.GetLastWin32Error());
                 }
+                return true;
             }
             finally
             {

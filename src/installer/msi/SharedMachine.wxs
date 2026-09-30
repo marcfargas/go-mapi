@@ -70,5 +70,9 @@
     <CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"
       Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]" />
+    <!-- Best-effort stop as the installer caller before Windows Installer costs
+         files, so InstallValidate finds no installed app in use. Its result
+         is ignored; StopSuiteApps remains the transactional stop. -->
+    <CustomAction Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" />
   </Fragment>
 </Wix>
