@@ -361,6 +361,10 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 			`<CustomActionRef Id="StopSuiteApps" />`,
 			`<Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />`,
 			`<InstallExecute After="StopSuiteApps" />`,
+			`<CustomActionRef Id="PreStopSuiteApps" />`,
+			// WiX 4 rejects After together with Before; verify.ps1 checks the
+			// compiled LaunchConditions < PreStopSuiteApps < CostInitialize order.
+			`<Custom Action="PreStopSuiteApps" After="LaunchConditions" Condition="NOT UPGRADINGPRODUCTCODE" />`,
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("%s missing suite app stop contract %q", filename, want)
@@ -375,12 +379,20 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		`<CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />`,
 		`<SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"`,
 		`Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]"`,
+		`<CustomAction Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" />`,
 	} {
 		if !strings.Contains(shared, want) {
 			t.Errorf("suite app stop authoring missing %q", want)
 		}
 	}
-	for _, want := range []string{"'StopSuiteApps,InstallExecute'", "exactly one InstallExecute", "StopSuiteApps must precede $later", "'SetStopSuiteApps'"} {
+	if strings.Contains(shared, `Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" Impersonate`) {
+		t.Error("the immediate pre-stop always runs as the caller and must not declare Impersonate")
+	}
+	for _, want := range []string{
+		"'StopSuiteApps,InstallExecute'", "exactly one InstallExecute", "StopSuiteApps must precede $later", "'SetStopSuiteApps'",
+		"'PreStopSuiteApps'", "PreStopSuiteApps must run after LaunchConditions and before CostInitialize",
+		"PreStopSuiteApps must not be sequenced in $table", "'InstallUISequence','AdminUISequence','AdminExecuteSequence','AdvtExecuteSequence'",
+	} {
 		if !strings.Contains(verify, want) {
 			t.Errorf("compiled MSI verifier missing suite app stop check %q", want)
 		}
@@ -404,6 +416,22 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 	if strings.Contains(stop, "(byte)'O'") {
 		t.Error("installer custom action must never reopen suite admission")
 	}
+	// The pre-stop runs as the caller before costing. It never touches the
+	// admission gate, never reports a setup error and never fails setup.
+	preStop := customActionBody(t, stop, "PreStopSuiteApps")
+	for _, forbidden := range []string{"CloseSuiteAdmission", "SuiteAdmissionRelativePath", "suite-admission-v1", "Guard(", "ReportFailure", "SetupBlockedException", "WaitForMultipleObjects"} {
+		if strings.Contains(preStop, forbidden) {
+			t.Errorf("PreStopSuiteApps must not use %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		`session["ProgramFiles64Folder"]`, "SeDebugPrivilege", "SweepSuiteApps", "ReapExited", "TerminateProcess",
+		`"pre-stop-throw"`, "catch (Exception", "return ActionResult.Success", "go-mapi suite app pre-stop: terminated={0} skipped={1}",
+	} {
+		if !strings.Contains(preStop, want) {
+			t.Errorf("PreStopSuiteApps missing %q", want)
+		}
+	}
 	for _, want := range []string{
 		"Invoke-RunningAppTransaction '/fa' $suitePath",
 		"Invoke-RunningAppTransaction '/i' $newerSuitePath 'suite-upgrade'",
@@ -412,10 +440,19 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		"GOMAPI_TEST_FAILURE_POINT=after-suite-stop", "GOMAPI_TEST_FAILURE_POINT=suite-stop-bound",
 		"GOMAPI_TEST_FAILURE_POINT=after-uninstall-finalize') -Expected 1603",
 		"Assert-LaunchRestored", "Start-Decoy", "RequireOtherSession",
+		"GOMAPI_TEST_FAILURE_POINT=pre-stop-throw", "'go-mapi suite app pre-stop ignored an error'",
+		"Invoke-RunningAppTransaction '/i' $newerAppSuitePath 'suite-upgrade-app'",
+		"Invoke-RunningAppTransaction '/x' $newerAppSuitePath 'suite-app-upgrade-uninstall'",
+		"'suite app pre-stop did not finish before the outer CostInitialize'",
 	} {
 		if !strings.Contains(lifecycle, want) {
 			t.Errorf("native lifecycle missing running suite app coverage %q", want)
 		}
+	}
+	// Hosted CI must run an upgrade that replaces the running app file.
+	hosted := readAdminContractFile(t, repoRoot, "scripts", "run-hosted-machine-integration.ps1")
+	if !strings.Contains(hosted, "-NewerAppSuiteMsi $fixture.packages.suiteC.msi") {
+		t.Error("hosted machine integration must pass the app-changing suite fixture to the lifecycle test")
 	}
 }
 

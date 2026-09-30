@@ -109,7 +109,7 @@ if ($SKU -eq 'suite') {
 }
 
 $actions = @(Query 'SELECT `Action`,`Type`,`Source`,`Target` FROM `CustomAction`' | ForEach-Object { "$(Field $_ 1)|$(Field $_ 2)|$(Field $_ 3)|$(Field $_ 4)" })
-foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall','StopSuiteApps','SetStopSuiteApps')) {
+foreach ($required in @('ValidateMachineTransaction','ResolveAutoUpdateChoice','PrepareAdminMigration','RollbackAdminMigration','SnapshotAdminMigration','RollbackServiceConfiguration','ApplyAdminMigration','VerifyAdminRegistration','PrepareAdminUninstall','RollbackResidentUninstallFence','BeginResidentUninstallFence','RollbackAdminUninstall','FinalizeAdminUninstall','CommitAdminUninstall','StopSuiteApps','SetStopSuiteApps','PreStopSuiteApps')) {
     if (-not ($actions -match "^$required\|")) { Fail "missing custom action $required" }
 }
 # Execution bits: immediate actions impersonate the caller and must not write;
@@ -125,6 +125,12 @@ foreach ($rollback in @('RollbackAdminMigration','RollbackServiceConfiguration',
     if (((ActionType $rollback) -band 0x0F00) -ne 0x0D00) { Fail "$rollback must be a non-impersonated rollback action" }
 }
 if (((ActionType 'CommitAdminUninstall') -band 0x0F00) -ne 0x0E00) { Fail 'CommitAdminUninstall must be a non-impersonated commit action' }
+# The best-effort pre-stop is an immediate DLL action whose result is ignored:
+# it runs as the caller before costing and can never fail the transaction.
+$preStopType = ActionType 'PreStopSuiteApps'
+if (($preStopType -band 0x3F) -ne 1 -or ($preStopType -band 0x40) -ne 0x40 -or ($preStopType -band 0x0C00)) {
+    Fail "PreStopSuiteApps must be an immediate DLL action that continues on error (type $preStopType)"
+}
 # The suite app stop reads only fixed CustomActionData set by a script-free
 # type-51 action; directory properties avoid custom-action bitness.
 $stopData = @($actions | Where-Object { $_ -match '^SetStopSuiteApps\|' })[0] -split '\|'
@@ -198,6 +204,21 @@ if ($stopSequence[1] -cne 'NOT UPGRADINGPRODUCTCODE' -or (SequenceRow 'InstallEx
 }
 foreach ($later in @('BeginResidentUninstallFence','StopServices','RemoveFiles','InstallFiles')) {
     if ([int]$stopSequence[2] -ge [int](SequenceRow $later)[2]) { Fail "StopSuiteApps must precede $later" }
+}
+# The pre-stop closes the installed app before Windows Installer costs files,
+# so InstallValidate finds no go-mapi.exe in use. It runs only in the outer
+# execute sequence, never in a UI, administrative or advertise sequence.
+$preStopSequence = SequenceRow 'PreStopSuiteApps'
+if (-not $preStopSequence -or $preStopSequence[1] -cne 'NOT UPGRADINGPRODUCTCODE' -or
+    [int]$launchSequence[2] -ge [int]$preStopSequence[2] -or
+    [int]$preStopSequence[2] -ge [int](SequenceRow 'CostInitialize')[2]) {
+    Fail 'PreStopSuiteApps must run after LaunchConditions and before CostInitialize in every outer machine transaction'
+}
+foreach ($table in @('InstallUISequence','AdminUISequence','AdminExecuteSequence','AdvtExecuteSequence')) {
+    if ($tables -notcontains $table) { continue }
+    if (@(Query ('SELECT `Action` FROM `' + $table + '`') | Where-Object { (Field $_ 1) -eq 'PreStopSuiteApps' }).Count) {
+        Fail "PreStopSuiteApps must not be sequenced in $table"
+    }
 }
 $setStopSequence = SequenceRow 'SetStopSuiteApps'
 if (-not $setStopSequence -or [int]$setStopSequence[2] -ge [int]$initializeSequence[2]) { Fail 'StopSuiteApps data must be set before InstallInitialize' }

@@ -191,7 +191,7 @@ $rcPathForCMake = 'windres'
     New-Item -ItemType Directory -Force (Join-Path $hostRoot 'scripts'),(Join-Path $hostRoot 'src/installer/msi/tests') | Out-Null
     Copy-Item (Join-Path $repo 'scripts/run-hosted-machine-integration.ps1') (Join-Path $hostRoot 'scripts/run-hosted-machine-integration.ps1')
     @'
-param($SystemMsi,$SuiteMsi,$NewerSuiteMsi,$LogDirectory)
+param($SystemMsi,$SuiteMsi,$NewerSuiteMsi,$NewerAppSuiteMsi,$LogDirectory)
 if ($env:FAKE_CROSS_FAIL -eq '1') { throw 'stub cross-SKU failure' }
 New-Item -ItemType Directory -Force $LogDirectory | Out-Null
 Set-Content (Join-Path $LogDirectory 'lifecycle.log') 'ok'

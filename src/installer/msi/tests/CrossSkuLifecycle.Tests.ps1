@@ -3,6 +3,9 @@ param(
     [Parameter(Mandatory)][string]$SystemMsi,
     [Parameter(Mandatory)][string]$SuiteMsi,
     [Parameter(Mandatory)][string]$NewerSuiteMsi,
+    # A newer suite whose contained app file differs from SuiteMsi's, so an
+    # upgrade to it replaces a running go-mapi.exe.
+    [Parameter(Mandatory)][string]$NewerAppSuiteMsi,
     [string]$LogDirectory = (Join-Path $env:TEMP 'go-mapi-cross-sku-msi'),
     # Lease-only: require an installed app instance in a session other than
     # the msiexec client's. Hosted CI runners have one usable session, so
@@ -11,7 +14,7 @@ param(
     # Focused running-app case from a clean machine. It records the
     # behavioral evidence before asserting, so it also proves the defect on
     # packages that lack the suite app stop.
-    [ValidateSet('All','Repair','Upgrade','Uninstall','Switch')][string]$RunningAppCase = 'All',
+    [ValidateSet('All','Repair','PreStopThrow','Upgrade','UpgradeApp','Uninstall','Switch')][string]$RunningAppCase = 'All',
     # Lease-only: upgrade from these published suite bytes to NewerSuiteMsi
     # with installed apps running.
     [string]$PublishedSuiteMsi
@@ -24,6 +27,7 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 $systemPath = (Resolve-Path -LiteralPath $SystemMsi).Path
 $suitePath = (Resolve-Path -LiteralPath $SuiteMsi).Path
 $newerSuitePath = (Resolve-Path -LiteralPath $NewerSuiteMsi).Path
+$newerAppSuitePath = (Resolve-Path -LiteralPath $NewerAppSuiteMsi).Path
 New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
 
 function RelatedProducts([string]$UpgradeCode) {
@@ -290,6 +294,14 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
         $_ -match '(?i)Scheduling reboot operation|Must reboot|ReplacedInUseFiles = 1' })
     $stopLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'go-mapi suite app stop complete: stopped=') { $index } })
     $removeLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'Action start [0-9:]+: RemoveExistingProducts\.') { $index } })
+    # The best-effort pre-stop must finish before the outer transaction costs
+    # files, because Windows Installer records files in use during costing.
+    $preStopLines = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'go-mapi suite app pre-stop') { $index } })
+    $executeLine = @(for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match ': Running ExecuteSequence') { $index } })
+    $executeStart = if ($executeLine.Count) { $executeLine[0] } else { 0 }
+    $costLine = @(for ($index = $executeStart; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'Action start [0-9:]+: CostInitialize\.') { $index } })
+    $preStopSummary = @($lines | Where-Object { $_ -match 'go-mapi suite app pre-stop: terminated=[0-9]+ skipped=[0-9]+' } | Select-Object -First 1)
+    $setupErrors = @($lines | Where-Object { $_ -match 'go-mapi setup could not' })
     # Final uninstall removes the machine marker; a snapshot then has nothing to read.
     $after = if (Test-Path -LiteralPath 'HKLM:\SOFTWARE\go-mapi\MachineProduct') { MachineSnapshot } else { $null }
     $evidence = [ordered]@{
@@ -299,6 +311,12 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
         NewPendingRenames = $newRenames; InUseOrRebootLines = $inUse
         DecoyAlive = [bool]($script:decoy -and -not $script:decoy.HasExited)
         StopLogLine = if ($stopLine.Count) { $stopLine[0] } else { $null }
+        PreStopLine = if ($preStopSummary.Count) { $preStopSummary[0] } else { $null }
+        PreStopLastLogLine = if ($preStopLines.Count) { $preStopLines[-1] } else { $null }
+        PreStopTerminated = if ($preStopSummary.Count -and $preStopSummary[0] -match 'terminated=([0-9]+)') { [int]$Matches[1] } else { $null }
+        PreStopSkipped = if ($preStopSummary.Count -and $preStopSummary[0] -match 'skipped=([0-9]+)') { [int]$Matches[1] } else { $null }
+        CostInitializeLine = if ($costLine.Count) { $costLine[0] } else { $null }
+        SetupErrorLines = $setupErrors
         RemoveExistingProductsLine = if ($removeLine.Count) { $removeLine[0] } else { $null }
         GateAfter = Get-GateState; Before = $before; After = $after
     }
@@ -311,10 +329,13 @@ function Invoke-RunningAppTransaction([string]$Verb, [string]$Path, [string]$Nam
     if ($survivors.Count -and -not $AllowSurvivors) { $failures += "installed app still running: $(@($survivors | ForEach-Object { "$($_.ProcessId)/s$($_.SessionId)" }) -join ', ')" }
     if (-not $evidence.DecoyAlive) { $failures += 'same-name process with another image was stopped' }
     if ($ExpectMessage -and -not @($lines | Where-Object { $_.Contains($ExpectMessage) })) { $failures += "verbose log lacks the setup message '$ExpectMessage'" }
+    if ($Expected -eq 0 -and $setupErrors.Count) { $failures += "successful transaction reported a setup error: $($setupErrors -join ' | ')" }
     # The stop marker is checked last, so packages without the stop still
     # report the behavioral defect above.
     if (-not $stopLine.Count) { $failures += 'verbose log lacks the suite app stop' }
     elseif ($removeLine.Count -and $removeLine[0] -lt $stopLine[0]) { $failures += 'RemoveExistingProducts started before the suite app stop completed' }
+    if (-not $preStopLines.Count) { $failures += 'verbose log lacks the suite app pre-stop' }
+    elseif (-not $costLine.Count -or $preStopLines[-1] -gt $costLine[0]) { $failures += 'suite app pre-stop did not finish before the outer CostInitialize' }
     [pscustomobject]@{ Event = 'RunningAppTransaction'; Step = $Name; Exit = $exit; Survivors = $survivors.Count;
         NewPendingRenames = $newRenames.Count; Failures = $failures } | ConvertTo-Json -Compress -Depth 4
     if ($failures.Count) { throw "$Name with installed apps running failed: $($failures -join '; '); inspect $LogDirectory" }
@@ -395,12 +416,26 @@ function Invoke-FocusedRunningAppCase([string]$Case) {
                 AssertMachine 'suite' $sentinel
                 Assert-LaunchRestored 'focused repair'
             }
+            'PreStopThrow' {
+                Invoke-RunningAppTransaction '/fa' $suitePath 'focused-repair-pre-stop-throw' @('GOMAPI_TEST_FAILURE_POINT=pre-stop-throw') `
+                    -ExpectMessage 'go-mapi suite app pre-stop ignored an error'
+                AssertMachine 'suite' $sentinel
+                Assert-LaunchRestored 'focused repair after an ignored pre-stop error'
+            }
             'Upgrade' {
                 $old = MachineSnapshot
                 Invoke-RunningAppTransaction '/i' $newerSuitePath 'focused-upgrade' @()
                 AssertMachine 'suite' $sentinel
                 if ((MachineSnapshot).PackageRelease -eq $old.PackageRelease) { throw 'focused upgrade did not install the newer suite' }
                 Assert-LaunchRestored 'focused upgrade'
+            }
+            'UpgradeApp' {
+                $old = MachineSnapshot
+                Invoke-RunningAppTransaction '/i' $newerAppSuitePath 'focused-upgrade-app' @()
+                AssertMachine 'suite' $sentinel
+                $new = MachineSnapshot
+                if ($new.AppHash -eq $old.AppHash -or $new.AppVersion -eq $old.AppVersion) { throw 'focused app upgrade did not replace the app' }
+                Assert-LaunchRestored 'focused app upgrade'
             }
             'Published' {
                 $old = MachineSnapshot
@@ -467,6 +502,13 @@ Invoke-RunningAppTransaction '/fa' $suitePath 'suite-repair-preserve-disabled'
 AssertMachine 'suite' $sentinel
 AssertSnapshot $suiteInitial 'suite repair'
 Assert-LaunchRestored 'suite repair with apps running'
+# The pre-stop is best effort: an error in it is logged and ignored, never
+# shown as a setup error, and the deferred stop still stops every instance.
+Invoke-RunningAppTransaction '/fa' $suitePath 'suite-repair-pre-stop-throw' @('GOMAPI_TEST_FAILURE_POINT=pre-stop-throw') `
+    -ExpectMessage 'go-mapi suite app pre-stop ignored an error'
+AssertMachine 'suite' $sentinel
+AssertSnapshot $suiteInitial 'suite repair after an ignored pre-stop error'
+Assert-LaunchRestored 'suite repair after an ignored pre-stop error'
 WithRollbackDisabled {
     AssertExit (RunMsi '/fa' $suitePath 'suite-repair-rollback-disabled') 1603 'rollback-disabled suite repair'
 }
@@ -521,6 +563,19 @@ Assert-LaunchRestored 'suite final uninstall rollback'
 Invoke-RunningAppTransaction '/x' $newerSuitePath 'suite-final-uninstall'
 if (@(RelatedProducts $suiteCode).Count -ne 0 -or (Get-Service go-mapi -ErrorAction SilentlyContinue)) { throw 'Suite final uninstall left product or service' }
 if (Test-Path -LiteralPath (Split-Path $appImage)) { throw 'Suite final uninstall left the suite app payload' }
+
+# The same-version upgrade above keeps go-mapi.exe. This upgrade replaces the
+# running app file itself, so Windows Installer checks it for use.
+AssertExit (RunMsi '/i' $suitePath 'suite-app-upgrade-base' @('GOMAPI_AUTO_UPDATE=0')) 0 'suite install before app upgrade'
+AssertMachine 'suite' $sentinel
+$suiteBeforeAppUpgrade = MachineSnapshot
+Invoke-RunningAppTransaction '/i' $newerAppSuitePath 'suite-upgrade-app'
+AssertMachine 'suite' $sentinel
+if ((MachineSnapshot).AppHash -eq $suiteBeforeAppUpgrade.AppHash -or
+    (MachineSnapshot).AppVersion -eq $suiteBeforeAppUpgrade.AppVersion) { throw 'Suite app upgrade did not replace the app' }
+Assert-LaunchRestored 'suite upgrade that replaces the app'
+Invoke-RunningAppTransaction '/x' $newerAppSuitePath 'suite-app-upgrade-uninstall'
+if (@(RelatedProducts $suiteCode).Count -ne 0 -or (Test-Path -LiteralPath (Split-Path $appImage))) { throw 'Suite uninstall after app upgrade left the suite app behind' }
 
 AssertExit (RunMsi '/i' $systemPath 'system-initial') 0 'system initial install'
 AssertMachine 'system' $sentinel
