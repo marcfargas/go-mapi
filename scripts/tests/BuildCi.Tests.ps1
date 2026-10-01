@@ -241,6 +241,7 @@ Set-Content (Join-Path $LogDirectory 'lifecycle.log') 'ok'
 param($PackageManifest,$EvidenceDirectory,$SKU,$Phase,$FixturePort,$DeadlineMinutes,$DeferredInterruptionEvidence)
 $name = Split-Path $EvidenceDirectory -Leaf
 Add-Content $env:FAKE_PHASE_LOG "$name/$Phase"
+if ($env:FAKE_DEADLINE_LOG) { Add-Content $env:FAKE_DEADLINE_LOG "$name/$Phase=$DeadlineMinutes" }
 if ($env:FAKE_PHASE_FAIL -eq "$name/$Phase") { throw 'stub phase failure' }
 New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
 if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
@@ -265,6 +266,22 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     $events = @(Get-Content $env:FAKE_PHASE_LOG)
     Assert (($events[0..3] -join ',') -eq 'update/Hosted,suite-update/Hosted,suite-update/Cleanup,update-interruption/InterruptSameBoot') 'hosted sequence changed'
     Assert (($events[-3..-1] -join ',') -eq 'suite-update/Cleanup,update/Cleanup,update-interruption/Cleanup') 'cleanup order changed'
+    # Phase deadlines: production timers keep the long deadlines; a fixture that
+    # records validation timers shortens only update and suite-update (Hosted),
+    # never a cleanup and never the interruption phase.
+    $env:FAKE_DEADLINE_LOG = Join-Path $hostRoot 'deadlines.log'
+    & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence
+    Assert ((@(Get-Content $env:FAKE_DEADLINE_LOG | Select-Object -First 4) -join ',') -eq 'update/Hosted=35,suite-update/Hosted=45,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'production-timer deadlines changed'
+    Remove-Item $env:FAKE_DEADLINE_LOG
+    $timedFixture = Get-Content $fixturePath -Raw | ConvertFrom-Json
+    $timedFixture.fixture | Add-Member -NotePropertyName timers -NotePropertyValue ([pscustomobject]@{ startupDelaySeconds=5; heartbeatSeconds=2; checkIntervalSeconds=5; failureDelayBaseSeconds=30 })
+    $timedPath = Join-Path $hostRoot 'fixture-timed.json'
+    $timedFixture | ConvertTo-Json -Depth 5 | Set-Content $timedPath
+    & $runner -PackageManifest $timedPath -EvidenceDirectory $evidence
+    $deadlines = @(Get-Content $env:FAKE_DEADLINE_LOG)
+    Assert (($deadlines[0..3] -join ',') -eq 'update/Hosted=15,suite-update/Hosted=20,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'validation-timer phase deadlines changed'
+    Assert (($deadlines[-3..-1] -join ',') -eq 'suite-update/Cleanup=35,update/Cleanup=35,update-interruption/Cleanup=35') 'cleanup deadlines changed'
+    Remove-Item env:FAKE_DEADLINE_LOG
     $env:FAKE_CROSS_FAIL = '1'
     try { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence; throw 'Expected cross-SKU failure' }
     catch { Assert ($_.Exception.Message -match 'Cross-SKU lifecycle failed with exit code' -and
@@ -285,7 +302,7 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     $env:GOMAPI_OAUTH_CLIENT_SECRET = $oldSecret
     $env:GOMAPI_ADMIN_RELEASE_METADATA_URL = $oldMetadata
     $env:CC = $oldCC; $env:CXX = $oldCXX
-    foreach ($name in @('StubWailsMode','FAKE_PHASE_LOG','FAKE_PHASE_FAIL','FAKE_PHASE_DROP','FAKE_CROSS_FAIL','FAKE_CTEST_LOG','FAKE_CTEST_EXIT')) { Remove-Item "env:$name" -ErrorAction SilentlyContinue }
+    foreach ($name in @('StubWailsMode','FAKE_PHASE_LOG','FAKE_DEADLINE_LOG','FAKE_PHASE_FAIL','FAKE_PHASE_DROP','FAKE_CROSS_FAIL','FAKE_CTEST_LOG','FAKE_CTEST_EXIT')) { Remove-Item "env:$name" -ErrorAction SilentlyContinue }
     foreach ($name in @('wails','go','node','npm','cmake','ctest')) { Remove-Item "function:global:$name" -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

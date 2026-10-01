@@ -66,7 +66,21 @@ shared with machine release validation, but these fixture certificates are
 local to a disposable runner and have no Azure timestamp or release authority.
 The manifest binds the source commit, explicit version substitutions, signed
 PE and MSI hashes, and deterministic MSI identities. The service uses a
-localhost HTTPS origin and the minimum supported 60-second check interval.
+localhost HTTPS origin. The CI fixture build passes `-ValidationTimers`, which
+links shortened validation timers into the disposable service only: a 5-second
+start-up delay, 2-second heartbeat, 5-second check interval and a 30-second
+base for the 1x/2x/4x/24x failure delays (15 s, 30 s, 1 min and 6 min scaled
+from the 15-minute, 30-minute, 1-hour and 6-hour production table). Each value
+only shortens its production value and is at least one second. The release
+service build rejects every one of them, release provenance carries none, and a
+fixture without them (a pre-signed Azure fixture included) runs on the
+production timers: 2-minute start-up delay, 1-minute heartbeat, 6-hour check
+interval and the 15-minute first failure delay. The fixture manifest records
+the effective values in `fixture.timers`; the phase script reads them there and
+scales every sleep and wait from them. Each wait for an automatic commit has
+its own limit (start-up delay, heartbeat, check interval, any failure delay
+still owed, the install work and a margin), so a regression to a long stall
+fails the wait instead of passing inside a long phase deadline.
 
 Run the installed gate only on an elevated, clean, disposable Windows machine
 with Go 1.25, .NET 8, WiX restore, Windows SDK signing tools, the Release DLLs,

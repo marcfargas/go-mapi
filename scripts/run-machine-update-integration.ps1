@@ -439,9 +439,10 @@ try {
         }
     }
     if ($Phase -eq 'Hosted') {
-        # Suite B follows the wrong-SKU rejection, so its first failure delay is still owed.
+        # A first failure delay can still be owed: suite B follows the wrong-SKU rejection,
+        # and under short start-up timers a check may reach the fixture before B is selected.
         $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } } `
-            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit $(if ($SKU -eq 'suite') { $failureBaseSeconds } else { 0 }) -Install)
+            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit $failureBaseSeconds -Install)
         $b = AssertCommitted $caseB $a.service.processId
         $beforeFailures = (ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")).failures
         $beforeReplay = $b.replay.sequence
@@ -485,12 +486,17 @@ try {
         AssertAdmissionReopened 'administrator-disable' 15
         $requestsBefore = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         Restart-Service go-mapi -Force
-        if ([DateTime]::UtcNow.AddSeconds(185) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }
-        Start-Sleep -Seconds 185 # exceeds the production two-minute startup delay and one 60-second cadence
+        # The window exceeds one full start-up delay plus one heartbeat cadence, so a
+        # disabled service that wrongly checked would have issued a request inside it.
+        # Production timers: 120 s + 60 s + 5 s. Validation timers: the manifest's
+        # start-up delay, heartbeat and check interval plus 10 s.
+        $disabledWindowSeconds = if ($timers) { $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + 10 } else { 185 }
+        if ([DateTime]::UtcNow.AddSeconds($disabledWindowSeconds) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }
+        Start-Sleep -Seconds $disabledWindowSeconds
         $requestsAfter = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         $disabled = AssertHealthy $caseC
         if ($requestsBefore -cne $requestsAfter -or $disabled.pending -or $disabled.marker.autoUpdateEnabled -ne 0 -or $disabled.status.updates -ne 'disabled') { throw 'Disabled resident service issued a request or changed installed state' }
-        Record 'disabled-window' ([ordered]@{ seconds=185; snapshot=$disabled })
+        Record 'disabled-window' ([ordered]@{ seconds=$disabledWindowSeconds; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; snapshot=$disabled })
     } elseif ($Phase -eq 'PrepareNoUser') {
         Record 'await-external-logoff' (Snapshot)
     } elseif ($Phase -eq 'VerifyNoUser') {

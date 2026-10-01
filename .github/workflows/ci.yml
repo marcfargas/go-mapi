@@ -261,9 +261,9 @@ jobs:
             -MetadataOrigin https://localhost:18453 `
             -ArtifactOrigin https://localhost:18453/releases/download/ `
             -ValidationTimers `
-            -ValidationStartupDelaySeconds 120 `
-            -ValidationHeartbeatSeconds 60 `
-            -ValidationCheckIntervalSeconds 60 `
+            -ValidationStartupDelaySeconds 5 `
+            -ValidationHeartbeatSeconds 2 `
+            -ValidationCheckIntervalSeconds 5 `
             -ValidationFailureBaseSeconds 30
           if ($LASTEXITCODE -ne 0) { throw 'machine package preparation failed' }
           $manifest = Join-Path $evidence 'machine-test-packages.json'

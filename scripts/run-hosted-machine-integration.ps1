@@ -28,7 +28,16 @@ if (-not $CleanupOnly) {
 $phaseScript = Join-Path $PSScriptRoot 'run-machine-update-integration.ps1'
 $powerShell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
 $deferred = Join-Path $root 'update-interruption'
+# Phase deadlines in minutes under the fixture's validation timers (production
+# timers keep the long deadlines). Each automatic commit has its own per-wait
+# limit in the phase script; these only bound the phase as a whole, so a
+# regression to a multi-minute stall cannot hide inside a long deadline.
+# update-interruption keeps its own literal: it waits for Windows Installer's
+# idle shutdown (about 6 minutes), which no validation timer shortens.
+$validationTimers = [bool]$fixture.fixture.PSObject.Properties['timers']
+$validationDeadlines = @{ 'update' = 15; 'suite-update' = 20 }
 function Invoke-Phase([string]$Name, [string]$SKU, [string]$Phase, [int]$Deadline = 35) {
+    if ($validationTimers -and $Phase -ne 'Cleanup' -and $validationDeadlines.ContainsKey($Name)) { $Deadline = $validationDeadlines[$Name] }
     $path = Join-Path $root $Name
     $resultPath = Join-Path $path "machine-update-$($Phase.ToLowerInvariant()).json"
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
