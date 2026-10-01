@@ -459,7 +459,9 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 			t.Errorf("native lifecycle missing running suite app coverage %q", want)
 		}
 	}
-	machineUpdate := readAdminContractFile(t, repoRoot, "scripts", "run-machine-update-integration.ps1")
+	// A Windows checkout can convert the script to CRLF; the check below
+	// spans lines.
+	machineUpdate := strings.ReplaceAll(readAdminContractFile(t, repoRoot, "scripts", "run-machine-update-integration.ps1"), "\r\n", "\n")
 	for _, want := range []string{
 		// The administrator repair keeps its unchanged health assertion and
 		// must also reopen admission promptly.
