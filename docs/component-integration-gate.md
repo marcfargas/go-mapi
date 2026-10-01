@@ -134,7 +134,7 @@ the machine-global service, MSI product, certificate stores and fixture port
   leg succeeded, so a skipped, cancelled or failed leg fails the gate.
 
 The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
-(the service writes it under `logs/<transaction id>` in its protected storage),
+(the service writes it under `ProgramData\go-mapi\updates\logs\<transaction id>`),
 the Service Control Manager and MsiInstaller events since the runner was killed,
 and every change of the Windows Installer service and `msiexec` process state in
 `interrupted-install/` and `events.ndjson`. This is evidence only; no assertion

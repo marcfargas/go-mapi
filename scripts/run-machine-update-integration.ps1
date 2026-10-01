@@ -369,14 +369,14 @@ function WindowsInstallerState {
     [ordered]@{ msiserver=if ($service) { [ordered]@{ state=$service.State; processId=$service.ProcessId } } else { $null }; msiexec=$processes }
 }
 # Copies the interrupted installer's msiexec log (written by the service under
-# its protected logs directory, named by the transaction) and the Service Control
+# ProgramData\go-mapi\updates\logs, in a directory named by the transaction) and the Service Control
 # Manager and MsiInstaller events since the runner was killed. Never throws:
 # collecting evidence must not change the phase result.
 function CollectInterruptionEvidence($Pending, [DateTime]$KilledAtUtc) {
     try {
         $target = Join-Path $evidence 'interrupted-install'
         New-Item -ItemType Directory -Path $target -Force | Out-Null
-        $logs = Join-Path (Join-Path $stateDir 'logs') ([string]$Pending.transactionId)
+        $logs = Join-Path $env:ProgramData ('go-mapi\updates\logs\' + [string]$Pending.transactionId)
         if (Test-Path -LiteralPath $logs) { Copy-Item -LiteralPath $logs -Destination $target -Recurse -Force }
         $copied = @(Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
             [ordered]@{ path=$_.FullName; bytes=$_.Length; sha256=(Hash $_.FullName) } })
