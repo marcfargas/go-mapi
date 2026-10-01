@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -39,20 +40,21 @@ func TestAdminInstallOfferConsumesComponentHealth(t *testing.T) {
 
 func TestAdminInstallRequiresExplicitConsent(t *testing.T) {
 	health := testAdminHealth("interceptor", "install-interceptor")
-	called := false
-	coordinator := newAdminInstallCoordinator(func() ComponentHealthState { return health }, func(context.Context, ComponentHealthState) (bool, error) { called = true; return false, nil }, nil)
+	// The coordinator runs the attempt on its own goroutine.
+	var called atomic.Bool
+	coordinator := newAdminInstallCoordinator(func() ComponentHealthState { return health }, func(context.Context, ComponentHealthState) (bool, error) { called.Store(true); return false, nil }, nil)
 	coordinator.observe(health)
-	if called {
+	if called.Load() {
 		t.Fatal("observing an unhealthy component must not start a repair")
 	}
 	if err := coordinator.start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for !called && time.Now().Before(deadline) {
+	for !called.Load() && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if !called {
+	if !called.Load() {
 		t.Fatal("repair was not started after explicit consent")
 	}
 }
