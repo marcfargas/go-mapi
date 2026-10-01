@@ -187,6 +187,46 @@ $rcPathForCMake = 'windres'
     Remove-Item (Join-Path $input 'go-mapi-x86.dll')
     Reject { & $writer @common } 'missing input'
 
+    # Validation timers are a CI-fixture input only: the release build refuses
+    # every one of them, a partial or non-shortening set, and sub-minute checks
+    # without the set. Each guard throws before any toolchain is needed.
+    function RejectMessage([scriptblock]$Action, [string]$Pattern, [string]$What) {
+        try { & $Action } catch {
+            Assert ($_.Exception.Message -match $Pattern) "$What failed for the wrong reason: $($_.Exception.Message)"
+            return
+        }
+        throw "Expected failure: $What"
+    }
+    $serviceBuild = Join-Path $repo 'src/service/build.ps1'
+    $serviceOut = Join-Path $temp 'service.exe'
+    $oldMachineOrigin = $env:MACHINE_RELEASE_METADATA_ORIGIN
+    $env:MACHINE_RELEASE_METADATA_ORIGIN = 'https://go-mapi.app'
+    try {
+        foreach ($timer in @(@{ ValidationStartupDelaySeconds=5 }, @{ ValidationHeartbeatSeconds=2 }, @{ ValidationFailureBaseSeconds=30 },
+                @{ ValidationStartupDelaySeconds=120; ValidationHeartbeatSeconds=60; ValidationFailureBaseSeconds=900 })) {
+            $releaseArgs = $timer.Clone()
+            RejectMessage { & $serviceBuild -OutputPath $serviceOut -RequireMachineReleaseTrust @releaseArgs } 'must not carry validation timers' "release build with $($timer.Keys -join ',')"
+        }
+        $oneTimer = @{ ValidationStartupDelaySeconds=5 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @oneTimer } 'supplied together' 'partial validation timer set'
+        $tooLong = @{ ValidationStartupDelaySeconds=121; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'startup delay above production'
+        $tooLong = @{ ValidationStartupDelaySeconds=5; ValidationHeartbeatSeconds=61; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'heartbeat above production'
+        $tooLong = @{ ValidationStartupDelaySeconds=5; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=901 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'failure base above production'
+        $zero = @{ ValidationStartupDelaySeconds=0; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @zero } 'shorten the production' 'zero startup delay'
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut -CheckIntervalSeconds 5 } 'outside bounds' 'sub-minute check interval without validation timers'
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut -RequireMachineReleaseTrust -CheckIntervalSeconds 60 } 'six-hour' 'release build with a 60-second check interval'
+    } finally { $env:MACHINE_RELEASE_METADATA_ORIGIN = $oldMachineOrigin }
+    # The pre-signed (production-timer) fixture path refuses the shortened set.
+    $testPackages = Join-Path $repo 'scripts/build-machine-test-packages.ps1'
+    RejectMessage { & $testPackages -OutputDirectory (Join-Path $temp 'tp-out') -EvidenceDirectory (Join-Path $temp 'tp-evidence') `
+        -PreSignedPackagesManifest (Join-Path $temp 'missing-presigned.json') -ValidationTimers } 'only to the self-signed CI build' 'validation timers with pre-signed fixtures'
+    RejectMessage { & $testPackages -OutputDirectory (Join-Path $temp 'tp-out') -EvidenceDirectory (Join-Path $temp 'tp-evidence') `
+        -ValidationTimers -ValidationFailureBaseSeconds 901 } 'shorten the production' 'fixture failure base above production'
+
     $hostRoot = Join-Path $temp 'hostcase'
     New-Item -ItemType Directory -Force (Join-Path $hostRoot 'scripts'),(Join-Path $hostRoot 'src/installer/msi/tests') | Out-Null
     Copy-Item (Join-Path $repo 'scripts/run-hosted-machine-integration.ps1') (Join-Path $hostRoot 'scripts/run-hosted-machine-integration.ps1')

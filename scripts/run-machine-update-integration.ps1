@@ -47,6 +47,20 @@ $markerPath = 'HKLM:\SOFTWARE\go-mapi\MachineProduct'
 $signer = [string]$manifest.fixture.signerThumbprint
 $runId = [guid]::NewGuid().ToString('N')
 $overallDeadline = [DateTime]::UtcNow.AddMinutes($DeadlineMinutes)
+# Effective service timers, read from the package manifest and never hard-coded
+# per environment. A fixture without fixture.timers (every pre-signed fixture and
+# any build without -ValidationTimers) runs the production timers, and every wait
+# below keeps its production length.
+$timers = if ($manifest.fixture.PSObject.Properties['timers']) { $manifest.fixture.timers } else { $null }
+$startupDelaySeconds = if ($timers) { [int]$timers.startupDelaySeconds } else { 120 }
+$heartbeatSeconds = if ($timers) { [int]$timers.heartbeatSeconds } else { 60 }
+$checkIntervalSeconds = if ($timers) { [int]$timers.checkIntervalSeconds } elseif ($manifest.fixture.PSObject.Properties['checkIntervalSeconds']) { [int]$manifest.fixture.checkIntervalSeconds } else { 60 }
+$failureBaseSeconds = if ($timers) { [int]$timers.failureDelayBaseSeconds } else { 900 }
+# One automatic commit spends 56-62 s in the Windows Installer service replace
+# (measured, CI run 36843076430); no timer shortens it.
+$installWorkSeconds = 70
+$waitMarginSeconds = 60
+$commitPollMilliseconds = if ($timers) { 1000 } else { 5000 }
 function WriteJson([string]$Path, $Value) { [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false)) }
 function Record([string]$Kind, $Value) {
     Add-Content -LiteralPath $events -Value (([ordered]@{ atUtc=[DateTime]::UtcNow.ToString('o'); kind=$Kind; value=$Value }) | ConvertTo-Json -Depth 10 -Compress) -Encoding utf8
@@ -84,8 +98,8 @@ function AssertHealthy([string]$Key) {
     }
     $snapshot
 }
-function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes, [int]$PollMilliseconds = 5000) {
-    $end = [DateTime]::UtcNow.AddMinutes($Minutes)
+function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes, [int]$PollMilliseconds = 5000, [int]$Seconds = 0) {
+    $end = if ($Seconds -gt 0) { [DateTime]::UtcNow.AddSeconds($Seconds) } else { [DateTime]::UtcNow.AddMinutes($Minutes) }
     if ($end -gt $script:overallDeadline) { $end = $script:overallDeadline }
     while ([DateTime]::UtcNow -lt $end) {
         try { $result = & $Condition; if ($result) { return $result } } catch { Record 'poll-error' "$Label`: $($_.Exception.Message)" }
@@ -93,6 +107,14 @@ function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $Deadlin
     }
     Record 'deadline-snapshot' (Snapshot)
     throw "Deadline waiting for $Label"
+}
+# Per-wait limit in seconds under validation timers: one start-up delay, heartbeat
+# and check interval, any failure delay still owed, the install work when the wait
+# ends in a commit, and a margin. A regression to a multi-minute stall therefore
+# fails the wait. Zero keeps the phase deadline (production timers).
+function WaitLimit([int]$FailureDelaySeconds = 0, [switch]$Install) {
+    if (-not $timers) { return 0 }
+    return $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + $FailureDelaySeconds + $(if ($Install) { $installWorkSeconds } else { 0 }) + $waitMarginSeconds
 }
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
@@ -370,6 +392,7 @@ function AssertCommitted([string]$Key, [int]$PreviousPid) {
     return $snapshot
 }
 
+Record 'service-timers' ([ordered]@{ validationTimers=[bool]$timers; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; checkIntervalSeconds=$checkIntervalSeconds; failureDelayBaseSeconds=$failureBaseSeconds; phase=$Phase; sku=$SKU })
 $passed = $false
 $cleanupOnExit = $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
 $cleanupError = $null
@@ -410,13 +433,15 @@ try {
                     $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
                     if ($d -and (RequestCount '/machine/suite/targets.json') -gt $beforeRequests -and $d.failures -gt $beforeFailures -and
                         $s.marker.packageRelease -eq $manifest.packages.$caseA.release -and -not $s.pending) { $s }
-                } | ForEach-Object { Record 'wrong-sku-refused' $_ }
+                } -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit) | ForEach-Object { Record 'wrong-sku-refused' $_ }
             }
             SelectTarget $caseB
         }
     }
     if ($Phase -eq 'Hosted') {
-        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } }
+        # Suite B follows the wrong-SKU rejection, so its first failure delay is still owed.
+        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } } `
+            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit $(if ($SKU -eq 'suite') { $failureBaseSeconds } else { 0 }) -Install)
         $b = AssertCommitted $caseB $a.service.processId
         $beforeFailures = (ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")).failures
         $beforeReplay = $b.replay.sequence
@@ -438,7 +463,12 @@ try {
             $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
             if ((RequestCount $cPath) -gt 0 -and $d.failures -gt $beforeFailures -and $s.marker.packageRelease -eq $manifest.packages.$caseB.release -and
                 $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $beforeReplay) { $s }
-        } | ForEach-Object { Record 'untrusted-C-refused' $_ }
+        } -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit) | ForEach-Object { Record 'untrusted-C-refused' $_ }
+        # The failure count persists across the restart below and sets the delay
+        # before C is retried (1 x base, 2 x base, ...). Recorded so a base that
+        # lets the count grow during the untrusted window shows in the evidence.
+        $atRestore = ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
+        Record 'failures-at-trust-restore' ([ordered]@{ failures=$atRestore.failures; lastAttemptAt=$atRestore.lastAttemptAt; nextAttemptAt=$atRestore.nextAttemptAt; failureBaseSeconds=$failureBaseSeconds })
         RestoreSignerTrust
         if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'C MSI bytes changed across trust restoration' }
         Restart-Service go-mapi -Force
@@ -446,7 +476,8 @@ try {
             if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'Azure-signed C MSI bytes changed' }
             SelectTarget $caseC
         }
-        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28
+        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28 `
+            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit (2 * $failureBaseSeconds) -Install)
         $c = AssertCommitted $caseC $b.service.processId
         Msi '/i' $manifest.packages.$caseC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
         $disabled = AssertHealthy $caseC
@@ -486,7 +517,7 @@ try {
         $pending = Until 'matching runner and installer liveness' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
             if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12 200
+        } 12 200 -Seconds (WaitLimit 0 -Install)
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
         Stop-Process -Id $pending.runner.pid -Force

@@ -10,16 +10,16 @@ import (
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
-const (
-	residentInitialDelay = 2 * time.Minute
-	residentInterval     = 6 * time.Hour
-)
+const residentInterval = 6 * time.Hour
 
-// Variables so tests can shorten them. The heartbeat is the backstop for a
-// closed suite admission gate; the admission retry reopens it within about a
-// second after a machine transaction releases Windows Installer.
+// Variables so tests can shorten them; a controlled validation build shortens
+// the start-up delay and heartbeat once at start-up (applyResidentTimers). The
+// heartbeat is the backstop for a closed suite admission gate; the admission
+// retry reopens it within about a second after a machine transaction releases
+// Windows Installer.
 var (
-	residentHeartbeatInterval = time.Minute
+	residentInitialDelay      = productionResidentInitialDelay
+	residentHeartbeatInterval = productionResidentHeartbeat
 	admissionRetryInterval    = time.Second
 	admissionRetryBound       = 15 * time.Minute
 )

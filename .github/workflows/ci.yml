@@ -259,7 +259,12 @@ jobs:
             -OutputDirectory release/machine-test `
             -EvidenceDirectory $evidence `
             -MetadataOrigin https://localhost:18453 `
-            -ArtifactOrigin https://localhost:18453/releases/download/
+            -ArtifactOrigin https://localhost:18453/releases/download/ `
+            -ValidationTimers `
+            -ValidationStartupDelaySeconds 120 `
+            -ValidationHeartbeatSeconds 60 `
+            -ValidationCheckIntervalSeconds 60 `
+            -ValidationFailureBaseSeconds 30
           if ($LASTEXITCODE -ne 0) { throw 'machine package preparation failed' }
           $manifest = Join-Path $evidence 'machine-test-packages.json'
           if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'machine package manifest missing' }

@@ -224,6 +224,42 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	}
 }
 
+// Validation timers exist only in the disposable CI fixture build. No release
+// path passes them, the service build refuses them under the release trust
+// switch, and the public provenance check requires their absence.
+func TestReleasePathsCarryNoValidationTimers(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	read := func(parts ...string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(append([]string{repoRoot}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(raw), "\r\n", "\n")
+	}
+	release := read(".github", "workflows", "admin-release.yml")
+	for _, forbidden := range []string{"ValidationTimers", "ValidationStartupDelaySeconds", "ValidationHeartbeatSeconds", "ValidationFailureBaseSeconds", "ValidationCheckIntervalSeconds"} {
+		if strings.Contains(release, forbidden) {
+			t.Errorf("release workflow must not pass validation timers: %q", forbidden)
+		}
+	}
+	if !strings.Contains(release, "$derivative.Contains('timers')") {
+		t.Error("public machine provenance check must require the absence of validation timers")
+	}
+	for _, derivative := range regexp.MustCompile(`(?m)^\s*\[ordered\]@\{ kind='[^']+';[^\n]*$`).FindAllString(release, -1) {
+		if strings.Contains(derivative, "timers") {
+			t.Errorf("a machine derivative record carries validation timers: %s", strings.TrimSpace(derivative))
+		}
+	}
+	build := read("src", "service", "build.ps1")
+	if !strings.Contains(build, "if ($RequireMachineReleaseTrust -and $validationSet.Count -gt 0) { throw 'Release service must not carry validation timers' }") {
+		t.Error("service build must reject validation timers under -RequireMachineReleaseTrust")
+	}
+	if !strings.Contains(read(".github", "workflows", "ci.yml"), "-ValidationTimers") {
+		t.Error("the CI fixture build must pass the validation timers")
+	}
+}
+
 func TestInterceptorReleaseUsesWindowsSafeVersionInput(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	componentManifest, err := os.ReadFile(filepath.Join(repoRoot, "components.json"))
