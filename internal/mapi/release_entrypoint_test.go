@@ -187,17 +187,61 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(workflow)
+	content := strings.ReplaceAll(string(workflow), "\r\n", "\n")
 	producer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)/`).FindStringSubmatch(content)
-	admin := strings.SplitN(content, "  admin-msi:", 2)
-	if len(admin) != 2 {
-		t.Fatal("CI workflow lacks admin-msi job")
+	// The machine lifecycle validation is split into a fixture job that builds
+	// and signs the packages once, one scenario job per scenario (each on its own
+	// runner: the scenarios share machine-global state), and the aggregate gate
+	// that keeps the original job name.
+	jobText := func(id, next string) string {
+		t.Helper()
+		start := strings.Index(content, "\n  "+id+":\n")
+		end := strings.Index(content, "\n  "+next+":\n")
+		if start < 0 || end < start {
+			t.Fatalf("CI workflow lacks job %s before %s", id, next)
+		}
+		return content[start:end]
 	}
-	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(admin[1])
+	fixtures := jobText("admin-msi-fixtures", "admin-msi-scenario")
+	scenarios := jobText("admin-msi-scenario", "admin-msi")
+	aggregate := jobText("admin-msi", "go-race")
+	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(fixtures)
 	if len(producer) != 2 || len(consumer) != 2 || producer[1] != consumer[1] ||
-		!strings.Contains(admin[1], "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
-		!strings.Contains(admin[1], "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
+		!strings.Contains(fixtures, "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
+		!strings.Contains(fixtures, "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
 		t.Errorf("machine A upload, download, and fixture input paths disagree: producer=%v consumer=%v", producer, consumer)
+	}
+	if strings.Count(content, "just build-machine-test-packages") != 1 || strings.Contains(scenarios, "build-machine-test-packages") {
+		t.Error("machine MSI fixtures must be built once, in the fixture job, and reused by the scenario jobs")
+	}
+	if !strings.Contains(fixtures, "name: go-mapi-machine-fixtures-${{ github.run_id }}") ||
+		!strings.Contains(scenarios, "name: go-mapi-machine-fixtures-${{ github.run_id }}") {
+		t.Error("the scenario jobs must download the fixture job's artifact")
+	}
+	// Every scenario keeps its own runner, result and artifact; none is dropped.
+	for _, want := range []string{
+		"scenario: [cross-sku, update, suite-update, update-interruption]",
+		"fail-fast: false",
+		"needs: [admin-msi-fixtures]",
+		"-Scenario ${{ matrix.scenario }}\n",
+		"-Scenario ${{ matrix.scenario }} -CleanupOnly",
+		"name: go-mapi-machine-native-validation-${{ matrix.scenario }}-${{ github.run_id }}",
+		"signerPublicCertificate", "Import-Certificate",
+	} {
+		if !strings.Contains(scenarios, want) {
+			t.Errorf("machine scenario job is missing %q", want)
+		}
+	}
+	// The aggregate is the gate: it keeps the original job name and fails unless
+	// the fixture build and every scenario passed.
+	for _, want := range []string{
+		"name: Validate machine MSI lifecycle and installed updater",
+		"needs: [admin-msi-fixtures, admin-msi-scenario]",
+		"always()", "needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
+	} {
+		if !strings.Contains(aggregate, want) {
+			t.Errorf("machine MSI aggregate job is missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
@@ -212,7 +256,10 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22"} {
+	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22",
+		"[ValidateSet('all','cross-sku','update','suite-update','update-interruption')][string]$Scenario = 'all'",
+		"if (InScenario 'cross-sku')", "if (InScenario 'update')", "if (InScenario 'suite-update')", "if (InScenario 'update-interruption')",
+		"Invoke-Phase 'suite-update' 'suite' 'Cleanup'", "InScenario $_"} {
 		if !strings.Contains(string(sequence), want) {
 			t.Errorf("hosted machine sequence is missing %q", want)
 		}

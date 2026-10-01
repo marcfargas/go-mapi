@@ -296,6 +296,40 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     Clear-Content $env:FAKE_PHASE_LOG
     & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence -CleanupOnly
     Assert ((@((Get-Content $env:FAKE_PHASE_LOG)) -join ',') -eq 'update/Cleanup,update-interruption/Cleanup') 'deferred cleanup routing changed'
+    # Scenario selector: the hosted CI runs one scenario per runner. Each scenario
+    # runs only its own phases and cleans up only its own phases; the default
+    # ('all', asserted above) keeps the full sequence and cleanup order.
+    function ScenarioPhases([string]$Scenario, [switch]$CleanupOnly) {
+        Clear-Content $env:FAKE_PHASE_LOG
+        $scenarioArgs = @{ PackageManifest=$fixturePath; EvidenceDirectory=$evidence; Scenario=$Scenario }
+        if ($CleanupOnly) { $scenarioArgs.CleanupOnly = $true }
+        & $runner @scenarioArgs
+        return (@(Get-Content $env:FAKE_PHASE_LOG) -join ',')
+    }
+    $deferredMarker = Join-Path $evidence 'update-interruption/cleanup-deferred.json'
+    Remove-Item $deferredMarker -Force
+    Assert ((ScenarioPhases 'cross-sku') -eq '') 'cross-sku scenario ran a phase'
+    Assert (Test-Path (Join-Path $evidence 'cross-sku/lifecycle.log')) 'cross-sku scenario did not run the cross-SKU lifecycle'
+    Assert ((ScenarioPhases 'update') -eq 'update/Hosted,update/Cleanup') 'update scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'suite-update') -eq 'suite-update/Hosted,suite-update/Cleanup,suite-update/Cleanup') 'suite-update scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'update-interruption') -eq 'update-interruption/InterruptSameBoot,update-interruption/Cleanup') 'update-interruption scenario phases or cleanup changed'
+    Remove-Item (Join-Path $evidence 'cross-sku/lifecycle.log') -Force
+    foreach ($case in @(@('cross-sku',''), @('update','update/Cleanup'), @('suite-update','suite-update/Cleanup'), @('update-interruption','update-interruption/Cleanup'))) {
+        Assert ((ScenarioPhases $case[0] -CleanupOnly) -eq $case[1]) "cleanup-only scope for $($case[0]) changed"
+    }
+    # A deferred interruption cleanup is routed only to the scenarios that own it.
+    Set-Content $deferredMarker '{}'
+    Assert ((ScenarioPhases 'update-interruption' -CleanupOnly) -eq 'update-interruption/Cleanup') 'deferred cleanup not routed to the interruption scenario'
+    Assert ((ScenarioPhases 'update' -CleanupOnly) -eq 'update/Cleanup') 'deferred cleanup leaked into another scenario'
+    Assert ((ScenarioPhases 'suite-update' -CleanupOnly) -eq '') 'suite-update cleanup ran although the deferral skips it'
+    Remove-Item $deferredMarker -Force
+    # A failing scenario still reports its failure and cleans up only itself.
+    $env:FAKE_PHASE_FAIL = 'update/Hosted'
+    try { ScenarioPhases 'update' | Out-Null; throw 'Expected update scenario failure' }
+    catch { Assert ($_.Exception.Message -match 'stub phase failure|update Hosted failed') "scenario failure not reported: $($_.Exception.Message)" }
+    Assert ((@(Get-Content $env:FAKE_PHASE_LOG) -join ',') -eq 'update/Hosted,update/Cleanup') 'failing scenario skipped its own cleanup or ran another scenario'
+    $env:FAKE_PHASE_FAIL = ''
+    Reject { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence -Scenario 'unknown' } 'unknown scenario'
     Write-Host 'BuildCi contracts passed'
 } finally {
     $env:GOMAPI_OAUTH_CLIENT_ID = $oldClient

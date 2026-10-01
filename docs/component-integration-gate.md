@@ -58,8 +58,8 @@ pair is verified before upload. The job repeats these three builds and checks
 on the same checkout to exercise owned-output replacement, without rebuilding
 the user packages. The first verified pairs are the uploaded handoff artifacts.
 
-The `admin-msi` job reuses the Release DLLs and distinct A/C machine apps. It
-prepares disposable signed system A/B/C and suite A/B/C packages with `just
+The `admin-msi-fixtures` job reuses the Release DLLs and distinct A/C machine
+apps. It prepares disposable signed system A/B/C and suite A/B/C packages with `just
 build-machine-test-packages`. Suite C keeps B's exact service and interceptor
 bytes and source identities while changing the app. The signed-input writer is
 shared with machine release validation, but these fixture certificates are
@@ -104,13 +104,41 @@ just machine-hosted-integration `
 The hosted command runs cross-SKU lifecycle, system Hosted, suite Hosted,
 suite Cleanup, then system InterruptSameBoot with a 22-minute deadline. It
 checks phase result files and attempts all applicable cleanup while retaining
-both primary and cleanup failures. The workflow invokes the same command with
-`-CleanupOnly` in an `always()` step after fixture preparation, and always
-uploads build, MSI, request, status, event and cleanup evidence. When
+both primary and cleanup failures. `-Scenario cross-sku|update|suite-update|
+update-interruption` runs one of those four scenarios (`suite-update` includes
+its Cleanup phase); the default `all` runs them in the order above. The same
+selector scopes `-CleanupOnly` to the scenario's own phases. When
 `cleanup-deferred.json` exists, cleanup targets only system update and
 interruption with the deferred evidence; the phase script still checks the
 observed uninstall fence and exact interrupted identity. A deferred product
 is reported separately from a clean machine.
+
+The workflow splits the validation across runners because the scenarios share
+the machine-global service, MSI product, certificate stores and fixture port
+18453 and so cannot share one machine:
+
+- `admin-msi-fixtures` builds and signs the packages once and uploads
+  `go-mapi-machine-fixtures-<run id>` (the package manifest, MSIs, inputs and
+  the signer's public certificate).
+- `admin-msi-scenario` runs one matrix leg per scenario on its own runner. Each
+  leg downloads the fixtures to the same workspace paths, imports the fixture
+  signer's public certificate into the machine Root and TrustedPublisher stores
+  (the build runner trusted it only on itself), runs
+  `just machine-hosted-integration -Scenario <scenario>`, then runs the same
+  command with `-CleanupOnly` in an `always()` step, and always uploads that
+  scenario's evidence as
+  `go-mapi-machine-native-validation-<scenario>-<run id>`. The legs do not
+  cancel each other.
+- `admin-msi`, named "Validate machine MSI lifecycle and installed updater",
+  is the aggregate gate. It fails unless the fixture job and every scenario
+  leg succeeded, so a skipped, cancelled or failed leg fails the gate.
+
+The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
+(the service writes it under `logs/<transaction id>` in its protected storage),
+the Service Control Manager and MsiInstaller events since the runner was killed,
+and every change of the Windows Installer service and `msiexec` process state in
+`interrupted-install/` and `events.ndjson`. This is evidence only; no assertion
+depends on it.
 
 The small `pwsh -File scripts/tests/BuildCi.Tests.ps1` command checks build
 state and failure contracts with stand-ins. It does not prove that a PE builds

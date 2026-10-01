@@ -360,6 +360,37 @@ function DeferInterruptedProductCleanup($witness) {
     Record 'cleanup-deferred-to-ephemeral-runner-disposal' $record
     return $record
 }
+# Evidence only (no assertion): Windows Installer service state and the msiexec
+# processes alive, sampled while the interrupted install is reconciled.
+function WindowsInstallerState {
+    $service = Get-CimInstance Win32_Service -Filter "Name='msiserver'" -ErrorAction SilentlyContinue
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='msiexec.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+        [ordered]@{ pid=$_.ProcessId; createdUtc=if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }; command=$_.CommandLine } })
+    [ordered]@{ msiserver=if ($service) { [ordered]@{ state=$service.State; processId=$service.ProcessId } } else { $null }; msiexec=$processes }
+}
+# Copies the interrupted installer's msiexec log (written by the service under
+# its protected logs directory, named by the transaction) and the Service Control
+# Manager and MsiInstaller events since the runner was killed. Never throws:
+# collecting evidence must not change the phase result.
+function CollectInterruptionEvidence($Pending, [DateTime]$KilledAtUtc) {
+    try {
+        $target = Join-Path $evidence 'interrupted-install'
+        New-Item -ItemType Directory -Path $target -Force | Out-Null
+        $logs = Join-Path (Join-Path $stateDir 'logs') ([string]$Pending.transactionId)
+        if (Test-Path -LiteralPath $logs) { Copy-Item -LiteralPath $logs -Destination $target -Recurse -Force }
+        $copied = @(Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{ path=$_.FullName; bytes=$_.Length; sha256=(Hash $_.FullName) } })
+        $since = $KilledAtUtc.AddMinutes(-2).ToLocalTime()
+        $installerEvents = @()
+        foreach ($query in @(@{ LogName='System'; ProviderName='Service Control Manager'; StartTime=$since }, @{ LogName='Application'; ProviderName='MsiInstaller'; StartTime=$since })) {
+            $installerEvents += @(Get-WinEvent -FilterHashtable $query -ErrorAction SilentlyContinue | Where-Object { $query.ProviderName -ne 'Service Control Manager' -or [string]$_.Message -match 'Windows Installer' } |
+                Sort-Object TimeCreated | ForEach-Object {
+                    [ordered]@{ atUtc=$_.TimeCreated.ToUniversalTime().ToString('o'); provider=$_.ProviderName; id=$_.Id; message=[string]$_.Message } })
+        }
+        WriteJson (Join-Path $target 'windows-installer-events.json') $installerEvents
+        Record 'interruption-evidence' ([ordered]@{ transactionId=$Pending.transactionId; killedAtUtc=$KilledAtUtc.ToString('o'); logFound=(Test-Path -LiteralPath $logs); files=$copied; windowsInstaller=(WindowsInstallerState); eventCount=$installerEvents.Count })
+    } catch { Record 'interruption-evidence-error' $_.Exception.Message }
+}
 function AssertNoInteractiveUser {
     $sessions = @(quser 2>$null | Select-Object -Skip 1 | Where-Object { $_ -match '\b(Active|Disc)\b' })
     if ($sessions.Count -ne 0) { throw 'Interactive session exists; no-user phase cannot claim proof' }
@@ -526,13 +557,26 @@ try {
         } 12 200 -Seconds (WaitLimit 0 -Install)
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
+        $killedAtUtc = [DateTime]::UtcNow
         Stop-Process -Id $pending.runner.pid -Force
-        $sameboot = Until 'conservative same-boot reconciliation' {
-            $s=Snapshot
-            $installer=Get-Process -Id $pending.installer.pid -ErrorAction SilentlyContinue
-            if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.$caseB.identity.sequence) -and
-                $s.pending -and $s.pending.phase -in @('outcome-unconfirmed','repair-required','reboot-pending','rolled-back')) { $s }
-        } 8
+        Record 'interruption-runner-killed' ([ordered]@{ killedAtUtc=$killedAtUtc.ToString('o'); windowsInstaller=(WindowsInstallerState) })
+        $script:lastWindowsInstallerKey = $null
+        # Evidence only: the wait below is about 5 minutes that no validation timer
+        # explains. Keep the interrupted install's msiexec log and the Windows
+        # Installer service state in the evidence, collected even when the wait fails.
+        try {
+            $sameboot = Until 'conservative same-boot reconciliation' {
+                try {
+                    $state = WindowsInstallerState
+                    $key = $state | ConvertTo-Json -Compress -Depth 4
+                    if ($key -cne $script:lastWindowsInstallerKey) { $script:lastWindowsInstallerKey = $key; Record 'windows-installer-state' $state }
+                } catch { Record 'windows-installer-state-error' $_.Exception.Message }
+                $s=Snapshot
+                $installer=Get-Process -Id $pending.installer.pid -ErrorAction SilentlyContinue
+                if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.$caseB.identity.sequence) -and
+                    $s.pending -and $s.pending.phase -in @('outcome-unconfirmed','repair-required','reboot-pending','rolled-back')) { $s }
+            } 8
+        } finally { CollectInterruptionEvidence $pending $killedAtUtc }
         Record 'sameboot-conservative' $sameboot
     } elseif ($Phase -eq 'PrepareReboot') {
         $pending = Until 'matching pending before external reboot' {
