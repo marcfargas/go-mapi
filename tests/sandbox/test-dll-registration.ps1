@@ -49,14 +49,14 @@ $goMapiKey = "HKLM:\SOFTWARE\Clients\Mail\go-mapi"
 $defaultMail = (Get-ItemProperty "HKLM:\SOFTWARE\Clients\Mail" -ErrorAction SilentlyContinue)."(Default)"
 $dllRegValue = (Get-ItemProperty $goMapiKey -ErrorAction SilentlyContinue)."DLLPath"
 
-Log "  Default mail client: $defaultMail"
+Log "  Selected Simple MAPI provider: $defaultMail"
 Log "  DLL path in registry: $dllRegValue"
 
 if ($defaultMail -ne "go-mapi") {
-    Log "FAILED: Default mail client is '$defaultMail', expected 'go-mapi'"
+    Log "FAILED: Simple MAPI provider is '$defaultMail', expected 'go-mapi'"
     exit 1
 }
-Log "OK: Default mail client = go-mapi"
+Log "OK: Simple MAPI provider = go-mapi"
 
 if ($dllRegValue -ne $DllPath) {
     Log "FAILED: DLL path in registry is '$dllRegValue', expected '$DllPath'"

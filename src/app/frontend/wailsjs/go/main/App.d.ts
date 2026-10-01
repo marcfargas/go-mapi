@@ -36,11 +36,7 @@ export function MakeAuthenticatedGmailCall(arg1:context.Context,arg2:main.GmailC
 
 export function PauseWatching():Promise<void>;
 
-export function OpenDefaultAppsSettings():Promise<void>;
-
 export function OpenStartupSettings():Promise<void>;
-
-export function DismissDefaultAppsPrompt():Promise<void>;
 
 export function ResumeWatching():Promise<void>;
 

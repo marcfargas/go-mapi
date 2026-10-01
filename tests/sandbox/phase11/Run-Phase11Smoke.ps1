@@ -18,9 +18,9 @@
 #   5. Launch the app from its Start Menu shortcut.
 #   6. [HUMAN] Complete OAuth consent in the browser window the app opens.
 #      Script polls app.log for "oauth: signed in as" to detect completion.
-#   7. Auto-trigger a MAPI call via `mailto:` (Windows routes this through
-#      whatever is registered as the default mail client — that is now go-mapi).
-#   8. Verify the queue JSON file appeared in %TEMP%\go-mapi\.
+#   7. [HUMAN] Use Explorer Send to > Mail recipient with an owned attachment.
+#   8. Verify a matching new queue descriptor under %LOCALAPPDATA%\go-mapi\queue\
+#      and confirm its corresponding row in the app. Manual draft mode is required.
 #   9. [HUMAN] Click "Create draft" in the go-mapi window. Script polls app.log
 #      for "gmail: draft created id=" to detect completion.
 #  10. [HUMAN] Glance at Gmail Drafts to confirm the draft actually appeared.
@@ -29,9 +29,8 @@
 #  12. Verify clean uninstall: HKLM mail-client key gone, ProgramFiles dir gone.
 #  13. Write 11-SMOKE-EVIDENCE.md with step-by-step PASS/FAIL + screenshot refs.
 #
-# Everything except the three [HUMAN] steps is scripted. D-14/D-16 accept a
-# short manual tail; these three are irreducible (OAuth consent, UI click,
-# visual Gmail confirmation).
+# This legacy runner is supplemental evidence only, not a current-package gate.
+# Skipped human observations remain NOT RUN, never PASS.
 
 [CmdletBinding()]
 param(
@@ -44,6 +43,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'SendToObservation.ps1')
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -162,7 +162,8 @@ function Wait-ForLogLine {
     param(
         [string]$Pattern,
         [int]$TimeoutSeconds,
-        [string]$Label
+        [string]$Label,
+        [int]$AfterLine = 0
     )
     $log = Get-AppLogPath
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -170,6 +171,7 @@ function Wait-ForLogLine {
     while ((Get-Date) -lt $deadline) {
         if (Test-Path -LiteralPath $log) {
             $hit = Select-String -LiteralPath $log -Pattern $Pattern -SimpleMatch -ErrorAction SilentlyContinue |
+                Where-Object { $_.LineNumber -gt $AfterLine } |
                 Select-Object -First 1
             if ($hit) { Write-StepLog INFO "Matched '$Label' at $log line $($hit.LineNumber)"; return $true }
         }
@@ -179,27 +181,16 @@ function Wait-ForLogLine {
     $false
 }
 
-function Trigger-MapiSend {
-    # `Start-Process "mailto:..."` goes through ShellExecuteEx, which resolves
-    # via HKLM\SOFTWARE\Clients\Mail (set by the installer to go-mapi). The
-    # MAPI DLL then writes JSON to %TEMP%\go-mapi\ and the watcher picks it up.
-    $target = 'mailto:phase11-smoke@example.com?subject=Phase%2011%20smoke%20test&body=Automated%20smoke%20message%20from%20sandbox.'
-    Write-StepLog INFO "Triggering MAPI send via mailto: handler"
-    Start-Process $target
-}
-
 function Wait-ForQueueFile {
-    param([int]$TimeoutSeconds = 15)
-    $queueDir = Join-Path $env:TEMP 'go-mapi'
+    param([string[]]$BeforeNames, [string]$ExpectedName, [string]$ExpectedContent, [int]$TimeoutSeconds = 15)
+    $queueDir = Join-Path $env:LOCALAPPDATA 'go-mapi\queue'
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $queueDir) {
-            $json = Get-ChildItem -LiteralPath $queueDir -Filter '*.json' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($json) { Write-StepLog INFO "Queue JSON appeared: $($json.FullName)"; return $json.FullName }
-        }
+        $match = Find-MatchingQueueDescriptor -QueueDir $queueDir -BeforeNames $BeforeNames -ExpectedName $ExpectedName -ExpectedContent $ExpectedContent
+        if ($match) { Write-StepLog INFO "Matching queue JSON appeared: $match"; return $match }
         Start-Sleep -Milliseconds 500
     }
-    Write-StepLog WARN 'No queue JSON appeared within timeout'
+    Write-StepLog WARN 'No matching new queue JSON appeared within timeout'
     $null
 }
 
@@ -231,8 +222,8 @@ function Test-CleanUninstall {
 }
 
 function Prompt-Human {
-    param([string]$Message, [string]$Default = 'y')
-    if ($NoHumanPrompts) { return $Default }
+    param([string]$Message, [string]$Default = '')
+    if ($NoHumanPrompts) { return '' }
     Write-Host ''
     Write-Host '================================================================' -ForegroundColor Yellow
     Write-Host " HUMAN: $Message" -ForegroundColor Yellow
@@ -321,29 +312,49 @@ try {
     }
 
     # ---- HUMAN: OAuth consent ----
-    Prompt-Human 'Complete Google OAuth consent in the browser window the app opened. Press ENTER once the app shows the signed-in state.' | Out-Null
-    $oauthOk = Wait-ForLogLine -Pattern 'oauth: signed in as' -TimeoutSeconds $OAuthWaitSeconds -Label 'OAuth sign-in'
-    $results.oauth = if ($oauthOk) { 'PASS' } else { 'FAIL (timeout waiting for oauth: signed in as)' }
-    Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\04-signed-in.png') -Label 'signed-in'
-    if (-not $oauthOk) { throw 'OAuth sign-in never completed' }
+    if ($NoHumanPrompts) {
+        $results.oauth = 'NOT RUN (human OAuth consent skipped)'
+    } else {
+        Prompt-Human 'Complete Google OAuth consent in the browser window the app opened. Press ENTER once the app shows the signed-in state.' | Out-Null
+        $oauthOk = Wait-ForLogLine -Pattern 'oauth: signed in as' -TimeoutSeconds $OAuthWaitSeconds -Label 'OAuth sign-in'
+        $results.oauth = if ($oauthOk) { 'PASS' } else { 'FAIL (timeout waiting for oauth: signed in as)' }
+        Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\04-signed-in.png') -Label 'signed-in'
+        if (-not $oauthOk) { throw 'OAuth sign-in never completed' }
+    }
 
-    # ---- AUTO: MAPI trigger ----
-    Trigger-MapiSend
-    $results.mapi = 'PASS (mailto: dispatched)'
-
-    $queuePath = Wait-ForQueueFile -TimeoutSeconds 15
-    $results.queue = if ($queuePath) { "PASS ($queuePath)" } else { 'FAIL (no queue JSON)' }
-    Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\05-queue-row.png') -Label 'queue-row'
+    # ---- HUMAN: real Send-To, followed by correlated queue and UI observations ----
+    $queueDir = Join-Path $env:LOCALAPPDATA 'go-mapi\queue'
+    $beforeNames = @(if (Test-Path -LiteralPath $queueDir) { Get-ChildItem -LiteralPath $queueDir -Filter '*.json' -File | ForEach-Object Name })
+    $fixtureName = "send-to-$(Get-IsoStamp)-$([guid]::NewGuid().ToString('N').Substring(0,8)).txt"
+    $fixtureContent = "go-mapi legacy Send-To observation $fixtureName`n"
+    $fixturePath = Join-Path $script:EvidenceDir $fixtureName
+    Set-Content -LiteralPath $fixturePath -Value $fixtureContent -NoNewline
+    $triggerResp = Prompt-Human "Confirm manual draft mode, then in Explorer use Send to > Mail recipient with $fixturePath. Press y after the action completes. [y/n]"
+    $queuePath = $null
+    if (Test-ExplicitAffirmative $triggerResp) {
+        $queuePath = Wait-ForQueueFile -BeforeNames $beforeNames -ExpectedName $fixtureName -ExpectedContent $fixtureContent -TimeoutSeconds 15
+        $results.queue = if ($queuePath) { "PASS (matching new descriptor: $queuePath)" } else { 'FAIL (no matching new descriptor)' }
+        $uiResp = if ($queuePath) { Prompt-Human "Confirm the new $fixtureName row is visible in go-mapi. [y/n]" } else { '' }
+        $results.mapi = if ($queuePath -and (Test-ExplicitAffirmative $uiResp)) { 'PASS (Send-To with matching queue and UI row confirmed)' } else { 'FAIL (Send-To/UI correlation unconfirmed)' }
+    } else {
+        $results.mapi = if ($NoHumanPrompts) { 'NOT RUN (human Send-To action skipped)' } else { 'FAIL (Send-To action unconfirmed)' }
+        $results.queue = if ($NoHumanPrompts) { 'NOT RUN (human Send-To action skipped)' } else { 'FAIL (Send-To action unconfirmed)' }
+    }
+    if ($queuePath) { Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\05-queue-row.png') -Label 'queue-row' }
 
     # ---- HUMAN: click Create draft in the go-mapi window ----
-    Prompt-Human 'Click "Create draft" on the queue row in the go-mapi window. Press ENTER after the row clears.' | Out-Null
-    $draftOk = Wait-ForLogLine -Pattern 'gmail: draft created id=' -TimeoutSeconds $DraftWaitSeconds -Label 'draft created'
-    $results.draft = if ($draftOk) { 'PASS' } else { 'FAIL (timeout waiting for gmail: draft created id=)' }
-    Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\06-draft-created.png') -Label 'draft-created'
+    $appLog = Get-AppLogPath
+    $beforeDraftLines = if (Test-Path -LiteralPath $appLog) { @(Get-Content -LiteralPath $appLog).Count } else { 0 }
+    $draftResp = if ($queuePath -and $results.mapi -match '^PASS') { Prompt-Human 'Click Create draft on the matching queue row. Press y after the row clears. [y/n]' } else { '' }
+    if (Test-ExplicitAffirmative $draftResp) {
+        $draftOk = Wait-ForLogLine -Pattern 'gmail: draft created id=' -TimeoutSeconds $DraftWaitSeconds -Label 'draft created' -AfterLine $beforeDraftLines
+        $results.draft = if ($draftOk) { 'PASS (log observed; correlate with draft)' } else { 'FAIL (draft log not observed)' }
+        Save-Screenshot -OutPath (Join-Path $script:EvidenceDir 'screenshots\06-draft-created.png') -Label 'draft-created'
+    } else { $results.draft = if ($NoHumanPrompts) { 'NOT RUN (human draft action skipped)' } else { 'FAIL (draft action unconfirmed)' } }
 
     # ---- HUMAN: Gmail glance ----
-    $gmailResp = Prompt-Human 'Open Gmail Drafts in your browser and confirm the draft appeared. [y]/n' 'y'
-    $results.gmail = if ($gmailResp -match '^(y|yes)$') { 'PASS (human confirmed)' } else { 'FAIL (human reported missing)' }
+    $gmailResp = if ($results.draft -match '^PASS') { Prompt-Human 'Open Gmail Drafts and confirm the matching draft appeared. Press y only after observing it. [y/n]' } else { '' }
+    $results.gmail = if (Test-ExplicitAffirmative $gmailResp) { 'PASS (human confirmed)' } elseif ($NoHumanPrompts) { 'NOT RUN (human Gmail observation skipped)' } else { 'FAIL (Gmail draft unconfirmed)' }
 
     # ---- AUTO: uninstall ----
     $uninstOk = Uninstall-GoMapi
@@ -353,9 +364,7 @@ try {
     $residual = Test-CleanUninstall
     $results.clean = if ($residual.Count -eq 0) { 'PASS' } else { "FAIL ($($residual -join '; '))" }
 
-    $allPass = @('install','launch','oauth','mapi','queue','draft','gmail','uninstall','clean') |
-        ForEach-Object { $results[$_] } | Where-Object { $_ -notmatch '^PASS' } | Measure-Object
-    $results.Verdict = if ($allPass.Count -eq 0) { 'PASS' } else { 'FAIL' }
+    $results.Verdict = Get-SmokeVerdict -Results $results -RequiredSteps @('install','launch','oauth','mapi','queue','draft','gmail','uninstall','clean')
 }
 catch {
     Write-StepLog ERROR "Harness failed: $_"

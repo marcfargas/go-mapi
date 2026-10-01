@@ -27,7 +27,7 @@ import (
 type AppSettings struct {
 	Mode                string `json:"mode"`                        // "manual" | "auto-draft"
 	AutostartEnabled    bool   `json:"autostart_enabled"`           // user preference; default enabled
-	DefaultAppsPrompted bool   `json:"default_apps_prompted"`       // avoids repeatedly prompting after dismissal
+	DefaultAppsPrompted bool   `json:"default_apps_prompted"`       // inert legacy preference; retained for settings compatibility
 	UpdateChecksEnabled bool   `json:"update_checks_enabled"`       // D-08 default enabled
 	LastUpdateCheck     string `json:"last_update_check,omitempty"` // RFC3339, "" = never checked
 }

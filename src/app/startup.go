@@ -45,7 +45,13 @@ func (a *App) SetAutostartEnabled(enabled bool) (StartupState, error) {
 	defer finish()
 	a.settingsMu.RLock()
 	s := a.settings
+	issue := a.settingsIssue
 	a.settingsMu.RUnlock()
+	// Never persist over, or register startup from, a settings file that
+	// could not be loaded. The invalid-settings repair must run first.
+	if issue != nil {
+		return StartupState{}, fmt.Errorf("repair settings before changing startup: %s", issue.Message)
+	}
 	s.AutostartEnabled = enabled
 	if err := a.saveSettingsAdmitted(s); err != nil {
 		return StartupState{}, fmt.Errorf("save autostart preference: %w", err)

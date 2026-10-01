@@ -1,6 +1,9 @@
 <Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <!-- Shared machine transaction contract. SKU payloads remain in the entry files. -->
-  <MajorUpgrade Schedule="afterInstallInitialize"
+  <!-- Shared machine transaction contract. SKU payloads remain in the entry files.
+       RemoveExistingProducts directly follows an early InstallExecute that runs
+       StopSuiteApps, so the old product is removed in the same rollback
+       transaction but only after every installed suite app has stopped. -->
+  <MajorUpgrade Schedule="afterInstallExecute"
     DowngradeErrorMessage="A newer go-mapi machine package is already installed."
     AllowSameVersionUpgrades="yes" />
   <Upgrade Id="$(var.ForeignUpgradeCode)">
@@ -23,6 +26,7 @@
   <CustomActionRef Id="PrepareAdminMigration" />
   <CustomActionRef Id="RollbackAdminMigration" />
   <CustomActionRef Id="RollbackServiceConfiguration" />
+  <CustomActionRef Id="SnapshotAdminMigration" />
   <CustomActionRef Id="ApplyAdminMigration" />
   <CustomActionRef Id="VerifyAdminRegistration" />
   <CustomActionRef Id="PrepareAdminUninstall" />
@@ -31,13 +35,24 @@
   <CustomActionRef Id="RollbackAdminUninstall" />
   <CustomActionRef Id="FinalizeAdminUninstall" />
   <CustomActionRef Id="CommitAdminUninstall" />
+  <CustomActionRef Id="StopSuiteApps" />
+  <CustomActionRef Id="PreStopSuiteApps" />
   <InstallExecuteSequence>
     <FindRelatedProducts Before="LaunchConditions" />
+    <Custom Action="PreStopSuiteApps" After="LaunchConditions" Condition="NOT UPGRADINGPRODUCTCODE" />
     <Custom Action="ValidateMachineTransaction" After="InstallValidate" />
-    <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE" />
+    <Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />
+    <InstallExecute After="StopSuiteApps" />
+    <!-- Rolling back DeleteServices recreates the service without its
+         MsiServiceConfig and WiX Util settings, both for the old product's
+         removal inside an upgrade and for a rolled-back final uninstall. -->
+    <Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;" />
     <Custom Action="ResolveAutoUpdateChoice" After="ValidateMachineTransaction" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
-    <Custom Action="RollbackAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <!-- Immediate read-only marshaling runs as the caller; the protected
+         journal snapshot is deferred SYSTEM work queued after its rollback. -->
+    <Custom Action="RollbackAdminMigration" Before="SnapshotAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
+    <Custom Action="SnapshotAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
     <Custom Action="PrepareAdminUninstall" Before="RollbackAdminUninstall" Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />

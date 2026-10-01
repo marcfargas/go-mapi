@@ -38,8 +38,11 @@ pwsh tests\sandbox\run-sandbox-test.ps1 -RegistrationOnly
 
 Runs `test-dll-registration.ps1` inside the sandbox. Asserts that the DLL
 exists, the `HKLM\SOFTWARE\Clients\Mail\go-mapi` key can be written, and
-the default Mail client is correctly set. This is the pre-existing test
-that shipped before Phase 5.
+the Simple MAPI provider is selected under Clients\\Mail. This is a registry
+check only; it does not prove Windows Default Apps listing or a working Send-To
+action. This is the pre-existing test that shipped before Phase 5. See
+[email integration verification](../../docs/email-integration-verification.md)
+for functional checks.
 
 ### Full path: REL-02 install → verify → uninstall (~5 min)
 

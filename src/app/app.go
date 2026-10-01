@@ -125,10 +125,16 @@ type App struct {
 
 // NewApp creates a new App instance.
 func NewApp() *App {
+	// Load persisted settings before any binding, tray handler or frontend
+	// query can run. Wails starts OnStartup concurrently with the WebView and
+	// dispatches each binding call on its own goroutine, so loading later
+	// would let the UI observe (and writes persist) built-in defaults.
+	loaded := loadSettings()
 	a := &App{
 		auth:           NewAuthManager(),
 		backlogSkip:    make(map[string]struct{}),
-		settings:       defaultAppSettings(),
+		settings:       loaded.Settings,
+		settingsIssue:  loaded.Issue,
 		startupService: newStartupService(),
 		trayRefreshCh:  make(chan struct{}, 1),
 	}
@@ -240,17 +246,18 @@ func (a *App) startup(ctx context.Context) {
 		logError("toast: init failed: %v", err)
 	}
 
-	// Phase 9: load persisted settings (mode field, D-13).
-	loadedSettings := loadSettings()
-	a.settingsMu.Lock()
-	a.settings = loadedSettings.Settings
-	a.settingsIssue = loadedSettings.Issue
-	a.settingsMu.Unlock()
-	if loadedSettings.Issue != nil {
-		logError("settings: %s (%s)", loadedSettings.Issue.Message, loadedSettings.Issue.Path)
-		wruntime.EventsEmit(a.ctx, "settings-issue", loadedSettings.Issue)
+	// Phase 9: persisted settings (mode field, D-13) were loaded in NewApp,
+	// before any binding could run. Report the outcome now that a.ctx exists;
+	// do not reload from disk here.
+	a.settingsMu.RLock()
+	settingsIssue := a.settingsIssue
+	settingsMode := a.settings.Mode
+	a.settingsMu.RUnlock()
+	if settingsIssue != nil {
+		logError("settings: %s (%s)", settingsIssue.Message, settingsIssue.Path)
+		wruntime.EventsEmit(a.ctx, "settings-issue", settingsIssue)
 	} else {
-		logInfo("settings loaded: mode=%s", loadedSettings.Settings.Mode)
+		logInfo("settings loaded: mode=%s", settingsMode)
 	}
 
 	// Phase 9: start automode goroutine. Gated on mode + paused at drain time.

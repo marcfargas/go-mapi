@@ -689,6 +689,21 @@ func (store *FileStateStore) PublishSuiteOpen(ctx context.Context, write func(by
 	return write('O')
 }
 
+// SuiteOpenBlocked reports whether PublishSuiteOpen refuses for a
+// final-uninstall fence or a pending machine transaction record. It is an
+// unlocked observation used only to classify public health; the open itself
+// repeats both checks under state.lock.
+func (store *FileStateStore) SuiteOpenBlocked() (bool, error) {
+	for _, name := range []string{finalUninstallFenceName, "pending-v2.json"} {
+		if _, err := store.storage.Read([]string{name}, maxStateBytes); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
 type FileReplayStore struct {
 	storage *ProtectedStorage
 }

@@ -55,6 +55,7 @@
     <CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />
     <CustomAction Id="RollbackAdminMigration" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminMigration" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="RollbackServiceConfiguration" BinaryRef="AdminCustomActions" DllEntry="RollbackServiceConfiguration" Execute="rollback" Impersonate="no" Return="check" />
+    <CustomAction Id="SnapshotAdminMigration" BinaryRef="AdminCustomActions" DllEntry="SnapshotAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="ApplyAdminMigration" BinaryRef="AdminCustomActions" DllEntry="ApplyAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="VerifyAdminRegistration" BinaryRef="AdminCustomActions" DllEntry="VerifyAdminRegistration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="PrepareAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminUninstall" Execute="immediate" Return="check" />
@@ -63,5 +64,15 @@
     <CustomAction Id="RollbackAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="RollbackAdminUninstall" Execute="rollback" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="FinalizeAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="FinalizeAdminUninstall" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
     <CustomAction Id="CommitAdminUninstall" BinaryRef="AdminCustomActions" DllEntry="CommitAdminUninstall" Execute="commit" Impersonate="no" Return="ignore" HideTarget="yes" />
+    <!-- Deferred SYSTEM stop of the installed suite app in every session.
+         Its fixed data is set before InstallInitialize, so no script is
+         generated between InstallInitialize and the early InstallExecute. -->
+    <CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"
+      Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]" />
+    <!-- Best-effort stop as the installer caller before Windows Installer costs
+         files, so InstallValidate finds no installed app in use. Its result
+         is ignored; StopSuiteApps remains the transactional stop. -->
+    <CustomAction Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" />
   </Fragment>
 </Wix>

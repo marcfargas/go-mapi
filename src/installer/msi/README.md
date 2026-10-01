@@ -35,8 +35,11 @@ On disposable elevated Windows, run the compiled table verifier for each MSI:
 ```powershell
 .\src\installer\msi\verify.ps1 -SKU system -PackageRelease <system-release> -MsiPath <system.msi>
 .\src\installer\msi\verify.ps1 -SKU suite -PackageRelease <suite-release> -MsiPath <suite.msi>
-.\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 -SystemMsi <system.msi> -SuiteMsi <suite-S1.msi> -NewerSuiteMsi <suite-S2.msi> -LogDirectory <private-log-dir>
+.\src\installer\msi\tests\CrossSkuLifecycle.Tests.ps1 -SystemMsi <system.msi> -SuiteMsi <suite-S1.msi> -NewerSuiteMsi <suite-S2.msi> -NewerAppSuiteMsi <suite-S3.msi> -LogDirectory <private-log-dir>
 ```
+
+`suite-S3.msi` contains a different app file than `suite-S1.msi`, so that
+upgrade replaces a running `go-mapi.exe`.
 
 The lifecycle driver checks manual install, repair, same-SKU upgrade, both
 explicit migration directions, rejection and rollback paths, and final

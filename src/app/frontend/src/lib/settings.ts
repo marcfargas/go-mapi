@@ -23,8 +23,6 @@ import {
   GetPausedState,
   GetUpdateState,
   CheckForUpdatesNow,
-  OpenDefaultAppsSettings,
-  DismissDefaultAppsPrompt,
   GetStartupState,
   SetAutostartEnabled,
   OpenStartupSettings,
@@ -72,16 +70,6 @@ export async function fetchSettingsState(): Promise<SettingsLoadResult> {
 /** Persist settings. Single-writer invariant: call only from UI handlers. */
 export async function saveSettings(s: AppSettings): Promise<void> {
   await SaveSettings(s);
-}
-
-/** Open the Windows-owned Default Apps page; the app never writes UserChoice. */
-export async function openDefaultAppsSettings(): Promise<void> {
-  await OpenDefaultAppsSettings();
-}
-
-/** Stop showing the first-run guidance without claiming the default changed. */
-export async function dismissDefaultAppsPrompt(): Promise<void> {
-  await DismissDefaultAppsPrompt();
 }
 
 export async function fetchStartupState(): Promise<StartupState> {

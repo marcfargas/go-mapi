@@ -12,8 +12,6 @@ vi.mock('../../wailsjs/go/main/App', () => ({
   GetPausedState: vi.fn(),
   GetUpdateState: vi.fn(),
   CheckForUpdatesNow: vi.fn(),
-  OpenDefaultAppsSettings: vi.fn(),
-  DismissDefaultAppsPrompt: vi.fn(),
   GetStartupState: vi.fn(),
   SetAutostartEnabled: vi.fn(),
   OpenStartupSettings: vi.fn(),
@@ -34,8 +32,6 @@ import {
   GetPausedState,
   GetUpdateState,
   CheckForUpdatesNow,
-  OpenDefaultAppsSettings,
-  DismissDefaultAppsPrompt,
   GetStartupState,
   SetAutostartEnabled,
   OpenStartupSettings,
@@ -55,8 +51,6 @@ import {
   fetchUpdateState,
   checkForUpdatesNow,
   subscribeUpdateState,
-  openDefaultAppsSettings,
-  dismissDefaultAppsPrompt,
   fetchStartupState,
   setAutostartEnabled,
   openStartupSettings,
@@ -83,15 +77,6 @@ describe('settings.ts', () => {
     const state = { settings: { mode: '' }, issue: { kind: 'invalid-mode', message: 'bad mode', path: 'settings.json' } };
     asMock(GetSettingsState).mockResolvedValue(state);
     expect(await fetchSettingsState()).toEqual(state);
-  });
-
-  it('opens Default Apps and records prompt dismissal through Go', async () => {
-    asMock(OpenDefaultAppsSettings).mockResolvedValue(undefined);
-    asMock(DismissDefaultAppsPrompt).mockResolvedValue(undefined);
-    await openDefaultAppsSettings();
-    await dismissDefaultAppsPrompt();
-    expect(OpenDefaultAppsSettings).toHaveBeenCalledOnce();
-    expect(DismissDefaultAppsPrompt).toHaveBeenCalledOnce();
   });
 
   it('reads and changes the observable Windows startup state', async () => {

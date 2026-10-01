@@ -15,7 +15,10 @@
     <Reference Include="Microsoft.CSharp" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="WixToolset.Dtf.CustomAction" Version="4.0.5" />
+    <!-- DTF 5.0.x SfxCA extracts to the caller temp directory when the
+         impersonated immediate CA server is not elevated (RDSH/UAC). 4.0.5
+         extracted under %WINDIR%\Installer and failed with access denied. -->
+    <PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />
     <EmbeddedResource Include="..\legacy-inventory.json" Link="legacy-inventory.json" />
     <Content Include="CustomAction.config" />
   </ItemGroup>

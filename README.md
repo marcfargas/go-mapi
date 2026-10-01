@@ -14,6 +14,12 @@ Gmail account. Any Windows app that has that option — File Explorer, Word,
 Excel, legacy line-of-business software — will route the email to Gmail
 instead of Outlook, as a draft you can review before sending.
 
+This uses Simple MAPI. It requires the go-mapi system component and the
+running user app, signed in to Gmail. A suite installation includes both;
+installing only the user app does not install the system component. go-mapi
+does not currently handle mailto links or register a MAILTO handler in
+Windows Default Apps.
+
 **Nothing about how you work changes.** You keep using your apps the way
 you always have. go-mapi sits quietly in the background and the draft just
 shows up in your Gmail inbox.

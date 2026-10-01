@@ -45,10 +45,15 @@ explicit user action and never overrides `DisabledByUser` or
 requires the exact current executable plus `--startup`, and requires
 `InteractiveToken`/`LeastPrivilege` before reporting a registration healthy.
 
-The app may offer “Make go-mapi your default mail app” guidance and open
-`ms-settings:defaultapps`. It never writes `UserChoice`; Windows owns the final
-selection. The admin MSI separately owns only the active MAPI DLL registration
-in HKLM.
+The app's always-available “Email with Send To” guidance explains that
+Windows Send to > Mail recipient and other Simple MAPI calls can create Gmail
+drafts when the system component is installed and the running user app is
+signed in. A suite installation includes both components; user-app-only
+packages do not install the system component. Missing or incompatible system
+components use the existing installation or repair guidance. go-mapi does not
+currently handle mailto links or register a MAILTO handler in Windows Default
+Apps. Drafts are never sent automatically. See
+`../../docs/email-integration-verification.md` for functional verification.
 
 ## Distribution
 

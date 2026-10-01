@@ -109,7 +109,8 @@ jobs:
           if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne '${{ github.sha }}') { throw 'Checkout does not match the triggering commit' }
           if ((git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Machine release checkout is dirty before build' }
           if ('${{ inputs.publish }}' -eq 'true') {
-            if ($release -cne '3.2.0-alpha.1' -or '${{ github.ref_type }}' -cne 'tag' -or
+            $publicRelease = if ($sku -ceq 'suite') { '3.2.0-alpha.7' } else { '3.2.0-alpha.1' }
+            if ($release -cne $publicRelease -or '${{ github.ref_type }}' -cne 'tag' -or
                 '${{ github.ref_name }}' -cne $identity.tag -or '${{ inputs.sign }}' -ne 'true' -or
                 '${{ inputs.controlled_origin_fixture }}' -eq 'true' -or $env:REUSE_RUN_ID -ne '' -or
                 $env:REUSE_RUN_ATTEMPT -ne '' -or $env:REUSE_RELEASE -ne '' -or $env:REUSE_COMMIT -ne '' -or
@@ -604,8 +605,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$VERSION" = '3.2.0-alpha.1'
-          test "$SKU" = 'system' -o "$SKU" = 'suite'
+          case "$SKU:$VERSION" in
+            system:3.2.0-alpha.1|suite:3.2.0-alpha.7) ;;
+            *) echo 'Unapproved public machine release identity' >&2; exit 1 ;;
+          esac
           tag="$SKU-v$VERSION"
           test "${{ github.ref_name }}" = "$tag"
           test "$(git rev-parse HEAD)" = '${{ github.sha }}'

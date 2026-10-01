@@ -54,7 +54,7 @@ try {
             Remove-Item -Force
         & $powerShell -NoProfile -File (Join-Path $PSScriptRoot '../src/installer/msi/tests/CrossSkuLifecycle.Tests.ps1') `
             -SystemMsi $fixture.packages.systemA.msi -SuiteMsi $fixture.packages.suiteA.msi `
-            -NewerSuiteMsi $fixture.packages.suiteB.msi -LogDirectory $cross
+            -NewerSuiteMsi $fixture.packages.suiteB.msi -NewerAppSuiteMsi $fixture.packages.suiteC.msi -LogDirectory $cross
         if ($LASTEXITCODE -ne 0) { throw "Cross-SKU lifecycle failed with exit code $LASTEXITCODE" }
         if (@(Get-ChildItem -LiteralPath $cross -Filter '*.log' -File -ErrorAction SilentlyContinue).Count -eq 0) {
             throw 'Cross-SKU lifecycle produced no MSI log evidence'

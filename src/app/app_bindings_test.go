@@ -27,6 +27,10 @@ func setupAppForBindingTests(t *testing.T) (*App, string) {
 
 	watchDir := t.TempDir()
 
+	// Set GOMAPI_APPDATA_DIR before NewApp so both its settings load and any
+	// SaveSettings use a temp dir (not real %APPDATA%).
+	t.Setenv("GOMAPI_APPDATA_DIR", t.TempDir())
+
 	// App with fake keyring and valid in-memory tokens.
 	app := NewApp()
 	app.auth = NewAuthManagerWithStore(newFakeKeyringStore())
@@ -57,9 +61,6 @@ func setupAppForBindingTests(t *testing.T) (*App, string) {
 
 	// Default settings.
 	app.settings = AppSettings{Mode: defaultMode}
-
-	// Set GOMAPI_APPDATA_DIR so SaveSettings writes to a temp dir (not real %APPDATA%).
-	t.Setenv("GOMAPI_APPDATA_DIR", t.TempDir())
 
 	return app, watchDir
 }
