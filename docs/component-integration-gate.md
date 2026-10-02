@@ -79,8 +79,13 @@ interval and the 15-minute first failure delay. The fixture manifest records
 the effective values in `fixture.timers`; the phase script reads them there and
 scales every sleep and wait from them. Each wait for an automatic commit has
 its own limit (start-up delay, heartbeat, check interval, any failure delay
-still owed, the install work and a margin), so a regression to a long stall
-fails the wait instead of passing inside a long phase deadline.
+still owed, the install work and a 3-minute slow-runner margin), so a
+regression to a long stall fails the wait instead of passing inside a long
+phase deadline. The margin keeps every limit at three times the worst wait
+measured on hosted runners or more (192-322 s limits against waits of 1-100 s).
+A runner/installer liveness wait that expires also records the update
+directory, go-mapi and msiexec processes, ready records and error events
+(`handoff-stall-evidence`) so a handoff that never started is diagnosable.
 
 Run the installed gate only on an elevated, clean, disposable Windows machine
 with Go 1.25, .NET 8, WiX restore, Windows SDK signing tools, the Release DLLs,

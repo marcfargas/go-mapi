@@ -59,7 +59,15 @@ $failureBaseSeconds = if ($timers) { [int]$timers.failureDelayBaseSeconds } else
 # One automatic commit spends 56-62 s in the Windows Installer service replace
 # (measured, CI run 36843076430); no timer shortens it.
 $installWorkSeconds = 70
-$waitMarginSeconds = 60
+# Slow-runner margin of every per-wait limit. The timer terms of a limit describe a
+# healthy host; hosted Windows runners add scheduling, antivirus and installer
+# start-up delays on top. Worst waits measured under the 5/2/5/30 s timers (CI runs
+# 36931761969, 36938262552 and 36940474780): wrong-SKU refusal 5.6 s, untrusted-C
+# refusal 7.3 s, automatic B commit 41.3 s, automatic C commit 99.7 s (from the trust
+# restore), runner/installer liveness 4.9 s. The margin keeps every limit at three
+# times the worst measured wait or more, and no limit reaches six minutes, so a real
+# stall still fails within minutes instead of passing inside the phase deadline.
+$waitMarginSeconds = 180
 $commitPollMilliseconds = if ($timers) { 1000 } else { 5000 }
 function WriteJson([string]$Path, $Value) { [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false)) }
 function Record([string]$Kind, $Value) {
@@ -391,6 +399,33 @@ function CollectInterruptionEvidence($Pending, [DateTime]$KilledAtUtc) {
         Record 'interruption-evidence' ([ordered]@{ transactionId=$Pending.transactionId; killedAtUtc=$KilledAtUtc.ToString('o'); logFound=(Test-Path -LiteralPath $logs); files=$copied; windowsInstaller=(WindowsInstallerState); eventCount=$installerEvents.Count })
     } catch { Record 'interruption-evidence-error' $_.Exception.Message }
 }
+# Evidence only, for a runner/installer liveness wait that expired: the service
+# prepared the transaction but no runner identity was recorded (run 36940474780: the
+# pending record stayed `prepared` for 138 s while normal runs record the runner within
+# 5 s). Keeps the update directory listing, the go-mapi and msiexec processes, the
+# ready records and the error and warning events since the wait began, so the next
+# occurrence shows whether the staged runner was late, crashed or never started.
+# Never throws.
+function CollectHandoffStallEvidence([DateTime]$SinceUtc) {
+    try {
+        $updates = Join-Path $env:ProgramData 'go-mapi\updates'
+        $files = @(if (Test-Path -LiteralPath $updates) {
+            Get-ChildItem -LiteralPath $updates -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object {
+                [ordered]@{ path=$_.FullName; bytes=if ($_.PSIsContainer) { $null } else { $_.Length }; lastWriteUtc=$_.LastWriteTimeUtc.ToString('o') } } })
+        $ready = @(Get-ChildItem -LiteralPath $stateDir -Filter 'ready-*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{ path=$_.FullName; lastWriteUtc=$_.LastWriteTimeUtc.ToString('o'); content=(ReadJson $_.FullName) } })
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'go-mapi*' -or $_.Name -eq 'msiexec.exe' } | ForEach-Object {
+            [ordered]@{ pid=$_.ProcessId; name=$_.Name; createdUtc=if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }; command=$_.CommandLine } })
+        $since = $SinceUtc.AddMinutes(-1).ToLocalTime()
+        $events = @()
+        foreach ($log in @('Application', 'System')) {
+            $events += @(Get-WinEvent -FilterHashtable @{ LogName=$log; Level=@(1,2,3); StartTime=$since } -MaxEvents 100 -ErrorAction SilentlyContinue | Sort-Object TimeCreated | ForEach-Object {
+                $message = [string]$_.Message
+                [ordered]@{ atUtc=$_.TimeCreated.ToUniversalTime().ToString('o'); log=$log; provider=$_.ProviderName; id=$_.Id; message=$message.Substring(0, [Math]::Min(600, $message.Length)) } })
+        }
+        Record 'handoff-stall-evidence' ([ordered]@{ sinceUtc=$SinceUtc.ToString('o'); updateDirectory=$files; readyRecords=$ready; processes=$processes; events=$events })
+    } catch { Record 'handoff-stall-evidence-error' $_.Exception.Message }
+}
 function AssertNoInteractiveUser {
     $sessions = @(quser 2>$null | Select-Object -Skip 1 | Where-Object { $_ -match '\b(Active|Disc)\b' })
     if ($sessions.Count -ne 0) { throw 'Interactive session exists; no-user phase cannot claim proof' }
@@ -551,10 +586,13 @@ try {
         # The runner/installer pair is live only while msiexec runs (a few
         # seconds). A 5-second poll phase-locks to the service's fixed startup
         # delay and can miss that window on every attempt; poll sub-second.
-        $pending = Until 'matching runner and installer liveness' {
-            $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
-            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12 200 -Seconds (WaitLimit 0 -Install)
+        $livenessWaitStartedUtc = [DateTime]::UtcNow
+        try {
+            $pending = Until 'matching runner and installer liveness' {
+                $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
+                if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
+            } 12 200 -Seconds (WaitLimit 0 -Install)
+        } catch { CollectHandoffStallEvidence $livenessWaitStartedUtc; throw }
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
         $killedAtUtc = [DateTime]::UtcNow

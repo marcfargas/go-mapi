@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -304,6 +305,88 @@ func TestReleasePathsCarryNoValidationTimers(t *testing.T) {
 	}
 	if !strings.Contains(read(".github", "workflows", "ci.yml"), "-ValidationTimers") {
 		t.Error("the CI fixture build must pass the validation timers")
+	}
+}
+
+// Every per-wait limit of the machine update driver must tolerate a slow hosted
+// runner (three times the worst wait measured on hosted runners under the CI
+// timers) and still fail in minutes, not inside the phase deadline. Run
+// 36940474780 failed the liveness wait at 142.65 s, 1 s over its 142 s limit, on a
+// wait that normally ends within 5 s; the margin was 60 s.
+func TestMachineUpdateWaitLimitsTolerateSlowRunners(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	read := func(parts ...string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(append([]string{repoRoot}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(raw), "\r\n", "\n")
+	}
+	script := read("scripts", "run-machine-update-integration.ps1")
+	ci := read(".github", "workflows", "ci.yml")
+	number := func(text, pattern string) int {
+		t.Helper()
+		match := regexp.MustCompile(pattern).FindStringSubmatch(text)
+		if len(match) != 2 {
+			t.Fatalf("pattern %q not found", pattern)
+		}
+		value, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	startup := number(ci, `-ValidationStartupDelaySeconds (\d+)`)
+	heartbeat := number(ci, `-ValidationHeartbeatSeconds (\d+)`)
+	check := number(ci, `-ValidationCheckIntervalSeconds (\d+)`)
+	failureBase := number(ci, `-ValidationFailureBaseSeconds (\d+)`)
+	install := number(script, `(?m)^\$installWorkSeconds = (\d+)`)
+	margin := number(script, `(?m)^\$waitMarginSeconds = (\d+)`)
+
+	// Worst wait measured per site, in script order: wrong-SKU refusal, automatic
+	// B commit, untrusted-C refusal, automatic C commit (from the trust restore),
+	// runner/installer liveness (CI runs 36931761969, 36938262552, 36940474780).
+	measured := []float64{5.6, 41.3, 7.3, 99.7, 4.9}
+	sites := regexp.MustCompile(`-Seconds \(WaitLimit((?:[^()\n]|\([^()\n]*\))*)\)`).FindAllStringSubmatch(script, -1)
+	if len(sites) != len(measured) {
+		t.Fatalf("WaitLimit sites = %d, want %d: a new or removed wait needs a measured worst case here", len(sites), len(measured))
+	}
+	for i, site := range sites {
+		args := site[1]
+		owed := 0
+		switch {
+		case strings.Contains(args, "(2 * $failureBaseSeconds)"):
+			owed = 2 * failureBase
+		case strings.Contains(args, "$failureBaseSeconds"):
+			owed = failureBase
+		}
+		limit := startup + heartbeat + check + owed + margin
+		if strings.Contains(args, "-Install") {
+			limit += install
+		}
+		if float64(limit) < 3*measured[i] {
+			t.Errorf("wait %d limit %d s is under three times its worst measured wait %.1f s", i+1, limit, measured[i])
+		}
+		if limit >= 360 {
+			t.Errorf("wait %d limit %d s reaches six minutes; a stall must fail in minutes", i+1, limit)
+		}
+	}
+	if margin < 180 {
+		t.Errorf("slow-runner margin %d s is below 180 s", margin)
+	}
+	// No wait carries a literal limit, so none escapes the formula above.
+	if regexp.MustCompile(`-Seconds \d`).MatchString(script) {
+		t.Error("a wait passes a literal -Seconds limit instead of WaitLimit")
+	}
+	// Evidence for a liveness wait that expires without any runner record.
+	for _, want := range []string{
+		"} catch { CollectHandoffStallEvidence $livenessWaitStartedUtc; throw }",
+		"Record 'handoff-stall-evidence'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("machine update driver lacks %q", want)
+		}
 	}
 }
 
