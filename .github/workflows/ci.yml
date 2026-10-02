@@ -214,11 +214,15 @@ jobs:
           path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi-test-harness.exe
           if-no-files-found: error
 
-  admin-msi:
+  # The four machine scenarios share the machine-global service, MSI product,
+  # certificate stores and fixture port 18453, so each runs alone on its own
+  # runner. The fixtures are built and signed once here and reused by every
+  # scenario job; admin-msi below is the aggregate gate.
+  admin-msi-fixtures:
     if: github.event_name != 'schedule'
-    name: Validate machine MSI lifecycle and installed updater
+    name: Build machine MSI test fixtures
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     needs: [build-interceptor, user-windows-shell]
     env:
       CGO_ENABLED: '1'
@@ -259,15 +263,68 @@ jobs:
             -OutputDirectory release/machine-test `
             -EvidenceDirectory $evidence `
             -MetadataOrigin https://localhost:18453 `
-            -ArtifactOrigin https://localhost:18453/releases/download/
+            -ArtifactOrigin https://localhost:18453/releases/download/ `
+            -ValidationTimers `
+            -ValidationStartupDelaySeconds 5 `
+            -ValidationHeartbeatSeconds 2 `
+            -ValidationCheckIntervalSeconds 5 `
+            -ValidationFailureBaseSeconds 30
           if ($LASTEXITCODE -ne 0) { throw 'machine package preparation failed' }
           $manifest = Join-Path $evidence 'machine-test-packages.json'
           if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'machine package manifest missing' }
-      - name: Exercise fixed hosted machine lifecycle and update sequence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-mapi-machine-fixtures-${{ github.run_id }}
+          path: |
+            test-results/245-ci/${{ github.run_id }}/build/
+            release/machine-test/
+          if-no-files-found: warn
+          retention-days: 7
+
+  admin-msi-scenario:
+    if: github.event_name != 'schedule'
+    name: Machine MSI scenario (${{ matrix.scenario }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    needs: [admin-msi-fixtures]
+    strategy:
+      # Every scenario result stays visible when one fails.
+      fail-fast: false
+      matrix:
+        scenario: [cross-sku, update, suite-update, update-interruption]
+    env:
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - uses: extractions/setup-just@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-machine-fixtures-${{ github.run_id }}
+          path: .
+      - run: just prepare-windows -Native -Install
+      - name: Trust the disposable fixture signer on this runner
+        shell: pwsh
+        run: |
+          # The fixture signer was trusted only on the runner that built the
+          # packages. The manifest records its public certificate and thumbprint.
+          $manifest = Get-Content -LiteralPath 'test-results/245-ci/${{ github.run_id }}/build/machine-test-packages.json' -Raw | ConvertFrom-Json
+          $certificate = [string]$manifest.fixture.signerPublicCertificate
+          if (-not (Test-Path -LiteralPath $certificate -PathType Leaf)) { throw "Fixture signer certificate missing: $certificate" }
+          $public = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate)
+          if ($public.Thumbprint -ne [string]$manifest.fixture.signerThumbprint) { throw 'Fixture signer certificate differs from the manifest' }
+          foreach ($store in @('Root','TrustedPublisher')) {
+            Import-Certificate -FilePath $certificate -CertStoreLocation "Cert:\LocalMachine\$store" | Out-Null
+          }
+      - name: Exercise hosted machine scenario ${{ matrix.scenario }}
         shell: pwsh
         run: |
           $runRoot = "test-results/245-ci/${{ github.run_id }}"
-          just machine-hosted-integration -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') -EvidenceDirectory $runRoot -FixturePort 18453
+          just machine-hosted-integration -PackageManifest (Join-Path $runRoot 'build/machine-test-packages.json') -EvidenceDirectory $runRoot -FixturePort 18453 -Scenario ${{ matrix.scenario }}
           if ($LASTEXITCODE -ne 0) { throw 'hosted machine integration failed' }
       - name: Clean owned native fixtures after success or failure
         if: always()
@@ -276,18 +333,36 @@ jobs:
           $runRoot = "test-results/245-ci/${{ github.run_id }}"
           $manifest = Join-Path $runRoot 'build/machine-test-packages.json'
           if (Test-Path -LiteralPath $manifest -PathType Leaf) {
-            just machine-hosted-integration -PackageManifest $manifest -EvidenceDirectory $runRoot -FixturePort 18453 -CleanupOnly
+            just machine-hosted-integration -PackageManifest $manifest -EvidenceDirectory $runRoot -FixturePort 18453 -Scenario ${{ matrix.scenario }} -CleanupOnly
             if ($LASTEXITCODE -ne 0) { throw 'hosted machine fallback cleanup failed' }
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: go-mapi-machine-native-validation-${{ github.run_id }}
-          path: |
-            test-results/245-ci/${{ github.run_id }}/
-            release/machine-test/
+          name: go-mapi-machine-native-validation-${{ matrix.scenario }}-${{ github.run_id }}
+          path: test-results/245-ci/${{ github.run_id }}/
           if-no-files-found: warn
           retention-days: 7
+
+  # Aggregate gate. It keeps the job name that branch protection and
+  # docs/component-integration-gate.md refer to, and fails unless the fixture
+  # build and every scenario job succeeded (a skipped or cancelled one fails it).
+  admin-msi:
+    if: ${{ always() && github.event_name != 'schedule' }}
+    name: Validate machine MSI lifecycle and installed updater
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [admin-msi-fixtures, admin-msi-scenario]
+    steps:
+      - name: Require the fixture build and every machine scenario to pass
+        shell: bash
+        run: |
+          echo "fixtures: ${{ needs.admin-msi-fixtures.result }}"
+          echo "scenarios: ${{ needs.admin-msi-scenario.result }}"
+          if [ "${{ needs.admin-msi-fixtures.result }}" != "success" ] || [ "${{ needs.admin-msi-scenario.result }}" != "success" ]; then
+            echo "Machine MSI lifecycle and installed updater validation did not pass" >&2
+            exit 1
+          fi
 
   go-race:
     if: github.event_name == 'schedule' || inputs.run_race

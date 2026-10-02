@@ -523,7 +523,7 @@ jobs:
           if ($public) {
             if ($derivative.kind -cne 'production' -or $derivative.metadataOrigin -cne 'https://go-mapi.app' -or
                 $derivative.artifactOrigin -cne 'https://github.com/marcfargas/go-mapi/releases/download/' -or
-                $derivative.checkIntervalSeconds -ne 21600 -or -not $provenance.targets) { throw 'Public machine target is not the canonical production derivative' }
+                $derivative.checkIntervalSeconds -ne 21600 -or $derivative.Contains('timers') -or -not $provenance.targets) { throw 'Public machine target is not the canonical production derivative' }
             $provenance.publishable = $true
           }
           $validation = Join-Path release/machine "$sku-$release.validation.json"

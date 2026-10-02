@@ -15,15 +15,24 @@ var MachineReleaseMetadataOrigin string
 var Version string
 
 // MachineCheckIntervalSeconds is an immutable build value. Production builds
-// pin it to six hours; controlled validation builds may use a shorter interval.
+// pin it to six hours; controlled validation builds may use a shorter interval,
+// below one minute only together with the validation timer set.
 var MachineCheckIntervalSeconds string
 
 func machineCheckInterval() (time.Duration, error) {
 	if MachineCheckIntervalSeconds == "" {
 		return 6 * time.Hour, nil
 	}
+	minimum := productionMinCheckInterval
+	_, validation, err := loadMachineValidationTimers()
+	if err != nil {
+		return 0, err
+	}
+	if validation {
+		minimum = validationMinTimer
+	}
 	seconds, err := strconv.Atoi(MachineCheckIntervalSeconds)
-	if err != nil || seconds < 60 || seconds > 24*3600 {
+	if err != nil || time.Duration(seconds)*time.Second < minimum || seconds > 24*3600 {
 		return 0, errors.New("invalid machine check cadence")
 	}
 	return time.Duration(seconds) * time.Second, nil

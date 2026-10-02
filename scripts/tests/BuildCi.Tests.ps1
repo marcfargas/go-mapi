@@ -187,6 +187,46 @@ $rcPathForCMake = 'windres'
     Remove-Item (Join-Path $input 'go-mapi-x86.dll')
     Reject { & $writer @common } 'missing input'
 
+    # Validation timers are a CI-fixture input only: the release build refuses
+    # every one of them, a partial or non-shortening set, and sub-minute checks
+    # without the set. Each guard throws before any toolchain is needed.
+    function RejectMessage([scriptblock]$Action, [string]$Pattern, [string]$What) {
+        try { & $Action } catch {
+            Assert ($_.Exception.Message -match $Pattern) "$What failed for the wrong reason: $($_.Exception.Message)"
+            return
+        }
+        throw "Expected failure: $What"
+    }
+    $serviceBuild = Join-Path $repo 'src/service/build.ps1'
+    $serviceOut = Join-Path $temp 'service.exe'
+    $oldMachineOrigin = $env:MACHINE_RELEASE_METADATA_ORIGIN
+    $env:MACHINE_RELEASE_METADATA_ORIGIN = 'https://go-mapi.app'
+    try {
+        foreach ($timer in @(@{ ValidationStartupDelaySeconds=5 }, @{ ValidationHeartbeatSeconds=2 }, @{ ValidationFailureBaseSeconds=30 },
+                @{ ValidationStartupDelaySeconds=120; ValidationHeartbeatSeconds=60; ValidationFailureBaseSeconds=900 })) {
+            $releaseArgs = $timer.Clone()
+            RejectMessage { & $serviceBuild -OutputPath $serviceOut -RequireMachineReleaseTrust @releaseArgs } 'must not carry validation timers' "release build with $($timer.Keys -join ',')"
+        }
+        $oneTimer = @{ ValidationStartupDelaySeconds=5 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @oneTimer } 'supplied together' 'partial validation timer set'
+        $tooLong = @{ ValidationStartupDelaySeconds=121; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'startup delay above production'
+        $tooLong = @{ ValidationStartupDelaySeconds=5; ValidationHeartbeatSeconds=61; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'heartbeat above production'
+        $tooLong = @{ ValidationStartupDelaySeconds=5; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=901 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @tooLong } 'shorten the production' 'failure base above production'
+        $zero = @{ ValidationStartupDelaySeconds=0; ValidationHeartbeatSeconds=2; ValidationFailureBaseSeconds=30 }
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut @zero } 'shorten the production' 'zero startup delay'
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut -CheckIntervalSeconds 5 } 'outside bounds' 'sub-minute check interval without validation timers'
+        RejectMessage { & $serviceBuild -OutputPath $serviceOut -RequireMachineReleaseTrust -CheckIntervalSeconds 60 } 'six-hour' 'release build with a 60-second check interval'
+    } finally { $env:MACHINE_RELEASE_METADATA_ORIGIN = $oldMachineOrigin }
+    # The pre-signed (production-timer) fixture path refuses the shortened set.
+    $testPackages = Join-Path $repo 'scripts/build-machine-test-packages.ps1'
+    RejectMessage { & $testPackages -OutputDirectory (Join-Path $temp 'tp-out') -EvidenceDirectory (Join-Path $temp 'tp-evidence') `
+        -PreSignedPackagesManifest (Join-Path $temp 'missing-presigned.json') -ValidationTimers } 'only to the self-signed CI build' 'validation timers with pre-signed fixtures'
+    RejectMessage { & $testPackages -OutputDirectory (Join-Path $temp 'tp-out') -EvidenceDirectory (Join-Path $temp 'tp-evidence') `
+        -ValidationTimers -ValidationFailureBaseSeconds 901 } 'shorten the production' 'fixture failure base above production'
+
     $hostRoot = Join-Path $temp 'hostcase'
     New-Item -ItemType Directory -Force (Join-Path $hostRoot 'scripts'),(Join-Path $hostRoot 'src/installer/msi/tests') | Out-Null
     Copy-Item (Join-Path $repo 'scripts/run-hosted-machine-integration.ps1') (Join-Path $hostRoot 'scripts/run-hosted-machine-integration.ps1')
@@ -201,6 +241,7 @@ Set-Content (Join-Path $LogDirectory 'lifecycle.log') 'ok'
 param($PackageManifest,$EvidenceDirectory,$SKU,$Phase,$FixturePort,$DeadlineMinutes,$DeferredInterruptionEvidence)
 $name = Split-Path $EvidenceDirectory -Leaf
 Add-Content $env:FAKE_PHASE_LOG "$name/$Phase"
+if ($env:FAKE_DEADLINE_LOG) { Add-Content $env:FAKE_DEADLINE_LOG "$name/$Phase=$DeadlineMinutes" }
 if ($env:FAKE_PHASE_FAIL -eq "$name/$Phase") { throw 'stub phase failure' }
 New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
 if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
@@ -225,6 +266,22 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     $events = @(Get-Content $env:FAKE_PHASE_LOG)
     Assert (($events[0..3] -join ',') -eq 'update/Hosted,suite-update/Hosted,suite-update/Cleanup,update-interruption/InterruptSameBoot') 'hosted sequence changed'
     Assert (($events[-3..-1] -join ',') -eq 'suite-update/Cleanup,update/Cleanup,update-interruption/Cleanup') 'cleanup order changed'
+    # Phase deadlines: production timers keep the long deadlines; a fixture that
+    # records validation timers shortens only update and suite-update (Hosted),
+    # never a cleanup and never the interruption phase.
+    $env:FAKE_DEADLINE_LOG = Join-Path $hostRoot 'deadlines.log'
+    & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence
+    Assert ((@(Get-Content $env:FAKE_DEADLINE_LOG | Select-Object -First 4) -join ',') -eq 'update/Hosted=35,suite-update/Hosted=45,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'production-timer deadlines changed'
+    Remove-Item $env:FAKE_DEADLINE_LOG
+    $timedFixture = Get-Content $fixturePath -Raw | ConvertFrom-Json
+    $timedFixture.fixture | Add-Member -NotePropertyName timers -NotePropertyValue ([pscustomobject]@{ startupDelaySeconds=5; heartbeatSeconds=2; checkIntervalSeconds=5; failureDelayBaseSeconds=30 })
+    $timedPath = Join-Path $hostRoot 'fixture-timed.json'
+    $timedFixture | ConvertTo-Json -Depth 5 | Set-Content $timedPath
+    & $runner -PackageManifest $timedPath -EvidenceDirectory $evidence
+    $deadlines = @(Get-Content $env:FAKE_DEADLINE_LOG)
+    Assert (($deadlines[0..3] -join ',') -eq 'update/Hosted=15,suite-update/Hosted=20,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'validation-timer phase deadlines changed'
+    Assert (($deadlines[-3..-1] -join ',') -eq 'suite-update/Cleanup=35,update/Cleanup=35,update-interruption/Cleanup=35') 'cleanup deadlines changed'
+    Remove-Item env:FAKE_DEADLINE_LOG
     $env:FAKE_CROSS_FAIL = '1'
     try { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence; throw 'Expected cross-SKU failure' }
     catch { Assert ($_.Exception.Message -match 'Cross-SKU lifecycle failed with exit code' -and
@@ -239,13 +296,47 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     Clear-Content $env:FAKE_PHASE_LOG
     & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence -CleanupOnly
     Assert ((@((Get-Content $env:FAKE_PHASE_LOG)) -join ',') -eq 'update/Cleanup,update-interruption/Cleanup') 'deferred cleanup routing changed'
+    # Scenario selector: the hosted CI runs one scenario per runner. Each scenario
+    # runs only its own phases and cleans up only its own phases; the default
+    # ('all', asserted above) keeps the full sequence and cleanup order.
+    function ScenarioPhases([string]$Scenario, [switch]$CleanupOnly) {
+        Clear-Content $env:FAKE_PHASE_LOG
+        $scenarioArgs = @{ PackageManifest=$fixturePath; EvidenceDirectory=$evidence; Scenario=$Scenario }
+        if ($CleanupOnly) { $scenarioArgs.CleanupOnly = $true }
+        & $runner @scenarioArgs
+        return (@(Get-Content $env:FAKE_PHASE_LOG) -join ',')
+    }
+    $deferredMarker = Join-Path $evidence 'update-interruption/cleanup-deferred.json'
+    Remove-Item $deferredMarker -Force
+    Assert ((ScenarioPhases 'cross-sku') -eq '') 'cross-sku scenario ran a phase'
+    Assert (Test-Path (Join-Path $evidence 'cross-sku/lifecycle.log')) 'cross-sku scenario did not run the cross-SKU lifecycle'
+    Assert ((ScenarioPhases 'update') -eq 'update/Hosted,update/Cleanup') 'update scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'suite-update') -eq 'suite-update/Hosted,suite-update/Cleanup,suite-update/Cleanup') 'suite-update scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'update-interruption') -eq 'update-interruption/InterruptSameBoot,update-interruption/Cleanup') 'update-interruption scenario phases or cleanup changed'
+    Remove-Item (Join-Path $evidence 'cross-sku/lifecycle.log') -Force
+    foreach ($case in @(@('cross-sku',''), @('update','update/Cleanup'), @('suite-update','suite-update/Cleanup'), @('update-interruption','update-interruption/Cleanup'))) {
+        Assert ((ScenarioPhases $case[0] -CleanupOnly) -eq $case[1]) "cleanup-only scope for $($case[0]) changed"
+    }
+    # A deferred interruption cleanup is routed only to the scenarios that own it.
+    Set-Content $deferredMarker '{}'
+    Assert ((ScenarioPhases 'update-interruption' -CleanupOnly) -eq 'update-interruption/Cleanup') 'deferred cleanup not routed to the interruption scenario'
+    Assert ((ScenarioPhases 'update' -CleanupOnly) -eq 'update/Cleanup') 'deferred cleanup leaked into another scenario'
+    Assert ((ScenarioPhases 'suite-update' -CleanupOnly) -eq '') 'suite-update cleanup ran although the deferral skips it'
+    Remove-Item $deferredMarker -Force
+    # A failing scenario still reports its failure and cleans up only itself.
+    $env:FAKE_PHASE_FAIL = 'update/Hosted'
+    try { ScenarioPhases 'update' | Out-Null; throw 'Expected update scenario failure' }
+    catch { Assert ($_.Exception.Message -match 'stub phase failure|update Hosted failed') "scenario failure not reported: $($_.Exception.Message)" }
+    Assert ((@(Get-Content $env:FAKE_PHASE_LOG) -join ',') -eq 'update/Hosted,update/Cleanup') 'failing scenario skipped its own cleanup or ran another scenario'
+    $env:FAKE_PHASE_FAIL = ''
+    Reject { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence -Scenario 'unknown' } 'unknown scenario'
     Write-Host 'BuildCi contracts passed'
 } finally {
     $env:GOMAPI_OAUTH_CLIENT_ID = $oldClient
     $env:GOMAPI_OAUTH_CLIENT_SECRET = $oldSecret
     $env:GOMAPI_ADMIN_RELEASE_METADATA_URL = $oldMetadata
     $env:CC = $oldCC; $env:CXX = $oldCXX
-    foreach ($name in @('StubWailsMode','FAKE_PHASE_LOG','FAKE_PHASE_FAIL','FAKE_PHASE_DROP','FAKE_CROSS_FAIL','FAKE_CTEST_LOG','FAKE_CTEST_EXIT')) { Remove-Item "env:$name" -ErrorAction SilentlyContinue }
+    foreach ($name in @('StubWailsMode','FAKE_PHASE_LOG','FAKE_DEADLINE_LOG','FAKE_PHASE_FAIL','FAKE_PHASE_DROP','FAKE_CROSS_FAIL','FAKE_CTEST_LOG','FAKE_CTEST_EXIT')) { Remove-Item "env:$name" -ErrorAction SilentlyContinue }
     foreach ($name in @('wails','go','node','npm','cmake','ctest')) { Remove-Item "function:global:$name" -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

@@ -80,17 +80,31 @@ func NewProductionResidentSchedule() (Schedule, error) {
 	if originErr != nil && !errors.Is(originErr, ErrMachineTrustUnavailable) {
 		return nil, originErr
 	}
+	validationTimers, validationBuild, err := loadMachineValidationTimers()
+	if err != nil {
+		return nil, err
+	}
+	applyResidentTimers(validationTimers, validationBuild)
 	if originErr == nil {
 		checkInterval, err := machineCheckInterval()
 		if err != nil {
 			return nil, err
+		}
+		engineConfig := update.Config{ArtifactOrigin: update.MachineArtifactOrigin, MetadataOrigin: origin, SuccessInterval: checkInterval, Now: time.Now}
+		if validationBuild {
+			if engineConfig.FailureDelays, err = update.ScaledFailureDelays(validationTimers.FailureDelayBase); err != nil {
+				return nil, err
+			}
+			engineConfig.MinSuccessInterval = validationMinTimer
 		}
 		client, err := NewMachineHTTPClient()
 		if err != nil {
 			return nil, err
 		}
 		for _, sku := range []update.SKU{update.System, update.Suite} {
-			engine, err := update.NewEngine(update.Config{SKU: sku, MetadataOrigin: origin, ArtifactOrigin: update.MachineArtifactOrigin, Client: client, Now: time.Now, SuccessInterval: checkInterval})
+			config := engineConfig
+			config.SKU, config.Client = sku, client
+			engine, err := update.NewEngine(config)
 			if err != nil {
 				return nil, err
 			}
