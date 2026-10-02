@@ -10,9 +10,18 @@ import (
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
-const (
-	residentInitialDelay = 2 * time.Minute
-	residentInterval     = 6 * time.Hour
+const residentInterval = 6 * time.Hour
+
+// Variables so tests can shorten them; a controlled validation build shortens
+// the start-up delay and heartbeat once at start-up (applyResidentTimers). The
+// heartbeat is the backstop for a closed suite admission gate; the admission
+// retry reopens it within about a second after a machine transaction releases
+// Windows Installer.
+var (
+	residentInitialDelay      = productionResidentInitialDelay
+	residentHeartbeatInterval = productionResidentHeartbeat
+	admissionRetryInterval    = time.Second
+	admissionRetryBound       = 15 * time.Minute
 )
 
 // residentHealthSchedule composes the installed-instance and protected-state
@@ -38,13 +47,19 @@ func residentHealthSchedule(check func(context.Context) error) Schedule {
 
 // residentManagedSchedule retains the accepted immediate recovery/health
 // observation. Metadata starts after two minutes; a one-minute heartbeat
-// publishes liveness independently of the bounded network attempt.
-func residentManagedSchedule(health func(context.Context) error, discovery func(context.Context) (bool, error), install func(context.Context) error, heartbeat func(context.Context) error) Schedule {
+// publishes liveness independently of the bounded network attempt. A health
+// result that failed while Windows Installer was busy arms a bounded retry
+// that re-runs the full health check once the installer is idle.
+func residentManagedSchedule(health func(context.Context) error, discovery func(context.Context) (bool, error), install func(context.Context) error, heartbeat func(context.Context) error, installerIdle func(context.Context) (bool, error)) Schedule {
 	return ScheduleFunc(func(ctx context.Context) {
-		if err := health(ctx); err != nil {
+		reopen := admissionReopen{idle: installerIdle}
+		defer reopen.end()
+		err := health(ctx)
+		if err != nil {
 			log.Printf("go-mapi resident health check: %v", err)
 		}
-		ticker := time.NewTicker(time.Minute)
+		reopen.observe(ctx, err)
+		ticker := time.NewTicker(residentHeartbeatInterval)
 		defer ticker.Stop()
 		start := time.Now()
 		lastHealth := start
@@ -53,14 +68,20 @@ func residentManagedSchedule(health func(context.Context) error, discovery func(
 			select {
 			case <-ctx.Done():
 				return
+			case <-reopen.fire:
+				reopen.tick(ctx, health)
 			case now := <-ticker.C:
-				if err := heartbeat(ctx); err != nil {
+				err := heartbeat(ctx)
+				if err != nil {
 					log.Printf("go-mapi resident status heartbeat: %v", err)
 				}
+				reopen.observe(ctx, err)
 				if now.Sub(lastHealth) >= residentInterval {
-					if err := health(ctx); err != nil {
+					err := health(ctx)
+					if err != nil {
 						log.Printf("go-mapi resident health check: %v", err)
 					}
+					reopen.observe(ctx, err)
 					lastHealth = now
 				}
 				if discovery != nil && now.Sub(start) >= residentInitialDelay && inflight.CompareAndSwap(false, true) {
@@ -74,6 +95,110 @@ func residentManagedSchedule(health func(context.Context) error, discovery func(
 			}
 		}
 	})
+}
+
+// ErrSuiteInstallerBusy reports that Windows Installer owned the machine when
+// the service would have reopened suite admission. Every machine transaction
+// closes the gate, and a replacement service starts inside that transaction.
+var ErrSuiteInstallerBusy = errors.New("windows installer is busy")
+
+// errSuiteAdmissionAwaitsInstaller is the health result after the installed
+// suite was proved healthy while Windows Installer kept admission closed.
+var errSuiteAdmissionAwaitsInstaller = errors.New("suite admission awaits the installer")
+
+// suiteHealthAfterOpen classifies the result of openHealthySuite once every
+// other installed-health check passed. Only a busy installer outside a final
+// uninstall or a pending machine update keeps the proven health; the gate then
+// stays closed until the resident retry reopens it.
+func suiteHealthAfterOpen(openErr error, openBlocked bool) (healthy, awaiting bool) {
+	if openErr == nil {
+		return true, false
+	}
+	if errors.Is(openErr, ErrSuiteInstallerBusy) && !openBlocked {
+		return true, true
+	}
+	return false, false
+}
+
+// admissionReopen retries a health check soon after Windows Installer becomes
+// idle, instead of on the next one-minute heartbeat. One episode starts at
+// the first result that failed while the installer was busy and ends at the
+// next other result. It probes at most once per interval and stops at the
+// bound; after that only the heartbeat retries. It runs on the schedule
+// goroutine only.
+type admissionReopen struct {
+	idle     func(context.Context) (bool, error)
+	timer    *time.Timer
+	fire     <-chan time.Time
+	active   bool
+	deadline time.Time
+}
+
+// observe classifies a health or heartbeat result outside the retry. A result
+// in a running episode never re-arms or extends it.
+func (r *admissionReopen) observe(ctx context.Context, err error) {
+	if !r.retryable(ctx, err) {
+		r.end()
+		return
+	}
+	if r.active {
+		return
+	}
+	r.active = true
+	r.deadline = time.Now().Add(admissionRetryBound)
+	r.arm()
+}
+
+func (r *admissionReopen) retryable(ctx context.Context, err error) bool {
+	if err == nil || r.idle == nil || ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, ErrSuiteInstallerBusy) {
+		return true
+	}
+	idle, probeErr := r.idle(ctx)
+	return probeErr == nil && !idle
+}
+
+func (r *admissionReopen) tick(ctx context.Context, health func(context.Context) error) {
+	r.fire = nil
+	if !time.Now().Before(r.deadline) {
+		return
+	}
+	idle, err := r.idle(ctx)
+	if err != nil || !idle {
+		r.arm()
+		return
+	}
+	err = health(ctx)
+	if err != nil {
+		log.Printf("go-mapi resident admission retry: %v", err)
+	}
+	if errors.Is(err, ErrSuiteInstallerBusy) {
+		r.arm()
+		return
+	}
+	r.end()
+}
+
+func (r *admissionReopen) arm() {
+	if !time.Now().Before(r.deadline) {
+		return
+	}
+	if r.timer == nil {
+		r.timer = time.NewTimer(admissionRetryInterval)
+	} else {
+		r.timer.Reset(admissionRetryInterval)
+	}
+	r.fire = r.timer.C
+}
+
+func (r *admissionReopen) end() {
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.fire = nil
+	r.active = false
 }
 
 func runResidentManagedAttempt(ctx context.Context, discovery func(context.Context) (bool, error), install func(context.Context) error) error {

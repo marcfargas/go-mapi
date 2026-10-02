@@ -47,6 +47,28 @@ $markerPath = 'HKLM:\SOFTWARE\go-mapi\MachineProduct'
 $signer = [string]$manifest.fixture.signerThumbprint
 $runId = [guid]::NewGuid().ToString('N')
 $overallDeadline = [DateTime]::UtcNow.AddMinutes($DeadlineMinutes)
+# Effective service timers, read from the package manifest and never hard-coded
+# per environment. A fixture without fixture.timers (every pre-signed fixture and
+# any build without -ValidationTimers) runs the production timers, and every wait
+# below keeps its production length.
+$timers = if ($manifest.fixture.PSObject.Properties['timers']) { $manifest.fixture.timers } else { $null }
+$startupDelaySeconds = if ($timers) { [int]$timers.startupDelaySeconds } else { 120 }
+$heartbeatSeconds = if ($timers) { [int]$timers.heartbeatSeconds } else { 60 }
+$checkIntervalSeconds = if ($timers) { [int]$timers.checkIntervalSeconds } elseif ($manifest.fixture.PSObject.Properties['checkIntervalSeconds']) { [int]$manifest.fixture.checkIntervalSeconds } else { 60 }
+$failureBaseSeconds = if ($timers) { [int]$timers.failureDelayBaseSeconds } else { 900 }
+# One automatic commit spends 56-62 s in the Windows Installer service replace
+# (measured, CI run 36843076430); no timer shortens it.
+$installWorkSeconds = 70
+# Slow-runner margin of every per-wait limit. The timer terms of a limit describe a
+# healthy host; hosted Windows runners add scheduling, antivirus and installer
+# start-up delays on top. Worst waits measured under the 5/2/5/30 s timers (CI runs
+# 36931761969, 36938262552 and 36940474780): wrong-SKU refusal 5.6 s, untrusted-C
+# refusal 7.3 s, automatic B commit 41.3 s, automatic C commit 99.7 s (from the trust
+# restore), runner/installer liveness 4.9 s. The margin keeps every limit at three
+# times the worst measured wait or more, and no limit reaches six minutes, so a real
+# stall still fails within minutes instead of passing inside the phase deadline.
+$waitMarginSeconds = 180
+$commitPollMilliseconds = if ($timers) { 1000 } else { 5000 }
 function WriteJson([string]$Path, $Value) { [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false)) }
 function Record([string]$Kind, $Value) {
     Add-Content -LiteralPath $events -Value (([ordered]@{ atUtc=[DateTime]::UtcNow.ToString('o'); kind=$Kind; value=$Value }) | ConvertTo-Json -Depth 10 -Compress) -Encoding utf8
@@ -84,15 +106,23 @@ function AssertHealthy([string]$Key) {
     }
     $snapshot
 }
-function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes) {
-    $end = [DateTime]::UtcNow.AddMinutes($Minutes)
+function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $DeadlineMinutes, [int]$PollMilliseconds = 5000, [int]$Seconds = 0) {
+    $end = if ($Seconds -gt 0) { [DateTime]::UtcNow.AddSeconds($Seconds) } else { [DateTime]::UtcNow.AddMinutes($Minutes) }
     if ($end -gt $script:overallDeadline) { $end = $script:overallDeadline }
     while ([DateTime]::UtcNow -lt $end) {
         try { $result = & $Condition; if ($result) { return $result } } catch { Record 'poll-error' "$Label`: $($_.Exception.Message)" }
-        Start-Sleep -Seconds 5
+        Start-Sleep -Milliseconds $PollMilliseconds
     }
     Record 'deadline-snapshot' (Snapshot)
     throw "Deadline waiting for $Label"
+}
+# Per-wait limit in seconds under validation timers: one start-up delay, heartbeat
+# and check interval, any failure delay still owed, the install work when the wait
+# ends in a commit, and a margin. A regression to a multi-minute stall therefore
+# fails the wait. Zero keeps the phase deadline (production timers).
+function WaitLimit([int]$FailureDelaySeconds = 0, [switch]$Install) {
+    if (-not $timers) { return 0 }
+    return $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + $FailureDelaySeconds + $(if ($Install) { $installWorkSeconds } else { 0 }) + $waitMarginSeconds
 }
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
@@ -102,8 +132,35 @@ function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties
         Record 'administrator-msi-timeout' ([ordered]@{ label=$Label; pid=$process.Id; log=$log })
         throw "$Label exceeded the ten-minute MSI deadline; inspect the live installer and log before cleanup"
     }
+    $script:lastAdministratorMsiUtc = [DateTime]::UtcNow
     Record 'administrator-msi' ([ordered]@{ label=$Label; exitCode=$process.ExitCode; log=$log })
     if ($process.ExitCode -ne 0) { throw "$Label returned $($process.ExitCode); postboot proof is required for 3010/1641" }
+}
+# The resident service is the only writer of O. After an administrator MSI
+# transaction it reopens suite admission as soon as Windows Installer is idle;
+# the time counts from the msiexec exit.
+function ReadAdmissionGate {
+    $path = Join-Path $env:ProgramData 'go-mapi\status\suite-admission-v1'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return 'absent' }
+    try {
+        $stream = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+        try { if ($stream.Length -ne 1) { return 'malformed' }; return [string][char]$stream.ReadByte() } finally { $stream.Dispose() }
+    } catch [IO.IOException] { return 'locked' }
+}
+function AssertAdmissionReopened([string]$Label, [int]$Seconds) {
+    if ($SKU -ne 'suite') { return }
+    $since = $script:lastAdministratorMsiUtc
+    $state = ReadAdmissionGate
+    while ($state -ne 'O' -and [DateTime]::UtcNow -lt $since.AddSeconds($Seconds)) {
+        Start-Sleep -Milliseconds 250
+        $state = ReadAdmissionGate
+    }
+    $elapsed = [math]::Round(([DateTime]::UtcNow - $since).TotalSeconds, 2)
+    if ($state -ne 'O') {
+        Record 'admission-closed' ([ordered]@{ label=$Label; seconds=$elapsed; state=$state; snapshot=(Snapshot) })
+        throw "suite admission stayed closed $elapsed s after $Label"
+    }
+    Record 'admission-reopened' ([ordered]@{ label=$Label; seconds=$elapsed })
 }
 function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU) {
     $package = if ($Key -eq 'systemB' -and $SKU -eq 'suite' -and $wrongSkuSystem) {
@@ -311,6 +368,64 @@ function DeferInterruptedProductCleanup($witness) {
     Record 'cleanup-deferred-to-ephemeral-runner-disposal' $record
     return $record
 }
+# Evidence only (no assertion): Windows Installer service state and the msiexec
+# processes alive, sampled while the interrupted install is reconciled.
+function WindowsInstallerState {
+    $service = Get-CimInstance Win32_Service -Filter "Name='msiserver'" -ErrorAction SilentlyContinue
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='msiexec.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+        [ordered]@{ pid=$_.ProcessId; createdUtc=if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }; command=$_.CommandLine } })
+    [ordered]@{ msiserver=if ($service) { [ordered]@{ state=$service.State; processId=$service.ProcessId } } else { $null }; msiexec=$processes }
+}
+# Copies the interrupted installer's msiexec log (written by the service under
+# ProgramData\go-mapi\updates\logs, in a directory named by the transaction) and the Service Control
+# Manager and MsiInstaller events since the runner was killed. Never throws:
+# collecting evidence must not change the phase result.
+function CollectInterruptionEvidence($Pending, [DateTime]$KilledAtUtc) {
+    try {
+        $target = Join-Path $evidence 'interrupted-install'
+        New-Item -ItemType Directory -Path $target -Force | Out-Null
+        $logs = Join-Path $env:ProgramData ('go-mapi\updates\logs\' + [string]$Pending.transactionId)
+        if (Test-Path -LiteralPath $logs) { Copy-Item -LiteralPath $logs -Destination $target -Recurse -Force }
+        $copied = @(Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{ path=$_.FullName; bytes=$_.Length; sha256=(Hash $_.FullName) } })
+        $since = $KilledAtUtc.AddMinutes(-2).ToLocalTime()
+        $installerEvents = @()
+        foreach ($query in @(@{ LogName='System'; ProviderName='Service Control Manager'; StartTime=$since }, @{ LogName='Application'; ProviderName='MsiInstaller'; StartTime=$since })) {
+            $installerEvents += @(Get-WinEvent -FilterHashtable $query -ErrorAction SilentlyContinue | Where-Object { $query.ProviderName -ne 'Service Control Manager' -or [string]$_.Message -match 'Windows Installer' } |
+                Sort-Object TimeCreated | ForEach-Object {
+                    [ordered]@{ atUtc=$_.TimeCreated.ToUniversalTime().ToString('o'); provider=$_.ProviderName; id=$_.Id; message=[string]$_.Message } })
+        }
+        WriteJson (Join-Path $target 'windows-installer-events.json') $installerEvents
+        Record 'interruption-evidence' ([ordered]@{ transactionId=$Pending.transactionId; killedAtUtc=$KilledAtUtc.ToString('o'); logFound=(Test-Path -LiteralPath $logs); files=$copied; windowsInstaller=(WindowsInstallerState); eventCount=$installerEvents.Count })
+    } catch { Record 'interruption-evidence-error' $_.Exception.Message }
+}
+# Evidence only, for a runner/installer liveness wait that expired: the service
+# prepared the transaction but no runner identity was recorded (run 36940474780: the
+# pending record stayed `prepared` for 138 s while normal runs record the runner within
+# 5 s). Keeps the update directory listing, the go-mapi and msiexec processes, the
+# ready records and the error and warning events since the wait began, so the next
+# occurrence shows whether the staged runner was late, crashed or never started.
+# Never throws.
+function CollectHandoffStallEvidence([DateTime]$SinceUtc) {
+    try {
+        $updates = Join-Path $env:ProgramData 'go-mapi\updates'
+        $files = @(if (Test-Path -LiteralPath $updates) {
+            Get-ChildItem -LiteralPath $updates -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object {
+                [ordered]@{ path=$_.FullName; bytes=if ($_.PSIsContainer) { $null } else { $_.Length }; lastWriteUtc=$_.LastWriteTimeUtc.ToString('o') } } })
+        $ready = @(Get-ChildItem -LiteralPath $stateDir -Filter 'ready-*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+            [ordered]@{ path=$_.FullName; lastWriteUtc=$_.LastWriteTimeUtc.ToString('o'); content=(ReadJson $_.FullName) } })
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'go-mapi*' -or $_.Name -eq 'msiexec.exe' } | ForEach-Object {
+            [ordered]@{ pid=$_.ProcessId; name=$_.Name; createdUtc=if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }; command=$_.CommandLine } })
+        $since = $SinceUtc.AddMinutes(-1).ToLocalTime()
+        $events = @()
+        foreach ($log in @('Application', 'System')) {
+            $events += @(Get-WinEvent -FilterHashtable @{ LogName=$log; Level=@(1,2,3); StartTime=$since } -MaxEvents 100 -ErrorAction SilentlyContinue | Sort-Object TimeCreated | ForEach-Object {
+                $message = [string]$_.Message
+                [ordered]@{ atUtc=$_.TimeCreated.ToUniversalTime().ToString('o'); log=$log; provider=$_.ProviderName; id=$_.Id; message=$message.Substring(0, [Math]::Min(600, $message.Length)) } })
+        }
+        Record 'handoff-stall-evidence' ([ordered]@{ sinceUtc=$SinceUtc.ToString('o'); updateDirectory=$files; readyRecords=$ready; processes=$processes; events=$events })
+    } catch { Record 'handoff-stall-evidence-error' $_.Exception.Message }
+}
 function AssertNoInteractiveUser {
     $sessions = @(quser 2>$null | Select-Object -Skip 1 | Where-Object { $_ -match '\b(Active|Disc)\b' })
     if ($sessions.Count -ne 0) { throw 'Interactive session exists; no-user phase cannot claim proof' }
@@ -343,6 +458,7 @@ function AssertCommitted([string]$Key, [int]$PreviousPid) {
     return $snapshot
 }
 
+Record 'service-timers' ([ordered]@{ validationTimers=[bool]$timers; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; checkIntervalSeconds=$checkIntervalSeconds; failureDelayBaseSeconds=$failureBaseSeconds; phase=$Phase; sku=$SKU })
 $passed = $false
 $cleanupOnExit = $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
 $cleanupError = $null
@@ -383,13 +499,16 @@ try {
                     $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
                     if ($d -and (RequestCount '/machine/suite/targets.json') -gt $beforeRequests -and $d.failures -gt $beforeFailures -and
                         $s.marker.packageRelease -eq $manifest.packages.$caseA.release -and -not $s.pending) { $s }
-                } | ForEach-Object { Record 'wrong-sku-refused' $_ }
+                } -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit) | ForEach-Object { Record 'wrong-sku-refused' $_ }
             }
             SelectTarget $caseB
         }
     }
     if ($Phase -eq 'Hosted') {
-        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } }
+        # A first failure delay can still be owed: suite B follows the wrong-SKU rejection,
+        # and under short start-up timers a check may reach the fixture before B is selected.
+        $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } } `
+            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit $failureBaseSeconds -Install)
         $b = AssertCommitted $caseB $a.service.processId
         $beforeFailures = (ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")).failures
         $beforeReplay = $b.replay.sequence
@@ -411,7 +530,12 @@ try {
             $s=Snapshot; $d=ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
             if ((RequestCount $cPath) -gt 0 -and $d.failures -gt $beforeFailures -and $s.marker.packageRelease -eq $manifest.packages.$caseB.release -and
                 $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $beforeReplay) { $s }
-        } | ForEach-Object { Record 'untrusted-C-refused' $_ }
+        } -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit) | ForEach-Object { Record 'untrusted-C-refused' $_ }
+        # The failure count persists across the restart below and sets the delay
+        # before C is retried (1 x base, 2 x base, ...). Recorded so a base that
+        # lets the count grow during the untrusted window shows in the evidence.
+        $atRestore = ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
+        Record 'failures-at-trust-restore' ([ordered]@{ failures=$atRestore.failures; lastAttemptAt=$atRestore.lastAttemptAt; nextAttemptAt=$atRestore.nextAttemptAt; failureBaseSeconds=$failureBaseSeconds })
         RestoreSignerTrust
         if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'C MSI bytes changed across trust restoration' }
         Restart-Service go-mapi -Force
@@ -419,19 +543,26 @@ try {
             if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'Azure-signed C MSI bytes changed' }
             SelectTarget $caseC
         }
-        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28
+        $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28 `
+            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit (2 * $failureBaseSeconds) -Install)
         $c = AssertCommitted $caseC $b.service.processId
         Msi '/i' $manifest.packages.$caseC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
         $disabled = AssertHealthy $caseC
         if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }
+        AssertAdmissionReopened 'administrator-disable' 15
         $requestsBefore = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         Restart-Service go-mapi -Force
-        if ([DateTime]::UtcNow.AddSeconds(185) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }
-        Start-Sleep -Seconds 185 # exceeds the production two-minute startup delay and one 60-second cadence
+        # The window exceeds one full start-up delay plus one heartbeat cadence, so a
+        # disabled service that wrongly checked would have issued a request inside it.
+        # Production timers: 120 s + 60 s + 5 s. Validation timers: the manifest's
+        # start-up delay, heartbeat and check interval plus 10 s.
+        $disabledWindowSeconds = if ($timers) { $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + 10 } else { 185 }
+        if ([DateTime]::UtcNow.AddSeconds($disabledWindowSeconds) -gt $overallDeadline) { throw 'Insufficient test deadline for disabled full startup/cadence window' }
+        Start-Sleep -Seconds $disabledWindowSeconds
         $requestsAfter = if (Test-Path (Join-Path $fixture 'requests.ndjson')) { (Get-Content (Join-Path $fixture 'requests.ndjson') -Raw) } else { '' }
         $disabled = AssertHealthy $caseC
         if ($requestsBefore -cne $requestsAfter -or $disabled.pending -or $disabled.marker.autoUpdateEnabled -ne 0 -or $disabled.status.updates -ne 'disabled') { throw 'Disabled resident service issued a request or changed installed state' }
-        Record 'disabled-window' ([ordered]@{ seconds=185; snapshot=$disabled })
+        Record 'disabled-window' ([ordered]@{ seconds=$disabledWindowSeconds; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; snapshot=$disabled })
     } elseif ($Phase -eq 'PrepareNoUser') {
         Record 'await-external-logoff' (Snapshot)
     } elseif ($Phase -eq 'VerifyNoUser') {
@@ -452,25 +583,44 @@ try {
         AssertNoInteractiveUser
         Record 'no-user-A-B-C-committed' $c
     } elseif ($Phase -eq 'InterruptSameBoot') {
-        $pending = Until 'matching runner and installer liveness' {
-            $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
-            if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12
+        # The runner/installer pair is live only while msiexec runs (a few
+        # seconds). A 5-second poll phase-locks to the service's fixed startup
+        # delay and can miss that window on every attempt; poll sub-second.
+        $livenessWaitStartedUtc = [DateTime]::UtcNow
+        try {
+            $pending = Until 'matching runner and installer liveness' {
+                $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
+                if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
+            } 12 200 -Seconds (WaitLimit 0 -Install)
+        } catch { CollectHandoffStallEvidence $livenessWaitStartedUtc; throw }
         Record 'interruption-observed' $pending
         if (-not (MatchingLiveTransaction $pending)) { throw 'Exact runner/installer identity changed before interruption' }
+        $killedAtUtc = [DateTime]::UtcNow
         Stop-Process -Id $pending.runner.pid -Force
-        $sameboot = Until 'conservative same-boot reconciliation' {
-            $s=Snapshot
-            $installer=Get-Process -Id $pending.installer.pid -ErrorAction SilentlyContinue
-            if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.$caseB.identity.sequence) -and
-                $s.pending -and $s.pending.phase -in @('outcome-unconfirmed','repair-required','reboot-pending','rolled-back')) { $s }
-        } 8
+        Record 'interruption-runner-killed' ([ordered]@{ killedAtUtc=$killedAtUtc.ToString('o'); windowsInstaller=(WindowsInstallerState) })
+        $script:lastWindowsInstallerKey = $null
+        # Evidence only: the wait below is about 5 minutes that no validation timer
+        # explains. Keep the interrupted install's msiexec log and the Windows
+        # Installer service state in the evidence, collected even when the wait fails.
+        try {
+            $sameboot = Until 'conservative same-boot reconciliation' {
+                try {
+                    $state = WindowsInstallerState
+                    $key = $state | ConvertTo-Json -Compress -Depth 4
+                    if ($key -cne $script:lastWindowsInstallerKey) { $script:lastWindowsInstallerKey = $key; Record 'windows-installer-state' $state }
+                } catch { Record 'windows-installer-state-error' $_.Exception.Message }
+                $s=Snapshot
+                $installer=Get-Process -Id $pending.installer.pid -ErrorAction SilentlyContinue
+                if (-not $installer -and (-not $s.replay -or $s.replay.sequence -ne $manifest.packages.$caseB.identity.sequence) -and
+                    $s.pending -and $s.pending.phase -in @('outcome-unconfirmed','repair-required','reboot-pending','rolled-back')) { $s }
+            } 8
+        } finally { CollectInterruptionEvidence $pending $killedAtUtc }
         Record 'sameboot-conservative' $sameboot
     } elseif ($Phase -eq 'PrepareReboot') {
         $pending = Until 'matching pending before external reboot' {
             $p=ReadJson (Join-Path $stateDir 'pending-v2.json')
             if ($p -and $p.candidate.packageVersion -eq $manifest.packages.$caseB.release -and (MatchingLiveTransaction $p)) { $p }
-        } 12
+        } 12 200
         $owner = ReadJson $ownerPath
         $task = "go-mapi-ci-fixture-$($owner.runId)"
         $action = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument ("-NoProfile -File `"$PSScriptRoot\machine-update-https-fixture.ps1`" -PackageManifest `"$PackageManifest`" -FixtureDirectory `"$fixture`" -Port $FixturePort")

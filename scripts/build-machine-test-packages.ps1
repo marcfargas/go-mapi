@@ -13,7 +13,16 @@ param(
     [string]$PreSignedPackagesManifest,
     [string]$MetadataOrigin = 'https://localhost:18453',
     [string]$ArtifactOrigin = 'https://localhost:18453/releases/download/',
-    [int]$CheckIntervalSeconds = 60
+    [int]$CheckIntervalSeconds = 60,
+    # Self-signed CI build only: shortened, build-time validation timers linked into
+    # the disposable service (never into a release build). The harness reads the
+    # effective values from the manifest, so a fixture built without this switch
+    # (the pre-signed Azure path included) still runs on production timers.
+    [switch]$ValidationTimers,
+    [int]$ValidationStartupDelaySeconds = 5,
+    [int]$ValidationHeartbeatSeconds = 2,
+    [int]$ValidationCheckIntervalSeconds = 5,
+    [int]$ValidationFailureBaseSeconds = 30
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +34,17 @@ New-Item -ItemType Directory -Force $output, $evidence | Out-Null
 $commit = (& git -C $repo rev-parse HEAD).Trim().ToLowerInvariant()
 if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw 'Cannot identify source commit' }
 if ($CheckIntervalSeconds -lt 60 -or $CheckIntervalSeconds -gt 86400) { throw 'Check interval outside production build bounds' }
+if ($ValidationTimers -and $PreSignedPackagesManifest) { throw 'Validation timers apply only to the self-signed CI build, not to pre-signed fixtures' }
+if ($ValidationTimers -and ($ValidationStartupDelaySeconds -lt 1 -or $ValidationStartupDelaySeconds -gt 120 -or
+    $ValidationHeartbeatSeconds -lt 1 -or $ValidationHeartbeatSeconds -gt 60 -or
+    $ValidationFailureBaseSeconds -lt 1 -or $ValidationFailureBaseSeconds -gt 900 -or
+    $ValidationCheckIntervalSeconds -lt 1 -or $ValidationCheckIntervalSeconds -gt 86400)) { throw 'Validation timers must shorten the production values' }
+# The effective check interval and the timers object recorded in the manifest.
+$effectiveCheckIntervalSeconds = if ($ValidationTimers) { $ValidationCheckIntervalSeconds } else { $CheckIntervalSeconds }
+$validationTimerRecord = if ($ValidationTimers) {
+    [ordered]@{ startupDelaySeconds=$ValidationStartupDelaySeconds; heartbeatSeconds=$ValidationHeartbeatSeconds
+        checkIntervalSeconds=$ValidationCheckIntervalSeconds; failureDelayBaseSeconds=$ValidationFailureBaseSeconds }
+} else { $null }
 if (-not $PreSignedPackagesManifest) {
     foreach ($path in @($X64Dll,$X86Dll,$MachineApp,$AppBuildManifest)) {
         if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing input $path" }
@@ -152,6 +172,9 @@ if ($PreSignedPackagesManifest) {
             throw "Pre-signed input identity mismatch: $key"
         }
         AssertValidationProducer $key $validation
+        # Pre-signed fixtures run on production timers: a provenance that carries
+        # validation timers is not this path's input.
+        if ($validation.derivative.PSObject.Properties['timers']) { throw "Pre-signed validation provenance carries validation timers: $key" }
         if ($validation.schema -cne 'go-mapi-machine-validation-provenance-v1' -or $validation.publishable -ne $false -or
             $validation.repository -cne 'marcfargas/go-mapi' -or
             $validation.commit -cne $input.commit -or $validation.sku -cne $sku -or
@@ -370,7 +393,13 @@ try {
         Set-Content -LiteralPath (Join-Path $source 'src\service\VERSION') -Value $serviceVersion -NoNewline -Encoding ascii
         $servicePath = Join-Path $output "go-mapi-service-$serviceVersion.exe"
         if (-not $serviceHashes.ContainsKey($serviceVersion)) {
-            & (Join-Path $source 'src\service\build.ps1') -OutputPath $servicePath -ArtifactOrigin $ArtifactOrigin -CheckIntervalSeconds $CheckIntervalSeconds
+            $serviceBuildArgs = @{ OutputPath=$servicePath; ArtifactOrigin=$ArtifactOrigin; CheckIntervalSeconds=$effectiveCheckIntervalSeconds }
+            if ($ValidationTimers) {
+                $serviceBuildArgs.ValidationStartupDelaySeconds = $ValidationStartupDelaySeconds
+                $serviceBuildArgs.ValidationHeartbeatSeconds = $ValidationHeartbeatSeconds
+                $serviceBuildArgs.ValidationFailureBaseSeconds = $ValidationFailureBaseSeconds
+            }
+            & (Join-Path $source 'src\service\build.ps1') @serviceBuildArgs
             if (-not (Test-Path $servicePath)) { throw "Service build failed: $serviceVersion" }
             Sign $servicePath
             $serviceHashes[$serviceVersion] = Hash $servicePath
@@ -425,9 +454,12 @@ try {
             throw "An earlier MSI output was removed or changed: $($package.msi)"
         }
     }
+    $fixtureRecord = [ordered]@{ metadataOrigin=$MetadataOrigin; artifactOrigin=$ArtifactOrigin; checkIntervalSeconds=$effectiveCheckIntervalSeconds; signing='self-signed-disposable'; signerThumbprint=$signer.Thumbprint; signerPublicCertificate=$publicCert; serviceVersionDerivative='src/service/VERSION only in isolated archive' }
+    # Absent means production timers; the harness scales its waits from this object.
+    if ($validationTimerRecord) { $fixtureRecord.timers = $validationTimerRecord }
     WriteJson (Join-Path $evidence 'machine-test-packages.json') ([ordered]@{
         schema='go-mapi-machine-test-packages-v1'; sourceCommit=$commit; generatedAtUtc=[DateTime]::UtcNow.ToString('o');
-        fixture=[ordered]@{ metadataOrigin=$MetadataOrigin; artifactOrigin=$ArtifactOrigin; checkIntervalSeconds=$CheckIntervalSeconds; signing='self-signed-disposable'; signerThumbprint=$signer.Thumbprint; signerPublicCertificate=$publicCert; serviceVersionDerivative='src/service/VERSION only in isolated archive' };
+        fixture=$fixtureRecord;
         sourceSubstitutions=[ordered]@{ appVersion=$appVersion; suiteCAppVersion=if ($suiteCBuild) { [string]$suiteCBuild.version } else { $null }; interceptorVersion=$interceptorVersion; canonicalServiceVersion=(Get-Content (Join-Path $repo 'src\service\VERSION') -Raw).Trim(); canonicalAppVersion=(Get-Content (Join-Path $source 'src\app\VERSION') -Raw).Trim(); canonicalInterceptorVersion=(Get-Content (Join-Path $source 'src\interceptor\interceptor-version.txt') -Raw).Trim() };
         inputs=[ordered]@{ x64DllSha256=Hash $X64Dll; x86DllSha256=Hash $X86Dll; unsignedMachineAppSha256=Hash $MachineApp; appBuildManifestSha256=Hash $AppBuildManifest;
             suiteCUnsignedAppSha256=if ($SuiteCApp) { Hash $SuiteCApp } else { $null }; suiteCAppBuildManifestSha256=if ($SuiteCAppBuildManifest) { Hash $SuiteCAppBuildManifest } else { $null } };

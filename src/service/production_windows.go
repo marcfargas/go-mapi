@@ -80,17 +80,31 @@ func NewProductionResidentSchedule() (Schedule, error) {
 	if originErr != nil && !errors.Is(originErr, ErrMachineTrustUnavailable) {
 		return nil, originErr
 	}
+	validationTimers, validationBuild, err := loadMachineValidationTimers()
+	if err != nil {
+		return nil, err
+	}
+	applyResidentTimers(validationTimers, validationBuild)
 	if originErr == nil {
 		checkInterval, err := machineCheckInterval()
 		if err != nil {
 			return nil, err
+		}
+		engineConfig := update.Config{ArtifactOrigin: update.MachineArtifactOrigin, MetadataOrigin: origin, SuccessInterval: checkInterval, Now: time.Now}
+		if validationBuild {
+			if engineConfig.FailureDelays, err = update.ScaledFailureDelays(validationTimers.FailureDelayBase); err != nil {
+				return nil, err
+			}
+			engineConfig.MinSuccessInterval = validationMinTimer
 		}
 		client, err := NewMachineHTTPClient()
 		if err != nil {
 			return nil, err
 		}
 		for _, sku := range []update.SKU{update.System, update.Suite} {
-			engine, err := update.NewEngine(update.Config{SKU: sku, MetadataOrigin: origin, ArtifactOrigin: update.MachineArtifactOrigin, Client: client, Now: time.Now, SuccessInterval: checkInterval})
+			config := engineConfig
+			config.SKU, config.Client = sku, client
+			engine, err := update.NewEngine(config)
 			if err != nil {
 				return nil, err
 			}
@@ -228,15 +242,34 @@ func NewProductionResidentSchedule() (Schedule, error) {
 		if err := verifyProductionInstalledHealth(ctx, snapshot, registration, marker); err != nil {
 			return err
 		}
+		var awaiting error
 		if snapshot.SKU == update.Suite {
 			if err := openHealthySuite(ctx, admission, pendingStore, stateStorage, inventory, snapshot); err != nil {
-				return err
+				// The replacement service starts inside the machine transaction
+				// that closed the gate. The installed product is proven; only
+				// the O publication waits for Windows Installer to be idle.
+				blocked := false
+				if errors.Is(err, ErrSuiteInstallerBusy) {
+					var blockedErr error
+					blocked, blockedErr = pendingStore.SuiteOpenBlocked()
+					blocked = blocked || blockedErr != nil
+				}
+				if healthy, _ := suiteHealthAfterOpen(err, blocked); !healthy {
+					return err
+				}
+				awaiting = fmt.Errorf("%w: %w", errSuiteAdmissionAwaitsInstaller, err)
 			}
 		}
 		status.ServiceVersion = marker.ServiceVersion
 		status.InterceptorVersion = marker.InterceptorVersion
 		status.AppVersion = marker.AppVersion
 		status.Health = "healthy"
+		if awaiting != nil {
+			// New work is refused until the gate reopens: report an update
+			// in progress, not an automatically maintained installation.
+			status.Code = EventStillRunning
+			return awaiting
+		}
 		if status.Code != EventCommitted && status.Code != EventRolledBack {
 			status.Code = EventPending
 		}
@@ -440,7 +473,10 @@ func NewProductionResidentSchedule() (Schedule, error) {
 			return err
 		}
 	}
-	return residentManagedSchedule(healthCheck, discoveryCheck, installCheck, heartbeat), nil
+	installerIdle := func(ctx context.Context) (bool, error) {
+		return WindowsInstallerServerProbe{}.Idle(ctx, false)
+	}
+	return residentManagedSchedule(healthCheck, discoveryCheck, installCheck, heartbeat, installerIdle), nil
 }
 
 func closeUnhealthySuiteAdmission(ctx context.Context, admission *SuiteAdmission, merelyPrepared bool, health string) error {

@@ -66,16 +66,8 @@ export function PauseWatching() {
   return window['go']['main']['App']['PauseWatching']();
 }
 
-export function OpenDefaultAppsSettings() {
-  return window['go']['main']['App']['OpenDefaultAppsSettings']();
-}
-
 export function OpenStartupSettings() {
   return window['go']['main']['App']['OpenStartupSettings']();
-}
-
-export function DismissDefaultAppsPrompt() {
-  return window['go']['main']['App']['DismissDefaultAppsPrompt']();
 }
 
 export function ResumeWatching() {

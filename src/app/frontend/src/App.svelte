@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import { EventsOn } from '../wailsjs/runtime/runtime';
   import { CreateDraftForID, DismissEmail, GetAdminInstallState, GetComponentHealth, StartAdminRepair } from '../wailsjs/go/main/App';
   import { subscribeQueue, fetchQueue, type EmailWithId } from './lib/queue';
@@ -15,8 +15,6 @@
   import {
     fetchSettingsState,
     saveSettings,
-    openDefaultAppsSettings,
-    dismissDefaultAppsPrompt,
     fetchStartupState,
     setAutostartEnabled,
     openStartupSettings,
@@ -86,8 +84,24 @@
   let componentHealth = $state<ComponentHealth | null>(null);
   let adminInstallState = $state<AdminInstallState | null>(null);
   let settingsIssue = $state<{ kind: string; message: string; path: string } | null>(null);
-  let showDefaultAppsGuidance = $state(false);
   let startupState = $state<StartupState | null>(null);
+  let preferencesOpen = $state(false);
+  let startupReadError = $state<string | null>(null);
+  let startupWriteError = $state<string | null>(null);
+  let startupOpenError = $state<string | null>(null);
+  let settingsRepairError = $state<string | null>(null);
+  let startupPending = $state(false);
+  let startupReadPending = $state(false);
+  let settingsRepairPending = $state(false);
+  // Focus targets used when a keyboard-activated startup control is removed
+  // after its write (for example Fix startup once startup is healthy).
+  let preferencesToggle = $state<HTMLButtonElement | null>(null);
+  let startupCheckbox = $state<HTMLInputElement | null>(null);
+  const canFixStartup = $derived(
+    !settingsIssue && !settingsRepairPending && !!startupState?.requested && !!startupState.warning &&
+    (startupState.backend === 'standalone' && ['missing', 'mismatched', 'disabled', 'error'].includes(startupState.effective) ||
+      startupState.backend === 'msix' && ['disabled', 'error'].includes(startupState.effective))
+  );
 
   // Collect all unsub functions for cleanup
   const unsubs: Array<() => void> = [];
@@ -107,24 +121,24 @@
         fetchUpdateState().catch(() => null),
         GetComponentHealth().catch(() => null),
         GetAdminInstallState().catch(() => null),
-        fetchStartupState().catch(() => ({ backend: 'unknown', requested: true, registered: false, effective: 'error', warning: 'Windows startup state could not be read.' })),
+        fetchStartupState().catch(() => null),
       ]);
 
     auth = initialAuth as AuthStatus;
     wasAuthenticated = auth.authenticated;
     queue = initialQueue as EmailWithId[];
     const loadedSettings = (initialSettings as {
-      settings: { mode: string; default_apps_prompted: boolean };
+      settings: { mode: string };
       issue?: { kind: string; message: string; path: string };
     });
     settingsIssue = loadedSettings.issue ?? null;
     mode = (loadedSettings.settings.mode === 'auto-draft' ? 'auto-draft' : 'manual');
-    showDefaultAppsGuidance = !loadedSettings.settings.default_apps_prompted;
     paused = initialPaused as boolean;
     updateState = initialUpdate as UpdateState | null;
     componentHealth = initialHealth as ComponentHealth | null;
     adminInstallState = initialAdminInstall as AdminInstallState | null;
-    startupState = initialStartup as StartupState;
+    startupState = initialStartup as StartupState | null;
+    if (!startupState) startupReadError = 'Windows startup state could not be read.';
 
     // Subscribe to queue updates — prune stale state entries on each update.
     unsubs.push(subscribeQueue(
@@ -275,33 +289,91 @@
   }
 
   async function repairSettingsAsManual() {
-    await saveSettings({
-      mode: 'manual',
-      autostart_enabled: true,
-      default_apps_prompted: false,
-      update_checks_enabled: true,
-    });
-    mode = 'manual';
-    settingsIssue = null;
+    if (!settingsIssue || settingsRepairPending || startupPending || startupReadPending) return;
+    settingsRepairPending = true;
+    settingsRepairError = null;
+    try {
+      await saveSettings({
+        mode: 'manual',
+        autostart_enabled: true,
+        default_apps_prompted: false,
+        update_checks_enabled: true,
+      });
+      mode = 'manual';
+      settingsIssue = null;
+      startupState = null;
+      await readStartupState();
+    } catch (error) {
+      settingsRepairError = `Settings repair failed: ${String(error)}`;
+    } finally {
+      settingsRepairPending = false;
+    }
   }
 
-  async function handleDefaultApps() {
-    await openDefaultAppsSettings();
-    await dismissDefaultAppsPrompt();
-    showDefaultAppsGuidance = false;
+  /**
+   * Keep keyboard focus usable after a startup read/write finishes. Focus stays
+   * on the activated control; if that control was removed (for example Fix
+   * startup after a successful fix), it moves to the startup checkbox when
+   * Preferences is open, otherwise to the always-rendered Preferences button.
+   * Focus the user deliberately moved elsewhere is never taken back.
+   */
+  async function restoreStartupFocus(activated?: HTMLElement) {
+    await tick();
+    if (!activated) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== activated) return;
+    if (activated.isConnected) {
+      activated.focus();
+    } else if (startupCheckbox?.isConnected) {
+      startupCheckbox.focus();
+    } else {
+      preferencesToggle?.focus();
+    }
   }
 
-  async function dismissDefaultApps() {
-    await dismissDefaultAppsPrompt();
-    showDefaultAppsGuidance = false;
+  async function readStartupState(activated?: HTMLElement) {
+    if (startupReadPending) return;
+    startupReadPending = true;
+    try {
+      startupState = await fetchStartupState();
+      startupReadError = null;
+    } catch {
+      startupState = null;
+      startupReadError = 'Windows startup state could not be read.';
+    } finally {
+      startupReadPending = false;
+      await restoreStartupFocus(activated);
+    }
   }
 
-  async function handleAutostartChange(enabled: boolean) {
-    startupState = await setAutostartEnabled(enabled);
+  async function writeStartup(enabled: boolean, activated?: HTMLElement) {
+    if (settingsIssue || settingsRepairPending || startupReadPending || startupPending || !startupState) return;
+    startupPending = true;
+    try {
+      startupState = await setAutostartEnabled(enabled);
+      startupWriteError = null;
+    } catch (error) {
+      startupWriteError = `Startup preference could not be saved: ${String(error)}`;
+    } finally {
+      startupPending = false;
+      await restoreStartupFocus(activated);
+    }
   }
 
-  async function repairStartup() {
-    startupState = await setAutostartEnabled(true);
+  function handleAutostartChange(event: Event) {
+    const checkbox = event.currentTarget as HTMLInputElement;
+    const enabled = checkbox.checked;
+    checkbox.checked = startupState?.requested ?? false;
+    void writeStartup(enabled, checkbox);
+  }
+
+  async function openStartupApps() {
+    try {
+      await openStartupSettings();
+      startupOpenError = null;
+    } catch (error) {
+      startupOpenError = `Startup Apps could not be opened: ${String(error)}`;
+    }
   }
 
   // Auth flow handlers — unchanged from Phase 8.
@@ -391,37 +463,56 @@
     <h2>Settings need repair</h2>
     <p>{settingsIssue.message}</p>
     <p><code>{settingsIssue.path}</code></p>
-    <button type="button" onclick={repairSettingsAsManual}>Repair and use manual mode</button>
+    {#if settingsRepairError}<p>{settingsRepairError}</p>{/if}
+    <button type="button" onclick={repairSettingsAsManual} disabled={settingsRepairPending}>Repair and use manual mode</button>
   </section>
 {/if}
 
-{#if showDefaultAppsGuidance}
-  <section class="component-health" aria-label="Default mail app guidance">
-    <h2>Make go-mapi your default mail app</h2>
-    <p>Windows controls this choice. Open Default Apps, select go-mapi for supported mail links, then return here.</p>
-    <button type="button" onclick={handleDefaultApps}>Open Default Apps</button>
-    <button type="button" onclick={dismissDefaultApps}>Not now</button>
-  </section>
-{/if}
+<details class="email-guidance">
+  <summary>Email with Send To</summary>
+  <p>Use Windows “Send to → Mail recipient” or an app that supports Simple MAPI to create Gmail drafts. You need the go-mapi system component and the running go-mapi app, signed in to Gmail. A suite installation includes both; installing only the user app does not install the system component. If the system component is missing or incompatible, use the installation or repair guidance shown in this app. go-mapi does not currently handle mailto links and does not register a MAILTO handler in Windows Default Apps. Drafts are never sent automatically.</p>
+</details>
 
-{#if startupState && !settingsIssue}
-  <section class="component-health" aria-label="Startup preference">
-    <label>
-      <input
-        type="checkbox"
-        checked={startupState.requested}
-        onchange={(event) => handleAutostartChange(event.currentTarget.checked)}
-      />
-      Start go-mapi when I sign in
-    </label>
-    <p>Windows status: {startupState.effective} ({startupState.backend})</p>
-    {#if startupState.warning}
-      <div role="alert">
-        <p>{startupState.warning}</p>
-        {#if startupState.requested && startupState.effective !== 'disabledbyuser' && startupState.effective !== 'disabledbypolicy'}<button type="button" onclick={repairStartup}>Fix startup</button>{/if}
-        <button type="button" onclick={openStartupSettings}>Open Startup Apps</button>
-      </div>
+<section class="startup-preferences" aria-label="Startup preferences">
+  <button type="button" class="startup-preferences__toggle" bind:this={preferencesToggle} aria-expanded={preferencesOpen} aria-controls="startup-preferences-content" onclick={() => { preferencesOpen = !preferencesOpen; }}>Preferences</button>
+  <div id="startup-preferences-content">
+    {#if preferencesOpen}
+      {#if startupState}
+        <label>
+          <input
+            type="checkbox"
+            bind:this={startupCheckbox}
+            checked={startupState.requested}
+            disabled={!!settingsIssue || settingsRepairPending}
+            aria-disabled={startupPending || startupReadPending ? 'true' : undefined}
+            onchange={handleAutostartChange}
+          />
+          Start go-mapi when I sign in
+        </label>
+        <p>Windows status: {startupState.effective} ({startupState.backend})</p>
+      {:else}
+        <p>Startup status is unavailable. Editing is paused until it can be read.</p>
+      {/if}
+      {#if settingsIssue || settingsRepairPending}<p>Repair settings before changing startup preferences.</p>{/if}
     {/if}
+  </div>
+</section>
+
+{#if startupState?.warning || startupReadError || startupWriteError || startupOpenError}
+  <section class="component-health" role="alert" aria-label="Startup warning">
+    <h2>Startup needs attention</h2>
+    {#if startupState?.warning}<p>{startupState.warning}</p>{/if}
+    {#if startupReadError}<p>{startupReadError}</p>{/if}
+    {#if startupWriteError}<p>{startupWriteError}</p>{/if}
+    {#if startupOpenError}<p>{startupOpenError}</p>{/if}
+    {#if settingsIssue || settingsRepairPending}
+      <p>Repair settings first, then review startup status.</p>
+    {:else if startupState?.warning && !startupState.requested}
+      <p>Startup is off by your choice. Review Preferences or Windows Startup Apps to resolve this warning.</p>
+    {/if}
+    {#if canFixStartup}<button type="button" onclick={(event) => { void writeStartup(true, event.currentTarget); }} aria-disabled={startupPending ? 'true' : undefined}>Fix startup</button>{/if}
+    {#if startupReadError}<button type="button" onclick={(event) => { void readStartupState(event.currentTarget); }} disabled={settingsRepairPending} aria-disabled={startupReadPending ? 'true' : undefined}>Retry startup status</button>{/if}
+    <button type="button" onclick={openStartupApps}>Open Startup Apps</button>
   </section>
 {/if}
 

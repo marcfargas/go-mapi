@@ -128,7 +128,7 @@ const bridgeScript = `
     EventsOff(name) { listeners.delete(name); }, EventsOffAll() { listeners.clear(); }, EventsEmit: emit,
     BrowserOpenURL() {}, WindowHide() {}, WindowShow() {}, Quit() {}, LogPrint() {}, LogTrace() {}, LogDebug() {}, LogInfo() {}, LogWarning() {}, LogError() {}, LogFatal() {},
   };
-  const methods = ['CheckForUpdatesNow','CreateDraftForID','DismissEmail','GetAuthStatus','GetComponentHealth','GetAdminInstallState','GetMode','GetPausedState','GetQueue','GetSettings','GetSettingsState','GetStartupState','GetUpdateState','MakeAuthenticatedGmailCall','PauseWatching','OpenDefaultAppsSettings','OpenStartupSettings','DismissDefaultAppsPrompt','ResumeWatching','SaveSettings','SetMode','SetAutostartEnabled','SetPaused','SetTrayError','SetTrayIdle','SetUpdateChecksEnabled','SignIn','StartAdminRepair','SignOut'];
+  const methods = ['CheckForUpdatesNow','CreateDraftForID','DismissEmail','GetAuthStatus','GetComponentHealth','GetAdminInstallState','GetMode','GetPausedState','GetQueue','GetSettings','GetSettingsState','GetStartupState','GetUpdateState','MakeAuthenticatedGmailCall','PauseWatching','OpenStartupSettings','ResumeWatching','SaveSettings','SetMode','SetAutostartEnabled','SetPaused','SetTrayError','SetTrayIdle','SetUpdateChecksEnabled','SignIn','StartAdminRepair','SignOut'];
   window.go = { main: { App: Object.fromEntries(methods.map((method) => [method, (...args) => call(method, ...args)])) } };
   let previous = '';
   setInterval(async () => { try { const queue = await call('GetQueue'); const next = JSON.stringify(queue); if (previous && next !== previous) emit('queue-update'); previous = next; } catch {} }, 50);

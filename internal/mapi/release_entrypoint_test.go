@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -187,17 +188,61 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := string(workflow)
+	content := strings.ReplaceAll(string(workflow), "\r\n", "\n")
 	producer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)/`).FindStringSubmatch(content)
-	admin := strings.SplitN(content, "  admin-msi:", 2)
-	if len(admin) != 2 {
-		t.Fatal("CI workflow lacks admin-msi job")
+	// The machine lifecycle validation is split into a fixture job that builds
+	// and signs the packages once, one scenario job per scenario (each on its own
+	// runner: the scenarios share machine-global state), and the aggregate gate
+	// that keeps the original job name.
+	jobText := func(id, next string) string {
+		t.Helper()
+		start := strings.Index(content, "\n  "+id+":\n")
+		end := strings.Index(content, "\n  "+next+":\n")
+		if start < 0 || end < start {
+			t.Fatalf("CI workflow lacks job %s before %s", id, next)
+		}
+		return content[start:end]
 	}
-	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(admin[1])
+	fixtures := jobText("admin-msi-fixtures", "admin-msi-scenario")
+	scenarios := jobText("admin-msi-scenario", "admin-msi")
+	aggregate := jobText("admin-msi", "go-race")
+	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(fixtures)
 	if len(producer) != 2 || len(consumer) != 2 || producer[1] != consumer[1] ||
-		!strings.Contains(admin[1], "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
-		!strings.Contains(admin[1], "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
+		!strings.Contains(fixtures, "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
+		!strings.Contains(fixtures, "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
 		t.Errorf("machine A upload, download, and fixture input paths disagree: producer=%v consumer=%v", producer, consumer)
+	}
+	if strings.Count(content, "just build-machine-test-packages") != 1 || strings.Contains(scenarios, "build-machine-test-packages") {
+		t.Error("machine MSI fixtures must be built once, in the fixture job, and reused by the scenario jobs")
+	}
+	if !strings.Contains(fixtures, "name: go-mapi-machine-fixtures-${{ github.run_id }}") ||
+		!strings.Contains(scenarios, "name: go-mapi-machine-fixtures-${{ github.run_id }}") {
+		t.Error("the scenario jobs must download the fixture job's artifact")
+	}
+	// Every scenario keeps its own runner, result and artifact; none is dropped.
+	for _, want := range []string{
+		"scenario: [cross-sku, update, suite-update, update-interruption]",
+		"fail-fast: false",
+		"needs: [admin-msi-fixtures]",
+		"-Scenario ${{ matrix.scenario }}\n",
+		"-Scenario ${{ matrix.scenario }} -CleanupOnly",
+		"name: go-mapi-machine-native-validation-${{ matrix.scenario }}-${{ github.run_id }}",
+		"signerPublicCertificate", "Import-Certificate",
+	} {
+		if !strings.Contains(scenarios, want) {
+			t.Errorf("machine scenario job is missing %q", want)
+		}
+	}
+	// The aggregate is the gate: it keeps the original job name and fails unless
+	// the fixture build and every scenario passed.
+	for _, want := range []string{
+		"name: Validate machine MSI lifecycle and installed updater",
+		"needs: [admin-msi-fixtures, admin-msi-scenario]",
+		"always()", "needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
+	} {
+		if !strings.Contains(aggregate, want) {
+			t.Errorf("machine MSI aggregate job is missing %q", want)
+		}
 	}
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
@@ -212,7 +257,10 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22"} {
+	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22",
+		"[ValidateSet('all','cross-sku','update','suite-update','update-interruption')][string]$Scenario = 'all'",
+		"if (InScenario 'cross-sku')", "if (InScenario 'update')", "if (InScenario 'suite-update')", "if (InScenario 'update-interruption')",
+		"Invoke-Phase 'suite-update' 'suite' 'Cleanup'", "InScenario $_"} {
 		if !strings.Contains(string(sequence), want) {
 			t.Errorf("hosted machine sequence is missing %q", want)
 		}
@@ -220,6 +268,124 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	for _, forbidden := range []string{"softprops/action-gh-release", "azure/artifact-signing-action", "environment: artifact-signing", "environment: user-component-release", "environment: system-component-release"} {
 		if strings.Contains(content, forbidden) {
 			t.Errorf("CI workflow must not have release authority %q", forbidden)
+		}
+	}
+}
+
+// Validation timers exist only in the disposable CI fixture build. No release
+// path passes them, the service build refuses them under the release trust
+// switch, and the public provenance check requires their absence.
+func TestReleasePathsCarryNoValidationTimers(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	read := func(parts ...string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(append([]string{repoRoot}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(raw), "\r\n", "\n")
+	}
+	release := read(".github", "workflows", "admin-release.yml")
+	for _, forbidden := range []string{"ValidationTimers", "ValidationStartupDelaySeconds", "ValidationHeartbeatSeconds", "ValidationFailureBaseSeconds", "ValidationCheckIntervalSeconds"} {
+		if strings.Contains(release, forbidden) {
+			t.Errorf("release workflow must not pass validation timers: %q", forbidden)
+		}
+	}
+	if !strings.Contains(release, "$derivative.Contains('timers')") {
+		t.Error("public machine provenance check must require the absence of validation timers")
+	}
+	for _, derivative := range regexp.MustCompile(`(?m)^\s*\[ordered\]@\{ kind='[^']+';[^\n]*$`).FindAllString(release, -1) {
+		if strings.Contains(derivative, "timers") {
+			t.Errorf("a machine derivative record carries validation timers: %s", strings.TrimSpace(derivative))
+		}
+	}
+	build := read("src", "service", "build.ps1")
+	if !strings.Contains(build, "if ($RequireMachineReleaseTrust -and $validationSet.Count -gt 0) { throw 'Release service must not carry validation timers' }") {
+		t.Error("service build must reject validation timers under -RequireMachineReleaseTrust")
+	}
+	if !strings.Contains(read(".github", "workflows", "ci.yml"), "-ValidationTimers") {
+		t.Error("the CI fixture build must pass the validation timers")
+	}
+}
+
+// Every per-wait limit of the machine update driver must tolerate a slow hosted
+// runner (three times the worst wait measured on hosted runners under the CI
+// timers) and still fail in minutes, not inside the phase deadline. Run
+// 36940474780 failed the liveness wait at 142.65 s, 1 s over its 142 s limit, on a
+// wait that normally ends within 5 s; the margin was 60 s.
+func TestMachineUpdateWaitLimitsTolerateSlowRunners(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	read := func(parts ...string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join(append([]string{repoRoot}, parts...)...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(raw), "\r\n", "\n")
+	}
+	script := read("scripts", "run-machine-update-integration.ps1")
+	ci := read(".github", "workflows", "ci.yml")
+	number := func(text, pattern string) int {
+		t.Helper()
+		match := regexp.MustCompile(pattern).FindStringSubmatch(text)
+		if len(match) != 2 {
+			t.Fatalf("pattern %q not found", pattern)
+		}
+		value, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	startup := number(ci, `-ValidationStartupDelaySeconds (\d+)`)
+	heartbeat := number(ci, `-ValidationHeartbeatSeconds (\d+)`)
+	check := number(ci, `-ValidationCheckIntervalSeconds (\d+)`)
+	failureBase := number(ci, `-ValidationFailureBaseSeconds (\d+)`)
+	install := number(script, `(?m)^\$installWorkSeconds = (\d+)`)
+	margin := number(script, `(?m)^\$waitMarginSeconds = (\d+)`)
+
+	// Worst wait measured per site, in script order: wrong-SKU refusal, automatic
+	// B commit, untrusted-C refusal, automatic C commit (from the trust restore),
+	// runner/installer liveness (CI runs 36931761969, 36938262552, 36940474780).
+	measured := []float64{5.6, 41.3, 7.3, 99.7, 4.9}
+	sites := regexp.MustCompile(`-Seconds \(WaitLimit((?:[^()\n]|\([^()\n]*\))*)\)`).FindAllStringSubmatch(script, -1)
+	if len(sites) != len(measured) {
+		t.Fatalf("WaitLimit sites = %d, want %d: a new or removed wait needs a measured worst case here", len(sites), len(measured))
+	}
+	for i, site := range sites {
+		args := site[1]
+		owed := 0
+		switch {
+		case strings.Contains(args, "(2 * $failureBaseSeconds)"):
+			owed = 2 * failureBase
+		case strings.Contains(args, "$failureBaseSeconds"):
+			owed = failureBase
+		}
+		limit := startup + heartbeat + check + owed + margin
+		if strings.Contains(args, "-Install") {
+			limit += install
+		}
+		if float64(limit) < 3*measured[i] {
+			t.Errorf("wait %d limit %d s is under three times its worst measured wait %.1f s", i+1, limit, measured[i])
+		}
+		if limit >= 360 {
+			t.Errorf("wait %d limit %d s reaches six minutes; a stall must fail in minutes", i+1, limit)
+		}
+	}
+	if margin < 180 {
+		t.Errorf("slow-runner margin %d s is below 180 s", margin)
+	}
+	// No wait carries a literal limit, so none escapes the formula above.
+	if regexp.MustCompile(`-Seconds \d`).MatchString(script) {
+		t.Error("a wait passes a literal -Seconds limit instead of WaitLimit")
+	}
+	// Evidence for a liveness wait that expires without any runner record.
+	for _, want := range []string{
+		"} catch { CollectHandoffStallEvidence $livenessWaitStartedUtc; throw }",
+		"Record 'handoff-stall-evidence'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("machine update driver lacks %q", want)
 		}
 	}
 }

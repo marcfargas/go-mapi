@@ -21,7 +21,50 @@ type Config struct {
 	Client          *http.Client
 	Now             func() time.Time
 	SuccessInterval time.Duration
+	// FailureDelays and MinSuccessInterval are for controlled validation
+	// builds only. A nil table keeps ProductionFailureDelays and a zero
+	// minimum keeps one minute; both may only shorten the production values.
+	FailureDelays      []time.Duration
+	MinSuccessInterval time.Duration
 }
+
+// productionFailureDelays is the retry policy after the first, second, third
+// and later consecutive failed checks or installs.
+var productionFailureDelays = [...]time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 6 * time.Hour}
+
+const productionMinSuccessInterval = time.Minute
+
+// ProductionFailureDelays returns a copy of the production retry table.
+func ProductionFailureDelays() []time.Duration {
+	return append([]time.Duration(nil), productionFailureDelays[:]...)
+}
+
+// ScaledFailureDelays keeps the production shape (15 m, 30 m, 1 h, 6 h) with
+// the first delay replaced by base. The result is valid only for validation
+// builds: base must be at least one second and no longer than 15 minutes.
+func ScaledFailureDelays(base time.Duration) ([]time.Duration, error) {
+	if base < time.Second || base > productionFailureDelays[0] {
+		return nil, errors.New("invalid failure delay base")
+	}
+	delays := make([]time.Duration, len(productionFailureDelays))
+	for i, delay := range productionFailureDelays {
+		delays[i] = time.Duration(int64(delay) / int64(productionFailureDelays[0]) * int64(base))
+	}
+	return delays, nil
+}
+
+func validFailureDelays(delays []time.Duration) bool {
+	if len(delays) != len(productionFailureDelays) {
+		return false
+	}
+	for i, delay := range delays {
+		if delay < time.Second || delay > productionFailureDelays[i] || i > 0 && delay < delays[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
 type Engine struct {
 	config Config
 	mu     sync.Mutex
@@ -51,8 +94,21 @@ func NewEngine(config Config) (*Engine, error) {
 			config.SuccessInterval = 6 * time.Hour
 		}
 	}
-	if config.SuccessInterval < time.Minute || config.SuccessInterval > 24*time.Hour {
+	if config.MinSuccessInterval == 0 {
+		config.MinSuccessInterval = productionMinSuccessInterval
+	}
+	if config.MinSuccessInterval < time.Second || config.MinSuccessInterval > productionMinSuccessInterval {
+		return nil, errors.New("invalid updater minimum cadence")
+	}
+	if config.SuccessInterval < config.MinSuccessInterval || config.SuccessInterval > 24*time.Hour {
 		return nil, errors.New("invalid updater cadence")
+	}
+	if config.FailureDelays == nil {
+		config.FailureDelays = ProductionFailureDelays()
+	} else if !validFailureDelays(config.FailureDelays) {
+		return nil, errors.New("invalid updater failure delays")
+	} else {
+		config.FailureDelays = append([]time.Duration(nil), config.FailureDelays...)
 	}
 	return &Engine{config: config}, nil
 }
@@ -126,7 +182,7 @@ func (e *Engine) Check(ctx context.Context, r CheckRequest) (CheckResult, error)
 	}
 	result.Checked = true
 	result.State.LastAttemptAt = now
-	result.State.NextAttemptAt = now.Add(15 * time.Minute)
+	result.State.NextAttemptAt = now.Add(e.failureDelay(1))
 	if r.OnAttempt != nil {
 		if err := r.OnAttempt(result.State); err != nil {
 			return CheckResult{State: r.State}, err
@@ -177,12 +233,7 @@ func (e *Engine) Check(ctx context.Context, r CheckRequest) (CheckResult, error)
 	}
 	if err != nil {
 		result.State.Failures++
-		delays := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 6 * time.Hour}
-		i := int(result.State.Failures) - 1
-		if i >= len(delays) {
-			i = len(delays) - 1
-		}
-		result.State.NextAttemptAt = now.Add(delays[i])
+		result.State.NextAttemptAt = now.Add(e.failureDelay(result.State.Failures))
 		return result, err
 	}
 	result.State.LastSuccessAt = now
@@ -286,13 +337,20 @@ func (e *Engine) InstallFailureState(state CheckState) CheckState {
 	}
 	now := e.config.Now().UTC()
 	state.Failures++
-	delays := []time.Duration{15 * time.Minute, 30 * time.Minute, time.Hour, 6 * time.Hour}
-	i := int(state.Failures) - 1
-	if i >= len(delays) {
-		i = len(delays) - 1
-	}
-	state.NextAttemptAt = now.Add(delays[i])
+	state.NextAttemptAt = now.Add(e.failureDelay(state.Failures))
 	return state
+}
+
+// failureDelay is the one retry table of Check and InstallFailureState.
+func (e *Engine) failureDelay(failures uint) time.Duration {
+	i := int(failures) - 1
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(e.config.FailureDelays) {
+		i = len(e.config.FailureDelays) - 1
+	}
+	return e.config.FailureDelays[i]
 }
 func (e *Engine) InstallSuccessState(state CheckState) CheckState {
 	state.Failures = 0

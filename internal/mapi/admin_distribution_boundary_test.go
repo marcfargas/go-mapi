@@ -66,6 +66,123 @@ func TestAdminMsiCleanupAndRollbackAreMandatory(t *testing.T) {
 	}
 }
 
+// Immediate custom actions impersonate the installer caller, which under
+// UAC/RDSH can be a filtered, non-elevated token. Protected journal writes must
+// therefore be deferred SYSTEM work protected by an earlier-queued rollback.
+func TestMachineMigrationPreparationIsDeferredAndTransactionOwned(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	sequence := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "MachinePackage.wxi")
+	project := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "GoMapi.AdminCustomActions.csproj")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	actions := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "AdminMigration.cs")
+	lifecycle := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "CrossSkuLifecycle.Tests.ps1")
+
+	for _, want := range []string{"'before-prepare', 'after-partial-snapshot', 'after-snapshot'", "AssertJournal $suiteJournalBeforeUpgrade", "AssertJournal $systemJournalBeforeMigration"} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("native lifecycle test missing preparation fault coverage %q", want)
+		}
+	}
+	for _, want := range []string{
+		`<CustomAction Id="PrepareAdminMigration" BinaryRef="AdminCustomActions" DllEntry="PrepareAdminMigration" Execute="immediate" Return="check" />`,
+		`<CustomAction Id="SnapshotAdminMigration" BinaryRef="AdminCustomActions" DllEntry="SnapshotAdminMigration" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />`,
+	} {
+		if !strings.Contains(shared, want) {
+			t.Errorf("migration action authoring missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`<CustomActionRef Id="SnapshotAdminMigration" />`,
+		`<Custom Action="PrepareAdminMigration" Before="RollbackAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="RollbackAdminMigration" Before="SnapshotAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="SnapshotAdminMigration" Before="ApplyAdminMigration" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="ApplyAdminMigration" After="RemoveExistingProducts" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+		`<Custom Action="VerifyAdminRegistration" After="WriteRegistryValues" Condition="NOT (REMOVE~=&quot;ALL&quot;)" />`,
+	} {
+		if !strings.Contains(sequence, want) {
+			t.Errorf("migration sequence missing %q", want)
+		}
+	}
+	if !strings.Contains(project, `<PackageReference Include="WixToolset.Dtf.CustomAction" Version="5.0.2" />`) {
+		t.Error("custom actions must use the DTF SfxCA that extracts to user temp when not elevated")
+	}
+	for _, want := range []string{"SnapshotAdminMigration", "0x0C00", "0x0D00", "0x0E00", "rollback queued before the snapshot it protects", "WriteRegistryValues"} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled MSI verifier missing migration execution check %q", want)
+		}
+	}
+
+	prepare := customActionBody(t, actions, "PrepareAdminMigration")
+	for _, forbidden := range []string{"EnsureProtectedJournalDirectory", "SaveJournal", "CaptureProvider", "File.Copy", "ProtectJournalFile", "Delete"} {
+		if strings.Contains(prepare, forbidden) {
+			t.Errorf("immediate PrepareAdminMigration must stay read-only; found %q", forbidden)
+		}
+	}
+	for _, want := range []string{`["TransactionId"] = Guid.NewGuid().ToString("D")`, `session["SnapshotAdminMigration"] = data;`, `session["RollbackAdminMigration"] = data;`} {
+		if !strings.Contains(prepare, want) {
+			t.Errorf("immediate PrepareAdminMigration missing marshaling %q", want)
+		}
+	}
+	snapshot := customActionBody(t, actions, "SnapshotAdminMigration")
+	for _, want := range []string{
+		"RequireFixedPaths(data)", `MaybeFail(data, "before-prepare")`, "EnsureProtectedJournalDirectory",
+		`MaybeFail(data, "after-partial-snapshot")`, "previous-journal.json", "SaveJournal(paths.JournalPath, journal)",
+		`MaybeFail(data, "after-snapshot")`, "PruneTransactionBackups",
+	} {
+		if !strings.Contains(snapshot, want) {
+			t.Errorf("deferred snapshot missing %q", want)
+		}
+	}
+	if strings.Index(snapshot, "SaveJournal(") < strings.Index(snapshot, "after-partial-snapshot") {
+		t.Error("previous journal must remain until the replacement snapshot is complete")
+	}
+	if strings.Contains(snapshot, `session["`) {
+		t.Error("deferred snapshot must not read or propagate Session properties")
+	}
+	for name, want := range map[string]string{
+		"ApplyAdminMigration":     "RequireTransactionJournal(paths.JournalPath, data[\"TransactionId\"])",
+		"VerifyAdminRegistration": "RequireTransactionJournal(paths.JournalPath, data[\"TransactionId\"])",
+		"RollbackAdminMigration":  "RemoveTransactionResidue(paths, transactionDirectory, data)",
+	} {
+		if !strings.Contains(customActionBody(t, actions, name), want) {
+			t.Errorf("%s is not bound to its own transaction: missing %q", name, want)
+		}
+	}
+	rollback := customActionBody(t, actions, "RollbackAdminMigration")
+	for _, want := range []string{"journal.PreviousJournalSha256", "AtomicWriteBytes(paths.JournalPath", "ProtectJournalFile(paths.JournalPath)"} {
+		if !strings.Contains(rollback, want) {
+			t.Errorf("migration rollback does not restore the previous journal: missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`"go-mapi", "installer-journal"),`, `SafeDeleteDirectory(Path.Combine(machineRoot, "installer-journal"));`,
+		"OwnedDllBackupSha256", "RequireBoundedRegularFile(path, \"Migration journal\")",
+		"session.Message(InstallMessage.Error", "SetupBlockedException", "DisableRollback", "GOMAPI_MIGRATE_SKU=1", "/l*vx",
+	} {
+		if !strings.Contains(actions, want) {
+			t.Errorf("custom actions missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"MessageBox", "UILevel"} {
+		if strings.Contains(actions, forbidden) {
+			t.Errorf("custom actions must let Windows Installer govern UI; found %q", forbidden)
+		}
+	}
+}
+
+func customActionBody(t *testing.T, source, name string) string {
+	t.Helper()
+	start := strings.Index(source, "public static ActionResult "+name+"(Session session)")
+	if start < 0 {
+		t.Fatalf("custom action %s not found", name)
+	}
+	end := strings.Index(source[start+1:], "[CustomAction]")
+	if end < 0 {
+		return source[start:]
+	}
+	return source[start : start+1+end]
+}
+
 func TestSystemMsiOwnsExactlyOneResidentService(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	wxs := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
@@ -198,8 +315,9 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 			`<Property Id="GOMAPI_MIGRATE_SKU" Secure="yes" />`,
 			`Installed OR NOT GOMAPI_FOREIGN_PRODUCT OR GOMAPI_MIGRATE_SKU = &quot;1&quot;`,
 			`<FindRelatedProducts Before="LaunchConditions" />`,
-			`Schedule="afterInstallInitialize"`,
-			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot; AND UPGRADINGPRODUCTCODE"`,
+			`Schedule="afterInstallExecute"`,
+			// Covers the old product's removal inside an upgrade or migration.
+			`Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;"`,
 		} {
 			if !strings.Contains(entry, want) {
 				t.Errorf("%s missing migration contract %q", filename, want)
@@ -222,6 +340,162 @@ func TestMachineMsiCrossSkuMigrationIsExplicitAndTransactional(t *testing.T) {
 	for _, guid := range []string{"D56189EF-0DA1-4AA1-A764-D90610EC8441", "541217D4-4C8D-4D4C-83E5-9CD4CDCF7694", "1247251F-F476-4520-81A5-25985450B9F8", "1E335EC1-0CCC-54A2-ACC2-96EB8FB2E134"} {
 		if !strings.Contains(shared, guid) {
 			t.Errorf("cross-SKU shared component identity drifted: %s", guid)
+		}
+	}
+}
+
+// Every machine transaction stops the installed suite app in all sessions
+// before the old product is removed or any file is replaced (Ticket 529).
+// Windows Installer permits an early RemoveExistingProducts only directly
+// after InstallInitialize or after InstallExecute, so the stop is executed by
+// an early InstallExecute that RemoveExistingProducts directly follows.
+func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	shared := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SharedMachine.wxs")
+	verify := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "verify.ps1")
+	lifecycle := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "CrossSkuLifecycle.Tests.ps1")
+	stop := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "customaction", "SuiteAppStop.cs")
+	for _, filename := range []string{"Package.wxs", "SuitePackage.wxs"} {
+		entry := readMachinePackageAuthoring(t, repoRoot, filename)
+		for _, want := range []string{
+			`<MajorUpgrade Schedule="afterInstallExecute"`,
+			`<CustomActionRef Id="StopSuiteApps" />`,
+			`<Custom Action="StopSuiteApps" After="InstallInitialize" Condition="NOT UPGRADINGPRODUCTCODE" />`,
+			`<InstallExecute After="StopSuiteApps" />`,
+			`<CustomActionRef Id="PreStopSuiteApps" />`,
+			// WiX 4 rejects After together with Before; verify.ps1 checks the
+			// compiled LaunchConditions < PreStopSuiteApps < CostInitialize order.
+			`<Custom Action="PreStopSuiteApps" After="LaunchConditions" Condition="NOT UPGRADINGPRODUCTCODE" />`,
+			// A rolled-back final uninstall must restore the service's SCM
+			// settings too, or its health proof keeps suite admission closed.
+			`<Custom Action="RollbackServiceConfiguration" Before="DeleteServices" Condition="REMOVE~=&quot;ALL&quot;" />`,
+		} {
+			if !strings.Contains(entry, want) {
+				t.Errorf("%s missing suite app stop contract %q", filename, want)
+			}
+		}
+	}
+	suite := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "SuitePackage.wxs")
+	if !strings.Contains(suite, `<Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />`) {
+		t.Error("suite must not let Restart Manager close programs that hold the interceptor")
+	}
+	for _, want := range []string{
+		`<CustomAction Id="StopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="StopSuiteApps" Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />`,
+		`<SetProperty Id="StopSuiteApps" Before="InstallInitialize" Sequence="execute"`,
+		`Value="FailurePoint=[GOMAPI_TEST_FAILURE_POINT];ProgramFiles64=[ProgramFiles64Folder];CommonAppData=[CommonAppDataFolder]"`,
+		`<CustomAction Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" />`,
+	} {
+		if !strings.Contains(shared, want) {
+			t.Errorf("suite app stop authoring missing %q", want)
+		}
+	}
+	if strings.Contains(shared, `Id="PreStopSuiteApps" BinaryRef="AdminCustomActions" DllEntry="PreStopSuiteApps" Execute="immediate" Return="ignore" Impersonate`) {
+		t.Error("the immediate pre-stop always runs as the caller and must not declare Impersonate")
+	}
+	for _, want := range []string{
+		"'StopSuiteApps,InstallExecute'", "exactly one InstallExecute", "StopSuiteApps must precede $later", "'SetStopSuiteApps'",
+		"'PreStopSuiteApps'", "PreStopSuiteApps must run after LaunchConditions and before CostInitialize",
+		"PreStopSuiteApps must not be sequenced in $table", "'InstallUISequence','AdminUISequence','AdminExecuteSequence','AdvtExecuteSequence'",
+	} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("compiled MSI verifier missing suite app stop check %q", want)
+		}
+	}
+	body := customActionBody(t, stop, "StopSuiteApps")
+	for _, want := range []string{"CloseSuiteAdmission", "DrainSuiteApps", `MaybeFail(data, "after-suite-stop")`, `"suite-stop-bound"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("StopSuiteApps missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		`@"go-mapi\user\go-mapi.exe"`, `@"go-mapi\status\suite-admission-v1"`,
+		"QueryFullProcessImageName", "TerminateProcess", "NumberOfLinks != 1", `"S-1-5-80-"`,
+		"TimeSpan.FromSeconds(30)", "SetupBlockedException",
+	} {
+		if !strings.Contains(stop, want) {
+			t.Errorf("suite app stop implementation missing %q", want)
+		}
+	}
+	// The resident service is the only writer of O; the installer only closes.
+	// The service reopens the gate as soon as Windows Installer is idle, with
+	// its one-minute heartbeat as the backstop.
+	if strings.Contains(stop, "(byte)'O'") {
+		t.Error("installer custom action must never reopen suite admission")
+	}
+	// The pre-stop runs as the caller before costing. It never touches the
+	// admission gate, never reports a setup error and never fails setup.
+	preStop := customActionBody(t, stop, "PreStopSuiteApps")
+	for _, forbidden := range []string{"CloseSuiteAdmission", "SuiteAdmissionRelativePath", "suite-admission-v1", "Guard(", "ReportFailure", "SetupBlockedException", "WaitForMultipleObjects"} {
+		if strings.Contains(preStop, forbidden) {
+			t.Errorf("PreStopSuiteApps must not use %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		`session["ProgramFiles64Folder"]`, "SeDebugPrivilege", "SweepSuiteApps", "ReapExited", "TerminateProcess",
+		`"pre-stop-throw"`, "catch (Exception", "return ActionResult.Success", "go-mapi suite app pre-stop: terminated={0} skipped={1}",
+	} {
+		if !strings.Contains(preStop, want) {
+			t.Errorf("PreStopSuiteApps missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"Invoke-RunningAppTransaction '/fa' $suitePath",
+		"Invoke-RunningAppTransaction '/i' $newerSuitePath 'suite-upgrade'",
+		"Invoke-RunningAppTransaction '/x' $newerSuitePath 'suite-final-uninstall'",
+		"Invoke-RunningAppTransaction '/i' $systemPath 'system-migration'",
+		"GOMAPI_TEST_FAILURE_POINT=after-suite-stop", "GOMAPI_TEST_FAILURE_POINT=suite-stop-bound",
+		"GOMAPI_TEST_FAILURE_POINT=after-uninstall-finalize') -Expected 1603",
+		"Assert-LaunchRestored", "Start-Decoy", "RequireOtherSession",
+		"GOMAPI_TEST_FAILURE_POINT=pre-stop-throw", "'go-mapi suite app pre-stop ignored an error'",
+		"Invoke-RunningAppTransaction '/i' $newerAppSuitePath 'suite-upgrade-app'",
+		"Invoke-RunningAppTransaction '/x' $newerAppSuitePath 'suite-app-upgrade-uninstall'",
+		"'suite app pre-stop did not finish before the outer CostInitialize'",
+		"Assert-ServiceConfiguration 'suite final uninstall rollback'",
+		// Admission reopens within 15 s of the msiexec exit after every
+		// successful suite transaction (Ticket 529 V1).
+		"$script:LastMsiExitTime = Get-Date", "Wait-GateOpen $Name 15 -FromMsiExit", "GateOpenSeconds",
+	} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("native lifecycle missing running suite app coverage %q", want)
+		}
+	}
+	// A Windows checkout can convert the script to CRLF; the check below
+	// spans lines.
+	machineUpdate := strings.ReplaceAll(readAdminContractFile(t, repoRoot, "scripts", "run-machine-update-integration.ps1"), "\r\n", "\n")
+	for _, want := range []string{
+		// The administrator repair keeps its unchanged health assertion and
+		// must also reopen admission promptly.
+		"        $disabled = AssertHealthy $caseC\n        if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }\n        AssertAdmissionReopened 'administrator-disable' 15\n",
+		"$script:lastAdministratorMsiUtc = [DateTime]::UtcNow",
+	} {
+		if !strings.Contains(machineUpdate, want) {
+			t.Errorf("machine update integration missing suite admission reopen check %q", want)
+		}
+	}
+	// Hosted CI must run an upgrade that replaces the running app file.
+	hosted := readAdminContractFile(t, repoRoot, "scripts", "run-hosted-machine-integration.ps1")
+	if !strings.Contains(hosted, "-NewerAppSuiteMsi $fixture.packages.suiteC.msi") {
+		t.Error("hosted machine integration must pass the app-changing suite fixture to the lifecycle test")
+	}
+	// The interceptor starts the resident app as the sender's child, and
+	// Start-Process -Wait waits for descendants: the launch probe sender must
+	// be waited for alone and with a bound (Ticket 529 V2).
+	senderStarts := 0
+	for _, line := range strings.Split(lifecycle, "\n") {
+		if !strings.Contains(line, "Start-Process -FilePath $powerShell") {
+			continue
+		}
+		senderStarts++
+		if !strings.Contains(line, "-PassThru") || strings.Contains(line, "-Wait") {
+			t.Errorf("launch probe sender must start with -PassThru and without -Wait: %s", strings.TrimSpace(line))
+		}
+	}
+	if senderStarts != 1 {
+		t.Errorf("launch probe sender starts = %d, want 1", senderStarts)
+	}
+	for _, want := range []string{"$senderProcess.WaitForExit(30000)", "Stop-Process -Id $senderProcess.Id", "SenderExited = $senderExited"} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("launch probe sender lacks its bounded wait %q", want)
 		}
 	}
 }

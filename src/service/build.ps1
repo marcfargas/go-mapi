@@ -2,7 +2,13 @@ param(
     [Parameter(Mandatory=$true)][string]$OutputPath,
     [switch]$RequireMachineReleaseTrust,
     [string]$ArtifactOrigin = 'https://github.com/marcfargas/go-mapi/releases/download/',
-    [int]$CheckIntervalSeconds = 21600
+    [int]$CheckIntervalSeconds = 21600,
+    # Controlled validation builds only: all three together or none. Each can only
+    # shorten its production value (120 s start-up delay, 60 s heartbeat, 900 s
+    # first failure delay); a release build rejects every one of them.
+    [int]$ValidationStartupDelaySeconds,
+    [int]$ValidationHeartbeatSeconds,
+    [int]$ValidationFailureBaseSeconds
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,7 +22,16 @@ $minorVersion = $Matches.minor
 $patchVersion = $Matches.patch
 $machineOrigin = [Environment]::GetEnvironmentVariable('MACHINE_RELEASE_METADATA_ORIGIN')
 $canonicalArtifactOrigin = 'https://github.com/marcfargas/go-mapi/releases/download/'
-if ($CheckIntervalSeconds -lt 60 -or $CheckIntervalSeconds -gt 86400) { throw 'Machine check interval is outside bounds' }
+$validationNames = @('ValidationStartupDelaySeconds','ValidationHeartbeatSeconds','ValidationFailureBaseSeconds')
+$validationSet = @($validationNames | Where-Object { $PSBoundParameters.ContainsKey($_) })
+if ($RequireMachineReleaseTrust -and $validationSet.Count -gt 0) { throw 'Release service must not carry validation timers' }
+if ($validationSet.Count -ne 0 -and $validationSet.Count -ne $validationNames.Count) { throw 'Validation timers must be supplied together' }
+$validationTimers = $validationSet.Count -eq $validationNames.Count
+if ($validationTimers -and ($ValidationStartupDelaySeconds -lt 1 -or $ValidationStartupDelaySeconds -gt 120 -or
+    $ValidationHeartbeatSeconds -lt 1 -or $ValidationHeartbeatSeconds -gt 60 -or
+    $ValidationFailureBaseSeconds -lt 1 -or $ValidationFailureBaseSeconds -gt 900)) { throw 'Validation timers must shorten the production values' }
+$minimumCheckIntervalSeconds = if ($validationTimers) { 1 } else { 60 }
+if ($CheckIntervalSeconds -lt $minimumCheckIntervalSeconds -or $CheckIntervalSeconds -gt 86400) { throw 'Machine check interval is outside bounds' }
 if ($RequireMachineReleaseTrust -and $CheckIntervalSeconds -ne 21600) { throw 'Release service requires the six-hour machine check interval' }
 if ($RequireMachineReleaseTrust -and [string]::IsNullOrWhiteSpace($machineOrigin)) {
     throw 'Signed managed service build requires machine metadata origin'
@@ -63,6 +78,11 @@ try {
     New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
     $ldflags = "-X github.com/marcfargas/go-mapi/service.Version=$version"
     $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineCheckIntervalSeconds=$CheckIntervalSeconds"
+    if ($validationTimers) {
+        $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationStartupDelaySeconds=$ValidationStartupDelaySeconds"
+        $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationHeartbeatSeconds=$ValidationHeartbeatSeconds"
+        $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationFailureBaseSeconds=$ValidationFailureBaseSeconds"
+    }
     if ($machineOrigin) { $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineReleaseMetadataOrigin=$machineOrigin" }
     $ldflags += " -X github.com/marcfargas/go-mapi/internal/mapi/update.MachineArtifactOrigin=$ArtifactOrigin"
     Push-Location $root
