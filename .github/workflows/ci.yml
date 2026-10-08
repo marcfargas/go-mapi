@@ -69,6 +69,8 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
       - uses: extractions/setup-just@v2
       - name: Set explicit native validation component versions
         shell: pwsh
@@ -77,6 +79,22 @@ jobs:
           Set-Content src/interceptor/interceptor-version.txt -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
       - run: npm ci
       - run: just prepare-windows -Wails -Packages -Install
+      - name: Validate installed attachment oracle and failure protocol
+        shell: pwsh
+        run: |
+          $env:GOWORK = 'off'
+          go test -C tests/installed-attachment/fake-gmail -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment fake/oracle tests failed' }
+          python -m unittest discover -s tests/installed-attachment -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment process/result tests failed' }
+          powershell.exe -NoProfile -NonInteractive -File tests/installed-attachment/process-observer-check.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment retained-handle process observer check failed' }
+          $files = Get-ChildItem tests/installed-attachment -Filter '*.ps1' -File
+          foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "PowerShell parse failed: $($file.Name): $($errors -join '; ')" }
+          }
       - run: just test-windows
       - run: pwsh -NoProfile -File scripts/tests/BuildCi.Tests.ps1
       - run: pwsh -NoProfile -File scripts/tests/MachineReadinessEvidence.Tests.ps1
