@@ -586,6 +586,79 @@ func TestRecoveryLegacyPreparedFailsClosedWithoutFalseRollback(t *testing.T) {
 		t.Fatal("legacy uncounted grant launched or became rollback")
 	}
 }
+
+func TestRecoveryLegacyImportCannotGrantLateChildBothSKUs(t *testing.T) {
+	for _, sku := range []update.SKU{update.System, update.Suite} {
+		for _, markerMatches := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/marker-matches=%v", sku, markerMatches), func(t *testing.T) {
+				h := newRecoveryHarness(t, sku)
+				p := pendingForReconcile(t, nil)
+				p.SKU = sku
+				p.Old, p.Candidate = oldProduct(sku), candidateProduct(t, sku, "4.0.1")
+				p.Replay.Namespace = string(sku)
+				p.Phase, p.Runner, p.Installer = PhasePrepared, nil, nil
+				if err := h.state.Save(context.Background(), p); err != nil {
+					t.Fatal(err)
+				}
+				h.clock.now = p.UpdatedAt.Add(time.Second)
+				h.reconcile(t)
+				r := h.record(t)
+				child := p
+				child.Phase = PhaseChildRecorded
+				child.Runner = &ProcessIdentity{PID: 10, CreatedAtUnixNano: 10}
+				child.Installer = &ProcessIdentity{PID: 11, CreatedAtUnixNano: 11}
+				child.InstallerThread = &ProcessIdentity{PID: 12, CreatedAtUnixNano: 12}
+				if err := h.state.Save(context.Background(), child); err != nil {
+					t.Fatal(err)
+				}
+				marker := h.marker
+				if markerMatches {
+					// Deliberately remove the incidental marker-mismatch defense.
+					marker = r.Marker
+				}
+				h.state.FinalGrant = func(ctx context.Context, next PendingV1) error {
+					return h.journal.validateGrantLocked(ctx, next, func(context.Context) (machineProductMarker, bool, error) {
+						return marker, true, nil
+					}, h.clock.Now())
+				}
+				next := child
+				next.Phase = PhaseResumeAuthorized
+				if err := h.state.CompareAndSave(context.Background(), &child, next); !errors.Is(err, ErrUnauthorizedCandidate) {
+					t.Fatalf("legacy import authorized an ungranted child: %v", err)
+				}
+				actual, _ := h.state.Load(context.Background())
+				if actual.Phase != PhaseChildRecorded {
+					t.Fatal("rejected legacy grant changed pending")
+				}
+				if !r.ExpiresAt.IsZero() {
+					t.Fatal("legacy import fabricated signed expiry")
+				}
+				withoutProvenance := *r
+				withoutProvenance.LegacyUncounted = false
+				if withoutProvenance.Validate() == nil {
+					t.Fatal("ordinary authorization accepted absent signed expiry")
+				}
+				withInventedExpiry := *r
+				withInventedExpiry.ExpiresAt = r.LaunchDeadline
+				if withInventedExpiry.Validate() == nil {
+					t.Fatal("legacy witness accepted invented signed expiry")
+				}
+				// A separately supplied already-durable grant is irrevocable.
+				// Seed that crash-recovery boundary directly; do not authorize it
+				// through the rejected legacy CAS above.
+				if err := h.state.Save(context.Background(), next); err != nil {
+					t.Fatal(err)
+				}
+				h.clock.now = r.LaunchDeadline.Add(time.Hour)
+				running := next
+				running.Phase = PhaseRunning
+				if err := h.state.CompareAndSave(context.Background(), &next, running); err != nil {
+					t.Fatalf("legacy classification revoked a durable grant: %v", err)
+				}
+			})
+		}
+	}
+}
 func TestRecoveryLateReadyAndInstallerEvidenceOverridesRetry(t *testing.T) {
 	h := newRecoveryHarness(t, update.System)
 	_ = h.install(t, "4.0.1")

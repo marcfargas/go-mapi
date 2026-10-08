@@ -28,12 +28,13 @@ func (c *Coordinator) reconcileHandoff(ctx context.Context, p *PendingV1) (Outco
 			return OutcomeNoUpdate, nil
 		}
 		// Legacy prepared state has no count witness. Conservatively consume the
-		// full cap; do not manufacture a new budget or falsely report MSI rollback.
+		// full cap; do not manufacture a budget or signed expiry. The local
+		// deadline delays safe retirement only; this witness cannot grant resume.
 		reservation := *p
 		reservation.Runner = nil
 		reservation.AppDrainDeadline = nil
 		deadline := reservation.UpdatedAt.Add(recoveryGrantBound)
-		r = &RecoveryV1{Schema: recoverySchema, Reservation: reservation, Consumed: maxRecoveryLaunches, ExpiresAt: deadline, LaunchDeadline: deadline, Stage: "reserved", UpdatedAt: c.deps.Clock.Now(), Runner: p.Runner}
+		r = &RecoveryV1{Schema: recoverySchema, Reservation: reservation, Consumed: maxRecoveryLaunches, LegacyUncounted: true, LaunchDeadline: deadline, Stage: "reserved", UpdatedAt: c.deps.Clock.Now(), Runner: p.Runner}
 		unlock, e := lockStateStoreBounded(ctx, s.storage)
 		if e != nil {
 			return OutcomeBackoff, e

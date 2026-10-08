@@ -34,11 +34,20 @@ type RecoveryV1 struct {
 	DueAt          time.Time            `json:"dueAt,omitempty"`
 	UpdatedAt      time.Time            `json:"updatedAt"`
 	Runner         *ProcessIdentity     `json:"runner,omitempty"`
+	// LegacyUncounted is a retirement-only witness, never signed authority.
+	LegacyUncounted bool `json:"legacyUncounted,omitempty"`
 }
 
 func (r RecoveryV1) Validate() error {
-	if r.Schema != recoverySchema || r.Reservation.Validate() != nil || r.Reservation.Phase != PhasePrepared || r.Reservation.Runner != nil || r.Reservation.Installer != nil || r.Reservation.InstallerThread != nil || r.Reservation.Exit != nil || r.Consumed < 1 || r.Consumed > maxRecoveryLaunches || r.Failures > r.Consumed || r.ExpiresAt.IsZero() || r.LaunchDeadline.IsZero() || r.LaunchDeadline.After(r.ExpiresAt) || r.LaunchDeadline.After(r.Reservation.UpdatedAt.Add(recoveryGrantBound)) || r.UpdatedAt.IsZero() || validateProcessIdentity(r.Runner) != nil {
+	if r.Schema != recoverySchema || r.Reservation.Validate() != nil || r.Reservation.Phase != PhasePrepared || r.Reservation.Runner != nil || r.Reservation.Installer != nil || r.Reservation.InstallerThread != nil || r.Reservation.Exit != nil || r.Consumed < 1 || r.Consumed > maxRecoveryLaunches || r.Failures > r.Consumed || r.LaunchDeadline.IsZero() || r.LaunchDeadline.After(r.Reservation.UpdatedAt.Add(recoveryGrantBound)) || r.UpdatedAt.IsZero() || validateProcessIdentity(r.Runner) != nil {
 		return errors.New("invalid recovery reservation")
+	}
+	if r.LegacyUncounted {
+		if !r.ExpiresAt.IsZero() || r.Consumed != maxRecoveryLaunches || r.Marker != (machineProductMarker{}) {
+			return errors.New("legacy recovery cannot carry authorization")
+		}
+	} else if r.ExpiresAt.IsZero() || r.LaunchDeadline.After(r.ExpiresAt) {
+		return errors.New("invalid recovery authorization expiry")
 	}
 	switch r.Stage {
 	case "reserved", "readiness-failed", "due", "safety-blocked", "retrying", "completed", "exhausted", "msi-terminal":
@@ -308,7 +317,7 @@ func (s *FileRecoveryStore) validateGrantLocked(ctx context.Context, p PendingV1
 	if p.RetryDeadline != nil && !now.Before(*p.RetryDeadline) {
 		return ErrUnauthorizedCandidate
 	}
-	if r == nil || !r.matches(p) || r.Stage == "exhausted" || r.Stage == "completed" || r.Stage == "msi-terminal" || !now.Before(r.ExpiresAt) || !now.Before(r.LaunchDeadline) {
+	if r == nil || r.LegacyUncounted || !r.matches(p) || r.Stage == "exhausted" || r.Stage == "completed" || r.Stage == "msi-terminal" || !now.Before(r.ExpiresAt) || !now.Before(r.LaunchDeadline) {
 		return ErrUnauthorizedCandidate
 	}
 	if _, err := s.storage.Read([]string{finalUninstallFenceName}, 64); !errors.Is(err, os.ErrNotExist) {
