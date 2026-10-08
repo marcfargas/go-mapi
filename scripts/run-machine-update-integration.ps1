@@ -127,6 +127,12 @@ function WaitLimit([int]$FailureDelaySeconds = 0, [switch]$Install) {
     if (-not $timers) { return 0 }
     return $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + $FailureDelaySeconds + $(if ($Install) { $installWorkSeconds } else { 0 }) + $waitMarginSeconds
 }
+function AwaitHealthy([string]$Key) {
+    # Recovery retires pending independently of the heartbeat that publishes
+    # public health. Require the complete installed-byte/service/health proof,
+    # bounded by the existing wait limit and overall phase deadline.
+    Until "published healthy $Key" { AssertHealthy $Key } -PollMilliseconds 500 -Seconds (WaitLimit)
+}
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
     $args = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart') + $(if ($SKU -eq 'suite') { @('MSIRESTARTMANAGERCONTROL=Disable') } else { @('MSIRMSHUTDOWN=0') }) + $Properties + @('/l*v', ('"' + $log + '"'))
@@ -501,11 +507,14 @@ function StartReadinessProcessEvidence {
     foreach ($kind in @('Start','Stop')) {
         $sourceId = "go-mapi-readiness-$runId-$kind"
         $log = Join-Path $evidence "process-$($kind.ToLowerInvariant()).ndjson"
-        $subscription = Register-CimIndicationEvent -Query "SELECT * FROM Win32_Process${kind}Trace" -SourceIdentifier $sourceId -MessageData $log -Action {
+        $subscription = Register-CimIndicationEvent -Query "SELECT * FROM Win32_Process${kind}Trace" -SourceIdentifier $sourceId -MessageData @{ path=$log; kind=$kind } -Action {
             $p = $Event.SourceEventArgs.NewEvent
-            if ($p.ProcessName -in @('go-mapi-update-runner.exe','msiexec.exe')) {
+            # StopTrace truncates long image names (the runner becomes
+            # "go-mapi-update"). Retain stops independently of image name;
+            # the audit correlates them to full-name starts by PID/time/session.
+            if ($Event.MessageData.kind -eq 'Stop' -or $p.ProcessName -in @('go-mapi-update-runner.exe','msiexec.exe')) {
                 $row = [ordered]@{ observedAtUtc=[DateTime]::UtcNow.ToString('o'); name=$p.ProcessName; pid=$p.ProcessID; sessionId=$p.SessionID; timeCreated=$p.TIME_CREATED; parentPid=if ($p.PSObject.Properties['ParentProcessID']) { $p.ParentProcessID } else { $null } }
-                Add-Content -LiteralPath $Event.MessageData -Value ($row | ConvertTo-Json -Compress) -Encoding utf8
+                Add-Content -LiteralPath $Event.MessageData.path -Value ($row | ConvertTo-Json -Compress) -Encoding utf8
             }
         }
         $script:processSubscriptions += [ordered]@{ source=$sourceId; job=$subscription }
@@ -525,7 +534,7 @@ function AssertRecoveryProcessHistory([string]$SuccessfulTransaction) {
     if ($runners.Count -ne 5) { throw "Expected five physical runners (B2+C3), observed $($runners.Count)" }
     for ($i=0; $i -lt $runners.Count; $i++) {
         $runner = $runners[$i]
-        $stop = @($stops | Where-Object { $_.pid -eq $runner.pid -and [uint64]$_.timeCreated -ge [uint64]$runner.timeCreated } | Sort-Object { [uint64]$_.timeCreated } | Select-Object -First 1)
+        $stop = @($stops | Where-Object { $_.pid -eq $runner.pid -and $_.sessionId -eq $runner.sessionId -and [uint64]$_.timeCreated -ge [uint64]$runner.timeCreated } | Sort-Object { [uint64]$_.timeCreated } | Select-Object -First 1)
         if ($stop.Count -ne 1) { throw "Runner $($runner.pid) has no observed stop" }
         if ($i+1 -lt $runners.Count -and [uint64]$stop[0].timeCreated -gt [uint64]$runners[$i+1].timeCreated) { throw 'Managed runners overlapped' }
     }
@@ -569,7 +578,7 @@ function RunReadinessRecovery($Baseline) {
         }
     } -PollMilliseconds 500 -Seconds (ReadinessWaitLimit -Persistent)
     if ($seen.Count -ne 3) { throw 'Persistent fixture did not observe exactly three distinct failed reservations' }
-    AssertHealthy $caseB | Out-Null
+    AwaitHealthy $caseB | Out-Null
     Restart-Service go-mapi -Force
     Remove-Item -LiteralPath $obstructionPath -Force
     $window = $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + (2 * $failureBaseSeconds) + 10
@@ -582,7 +591,7 @@ function RunReadinessRecovery($Baseline) {
         Record 'exhausted-opportunity' $s
         Start-Sleep -Milliseconds 1000
     }
-    AssertHealthy $caseB | Out-Null
+    AwaitHealthy $caseB | Out-Null
     AssertRecoveryProcessHistory $b.recovery.reservation.transactionId
     Record 'readiness-recovery-passed' ([ordered]@{ sku=$SKU; transientTransactions=@($failure.reservation.transactionId,$b.recovery.reservation.transactionId); persistentTransactions=@($seen.Keys); exhausted=$exhausted; windowSeconds=$window })
 }
