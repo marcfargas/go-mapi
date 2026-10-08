@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,3 +80,65 @@ func (awaiter fixedReadyAwaiter) Await(_ context.Context, _ RunnerReadyStore, tr
 	}
 	return awaiter.ready, awaiter.err
 }
+
+func TestLauncherRetainsSpawnIdentityWhenReadinessFailsAndSeparatesDeadline(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprint(fail), func(t *testing.T) {
+			storage := mustStorage(t, testStorageRoot(t, "launcher-deadline"), privateStorage)
+			source := filepath.Join(storage.root, "service.exe")
+			_ = os.WriteFile(source, []byte("runner"), 0700)
+			body := []byte("msi")
+			sum := sha256.Sum256(body)
+			digest := hex.EncodeToString(sum[:])
+			handle := "suite/42/test.msi"
+			_, _ = storage.WriteAtomic(context.Background(), strings.Split(handle, "/"), strings.NewReader(string(body)), 3, 3, digest)
+			id := ProcessIdentity{PID: 80, CreatedAtUnixNano: 8000}
+			spawner := &recordingSpawner{identity: id}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			awaiter := readyAwaitFunc(func(readyCtx context.Context, _ RunnerReadyStore, tx string, attempt uint, runner ProcessIdentity) (RunnerReadyV1, error) {
+				cancel() // prelaunch completion/cancellation must not revoke a valid suite wait.
+				if readyCtx.Err() != nil {
+					t.Fatal("suite readiness inherited prelaunch cancellation")
+				}
+				if fail {
+					return RunnerReadyV1{}, context.DeadlineExceeded
+				}
+				return RunnerReadyV1{Schema: RunnerReadySchemaV1, TransactionID: tx, Attempt: attempt, Runner: runner, Installer: ProcessIdentity{PID: 81, CreatedAtUnixNano: 8001}, ReadyAt: time.Now().Add(45 * time.Second)}, nil
+			})
+			launcher, _ := NewDetachedRunnerLauncher(storage, &memoryReadyStore{}, spawner, awaiter, source)
+			receipt, err := launcher.Launch(ctx, HandoffRequest{TransactionID: "tx-deadline", Attempt: 1, Artifact: StagedArtifact{Handle: handle, SHA256: digest}})
+			if (err != nil) != fail || receipt.Runner != id || receipt.Ready == fail {
+				t.Fatalf("receipt=%+v err=%v", receipt, err)
+			}
+		})
+	}
+}
+
+type readyAwaitFunc func(context.Context, RunnerReadyStore, string, uint, ProcessIdentity) (RunnerReadyV1, error)
+
+func (f readyAwaitFunc) Await(ctx context.Context, s RunnerReadyStore, id string, a uint, p ProcessIdentity) (RunnerReadyV1, error) {
+	return f(ctx, s, id, a, p)
+}
+func TestLauncherNeverSpawnsAfterDelayedPrelaunchCancellation(t *testing.T) {
+	storage := mustStorage(t, testStorageRoot(t, "late-launch"), privateStorage)
+	source := filepath.Join(storage.root, "service.exe")
+	_ = os.WriteFile(source, []byte("runner"), 0700)
+	body := []byte("msi")
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	handle := "system/42/test.msi"
+	_, _ = storage.WriteAtomic(context.Background(), strings.Split(handle, "/"), strings.NewReader(string(body)), 3, 3, digest)
+	spawner := &recordingSpawner{identity: ProcessIdentity{PID: 80, CreatedAtUnixNano: 8000}}
+	launcher, _ := NewDetachedRunnerLauncher(storage, &memoryReadyStore{}, spawner, fixedReadyAwaiter{}, source)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	launcher.integrity = integrityFunc(func(context.Context, string, string) error { cancel(); return nil })
+	if _, err := launcher.Launch(ctx, HandoffRequest{TransactionID: "late", Attempt: 1, Artifact: StagedArtifact{Handle: handle, SHA256: digest}}); err == nil || spawner.path != "" {
+		t.Fatalf("late native result spawned: %s %v", spawner.path, err)
+	}
+}
+
+type integrityFunc func(context.Context, string, string) error
+
+func (f integrityFunc) VerifySHA256(ctx context.Context, p, d string) error { return f(ctx, p, d) }

@@ -264,14 +264,14 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     $env:FAKE_PHASE_LOG = Join-Path $hostRoot 'phases.log'
     & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence
     $events = @(Get-Content $env:FAKE_PHASE_LOG)
-    Assert (($events[0..3] -join ',') -eq 'update/Hosted,suite-update/Hosted,suite-update/Cleanup,update-interruption/InterruptSameBoot') 'hosted sequence changed'
-    Assert (($events[-3..-1] -join ',') -eq 'suite-update/Cleanup,update/Cleanup,update-interruption/Cleanup') 'cleanup order changed'
+    Assert ($events.Count -eq 11 -and ($events[0..5] -join ',') -eq 'update/Hosted,suite-update/Hosted,suite-update/Cleanup,readiness-recovery/ReadinessRecovery,suite-readiness-recovery/ReadinessRecovery,update-interruption/InterruptSameBoot') 'hosted sequence changed'
+    Assert (($events[-5..-1] -join ',') -eq 'suite-readiness-recovery/Cleanup,readiness-recovery/Cleanup,suite-update/Cleanup,update/Cleanup,update-interruption/Cleanup') 'cleanup order changed'
     # Phase deadlines: production timers keep the long deadlines; a fixture that
-    # records validation timers shortens only update and suite-update (Hosted),
+    # records validation timers shortens Hosted and ReadinessRecovery phases,
     # never a cleanup and never the interruption phase.
     $env:FAKE_DEADLINE_LOG = Join-Path $hostRoot 'deadlines.log'
     & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence
-    Assert ((@(Get-Content $env:FAKE_DEADLINE_LOG | Select-Object -First 4) -join ',') -eq 'update/Hosted=35,suite-update/Hosted=45,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'production-timer deadlines changed'
+    Assert ((@(Get-Content $env:FAKE_DEADLINE_LOG | Select-Object -First 6) -join ',') -eq 'update/Hosted=35,suite-update/Hosted=45,suite-update/Cleanup=35,readiness-recovery/ReadinessRecovery=35,suite-readiness-recovery/ReadinessRecovery=35,update-interruption/InterruptSameBoot=22') 'production-timer deadlines changed'
     Remove-Item $env:FAKE_DEADLINE_LOG
     $timedFixture = Get-Content $fixturePath -Raw | ConvertFrom-Json
     $timedFixture.fixture | Add-Member -NotePropertyName timers -NotePropertyValue ([pscustomobject]@{ startupDelaySeconds=5; heartbeatSeconds=2; checkIntervalSeconds=5; failureDelayBaseSeconds=30 })
@@ -279,8 +279,8 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     $timedFixture | ConvertTo-Json -Depth 5 | Set-Content $timedPath
     & $runner -PackageManifest $timedPath -EvidenceDirectory $evidence
     $deadlines = @(Get-Content $env:FAKE_DEADLINE_LOG)
-    Assert (($deadlines[0..3] -join ',') -eq 'update/Hosted=15,suite-update/Hosted=20,suite-update/Cleanup=35,update-interruption/InterruptSameBoot=22') 'validation-timer phase deadlines changed'
-    Assert (($deadlines[-3..-1] -join ',') -eq 'suite-update/Cleanup=35,update/Cleanup=35,update-interruption/Cleanup=35') 'cleanup deadlines changed'
+    Assert (($deadlines[0..5] -join ',') -eq 'update/Hosted=15,suite-update/Hosted=20,suite-update/Cleanup=35,readiness-recovery/ReadinessRecovery=20,suite-readiness-recovery/ReadinessRecovery=25,update-interruption/InterruptSameBoot=22') 'validation-timer phase deadlines changed'
+    Assert (($deadlines[-5..-1] -join ',') -eq 'suite-readiness-recovery/Cleanup=35,readiness-recovery/Cleanup=35,suite-update/Cleanup=35,update/Cleanup=35,update-interruption/Cleanup=35') 'cleanup deadlines changed'
     Remove-Item env:FAKE_DEADLINE_LOG
     $env:FAKE_CROSS_FAIL = '1'
     try { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence; throw 'Expected cross-SKU failure' }
@@ -313,8 +313,10 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     Assert ((ScenarioPhases 'update') -eq 'update/Hosted,update/Cleanup') 'update scenario phases or cleanup changed'
     Assert ((ScenarioPhases 'suite-update') -eq 'suite-update/Hosted,suite-update/Cleanup,suite-update/Cleanup') 'suite-update scenario phases or cleanup changed'
     Assert ((ScenarioPhases 'update-interruption') -eq 'update-interruption/InterruptSameBoot,update-interruption/Cleanup') 'update-interruption scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'readiness-recovery') -eq 'readiness-recovery/ReadinessRecovery,readiness-recovery/Cleanup') 'readiness-recovery scenario phases or cleanup changed'
+    Assert ((ScenarioPhases 'suite-readiness-recovery') -eq 'suite-readiness-recovery/ReadinessRecovery,suite-readiness-recovery/Cleanup') 'suite-readiness-recovery scenario phases or cleanup changed'
     Remove-Item (Join-Path $evidence 'cross-sku/lifecycle.log') -Force
-    foreach ($case in @(@('cross-sku',''), @('update','update/Cleanup'), @('suite-update','suite-update/Cleanup'), @('update-interruption','update-interruption/Cleanup'))) {
+    foreach ($case in @(@('cross-sku',''), @('update','update/Cleanup'), @('suite-update','suite-update/Cleanup'), @('update-interruption','update-interruption/Cleanup'), @('readiness-recovery','readiness-recovery/Cleanup'), @('suite-readiness-recovery','suite-readiness-recovery/Cleanup'))) {
         Assert ((ScenarioPhases $case[0] -CleanupOnly) -eq $case[1]) "cleanup-only scope for $($case[0]) changed"
     }
     # A deferred interruption cleanup is routed only to the scenarios that own it.
@@ -322,12 +324,17 @@ if ($env:FAKE_PHASE_DROP -ne "$name/$Phase") {
     Assert ((ScenarioPhases 'update-interruption' -CleanupOnly) -eq 'update-interruption/Cleanup') 'deferred cleanup not routed to the interruption scenario'
     Assert ((ScenarioPhases 'update' -CleanupOnly) -eq 'update/Cleanup') 'deferred cleanup leaked into another scenario'
     Assert ((ScenarioPhases 'suite-update' -CleanupOnly) -eq '') 'suite-update cleanup ran although the deferral skips it'
+    Assert ((ScenarioPhases 'readiness-recovery' -CleanupOnly) -eq '') 'readiness-recovery cleanup ran although the deferral skips it'
+    Assert ((ScenarioPhases 'suite-readiness-recovery' -CleanupOnly) -eq '') 'suite-readiness-recovery cleanup ran although the deferral skips it'
     Remove-Item $deferredMarker -Force
     # A failing scenario still reports its failure and cleans up only itself.
-    $env:FAKE_PHASE_FAIL = 'update/Hosted'
-    try { ScenarioPhases 'update' | Out-Null; throw 'Expected update scenario failure' }
-    catch { Assert ($_.Exception.Message -match 'stub phase failure|update Hosted failed') "scenario failure not reported: $($_.Exception.Message)" }
-    Assert ((@(Get-Content $env:FAKE_PHASE_LOG) -join ',') -eq 'update/Hosted,update/Cleanup') 'failing scenario skipped its own cleanup or ran another scenario'
+    foreach ($case in @(@('update','Hosted'), @('readiness-recovery','ReadinessRecovery'), @('suite-readiness-recovery','ReadinessRecovery'))) {
+        $name = $case[0]; $phase = $case[1]
+        $env:FAKE_PHASE_FAIL = "$name/$phase"
+        try { ScenarioPhases $name | Out-Null; throw "Expected $name scenario failure" }
+        catch { Assert ($_.Exception.Message -match "stub phase failure|$name $phase failed") "scenario failure not reported: $($_.Exception.Message)" }
+        Assert ((@(Get-Content $env:FAKE_PHASE_LOG) -join ',') -eq "$name/$phase,$name/Cleanup") 'failing scenario skipped its own cleanup or ran another scenario'
+    }
     $env:FAKE_PHASE_FAIL = ''
     Reject { & $runner -PackageManifest $fixturePath -EvidenceDirectory $evidence -Scenario 'unknown' } 'unknown scenario'
     Write-Host 'BuildCi contracts passed'

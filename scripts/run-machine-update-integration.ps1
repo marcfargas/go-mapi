@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory)][string]$PackageManifest,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
     [ValidateSet('system','suite')][string]$SKU = 'system',
-    [ValidateSet('Hosted','PrepareNoUser','VerifyNoUser','InterruptSameBoot','PrepareReboot','VerifyReboot','Cleanup')][string]$Phase = 'Hosted',
+    [ValidateSet('Hosted','PrepareNoUser','VerifyNoUser','InterruptSameBoot','PrepareReboot','VerifyReboot','ReadinessRecovery','Cleanup')][string]$Phase = 'Hosted',
     [int]$FixturePort = 18453,
     [int]$DeadlineMinutes = 35,
     [string]$DeferredInterruptionEvidence
@@ -42,6 +42,9 @@ New-Item -ItemType Directory -Path $fixture -Force | Out-Null
 $ownerPath = Join-Path $evidence 'owner.json'
 $events = Join-Path $evidence 'events.ndjson'
 $stateDir = Join-Path $env:ProgramData 'go-mapi\service'
+$recoveryPath = Join-Path $stateDir "recovery-$SKU-v1.json"
+$obstructionPath = Join-Path $stateDir 'readiness-obstruction-v1.json'
+$processSubscriptions = @()
 $statusPath = Join-Path $env:ProgramData 'go-mapi\status\status-v2.json'
 $markerPath = 'HKLM:\SOFTWARE\go-mapi\MachineProduct'
 $signer = [string]$manifest.fixture.signerThumbprint
@@ -74,7 +77,14 @@ function Record([string]$Kind, $Value) {
     Add-Content -LiteralPath $events -Value (([ordered]@{ atUtc=[DateTime]::UtcNow.ToString('o'); kind=$Kind; value=$Value }) | ConvertTo-Json -Depth 10 -Compress) -Encoding utf8
 }
 function ReadJson([string]$Path) { if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } else { $null } }
-function Hash([string]$Path) { if (Test-Path -LiteralPath $Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null } }
+function Hash([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    # Snapshot polling must not hold the installed image against MSI removal.
+    # Get-FileHash's path overload denies delete-sharing on Windows; use the
+    # same SHA256 calculation through a stream that permits replacement.
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant() } finally { $stream.Dispose() }
+}
 function Snapshot {
     $marker = Get-ItemProperty -LiteralPath $markerPath -ErrorAction SilentlyContinue
     $service = Get-CimInstance Win32_Service -Filter "Name='go-mapi'" -ErrorAction SilentlyContinue
@@ -85,7 +95,7 @@ function Snapshot {
     [ordered]@{
         marker=if ($marker) { [ordered]@{ sku=$marker.SKU; packageRelease=$marker.PackageRelease; serviceVersion=$marker.ServiceVersion; autoUpdateEnabled=$marker.AutoUpdateEnabled } } else { $null }
         service=if ($service) { [ordered]@{ name=$service.Name; state=$service.State; startName=$service.StartName; startMode=$service.StartMode; processId=$service.ProcessId; path=$service.PathName; executableSha256=Hash $exe } } else { $null }
-        status=ReadJson $statusPath; pending=$pending; replay=$replay; lastResult=$result
+        status=ReadJson $statusPath; recovery=ReadJson $recoveryPath; pending=$pending; replay=$replay; lastResult=$result
         legacyTaskCount=@(Get-ScheduledTask -TaskName 'go-mapi Auto Update' -ErrorAction SilentlyContinue).Count
     }
 }
@@ -123,6 +133,12 @@ function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $Deadlin
 function WaitLimit([int]$FailureDelaySeconds = 0, [switch]$Install) {
     if (-not $timers) { return 0 }
     return $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + $FailureDelaySeconds + $(if ($Install) { $installWorkSeconds } else { 0 }) + $waitMarginSeconds
+}
+function AwaitHealthy([string]$Key) {
+    # Recovery retires pending independently of the heartbeat that publishes
+    # public health. Require the complete installed-byte/service/health proof,
+    # bounded by the existing wait limit and overall phase deadline.
+    Until "published healthy $Key" { AssertHealthy $Key } -PollMilliseconds 500 -Seconds (WaitLimit)
 }
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
@@ -458,16 +474,145 @@ function AssertCommitted([string]$Key, [int]$PreviousPid) {
     return $snapshot
 }
 
+# Recovery proof includes the real Installer idle shutdown and several bounded
+# readiness observations. These are a separate budget from measured install waits.
+function ReadinessWaitLimit([switch]$Persistent, [switch]$Install) {
+    $attempts = if ($Persistent) { 3 } else { 1 }
+    return 350 + (75 * $attempts) + ($failureBaseSeconds * $attempts) + $waitMarginSeconds + $(if ($Install) { $installWorkSeconds } else { 0 })
+}
+function SetReadinessObstruction([string]$Key) {
+    if (-not $manifest.fixture.PSObject.Properties['readinessObstruction'] -or
+        $manifest.fixture.readinessObstruction -cne 'target-bound-pre-run-v1') { throw 'Packages lack the explicit readiness validation build provenance' }
+    $target = Join-Path $fixture "$Key-targets.json"
+    $next = "$obstructionPath.next"
+    WriteJson $next ([ordered]@{ schema='go-mapi-readiness-obstruction-v1'; sku=$SKU; digest=Hash $target; artifactSha256=$manifest.packages.$Key.sha256 })
+    Move-Item -LiteralPath $next -Destination $obstructionPath -Force
+    Record 'obstruction-set' (ReadJson $obstructionPath)
+}
+function AssertReadinessFailure($Recovery, [string]$Key) {
+    if (-not $Recovery -or $Recovery.reservation.sku -cne $SKU -or
+        $Recovery.reservation.replay.digest -cne (Hash (Join-Path $fixture "$Key-targets.json")) -or
+        $Recovery.reservation.artifactSha256 -cne $manifest.packages.$Key.sha256) { throw 'Readiness failure target identity differs' }
+    $hitPath = Join-Path $stateDir "readiness-hit-$($Recovery.reservation.transactionId).json"
+    $hit = ReadJson $hitPath
+    if (-not $hit -or $hit.schema -cne 'go-mapi-readiness-hit-v1' -or $hit.transactionId -cne $Recovery.reservation.transactionId -or
+        $hit.digest -cne $Recovery.reservation.replay.digest -or $hit.artifactSha256 -cne $Recovery.reservation.artifactSha256 -or
+        $hit.runner.pid -ne $Recovery.runner.pid -or $hit.runner.createdAtUnixNano -ne $Recovery.runner.createdAtUnixNano) { throw 'Missing exact pre-installer fixture hit' }
+    $pending = ReadJson (Join-Path $stateDir 'pending-v2.json')
+    if ($pending -and ($pending.PSObject.Properties['installer'] -or $pending.PSObject.Properties['installerThread'] -or
+        $pending.PSObject.Properties['exit'] -or $pending.phase -notin @('prepared','handoff-fenced'))) { throw 'Obstructed handoff has installation evidence' }
+    $readyPath = Join-Path $stateDir "ready-$($hit.transactionId)-attempt-$($hit.attempt)-v1.json"
+    if (Test-Path -LiteralPath $readyPath) { throw 'Obstructed runner published readiness' }
+    Copy-Item -LiteralPath $hitPath -Destination (Join-Path $evidence (Split-Path $hitPath -Leaf)) -Force
+    Record 'proved-pre-installer-failure' ([ordered]@{ recovery=$Recovery; hit=$hit; pending=$pending })
+}
+function StartReadinessProcessEvidence {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $elevated = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    Record 'execution-identity' ([ordered]@{ name=$identity.Name; elevated=$elevated; sessionId=[Diagnostics.Process]::GetCurrentProcess().SessionId; processId=$PID; sourceCommit=$manifest.sourceCommit })
+    if (-not $elevated) { throw 'Readiness proof requires an observed elevated process' }
+    foreach ($kind in @('Start','Stop')) {
+        $sourceId = "go-mapi-readiness-$runId-$kind"
+        $log = Join-Path $evidence "process-$($kind.ToLowerInvariant()).ndjson"
+        $subscription = Register-CimIndicationEvent -Query "SELECT * FROM Win32_Process${kind}Trace" -SourceIdentifier $sourceId -MessageData @{ path=$log; kind=$kind } -Action {
+            $p = $Event.SourceEventArgs.NewEvent
+            # StopTrace truncates long image names (the runner becomes
+            # "go-mapi-update"). Retain stops independently of image name;
+            # the audit correlates them to full-name starts by PID/time/session.
+            if ($Event.MessageData.kind -eq 'Stop' -or $p.ProcessName -in @('go-mapi-update-runner.exe','msiexec.exe')) {
+                $row = [ordered]@{ observedAtUtc=[DateTime]::UtcNow.ToString('o'); name=$p.ProcessName; pid=$p.ProcessID; sessionId=$p.SessionID; timeCreated=$p.TIME_CREATED; parentPid=if ($p.PSObject.Properties['ParentProcessID']) { $p.ParentProcessID } else { $null } }
+                Add-Content -LiteralPath $Event.MessageData.path -Value ($row | ConvertTo-Json -Compress) -Encoding utf8
+            }
+        }
+        $script:processSubscriptions += [ordered]@{ source=$sourceId; job=$subscription }
+    }
+}
+function AssertRecoveryProcessHistory([string]$SuccessfulTransaction) {
+    $readyPath = Join-Path $stateDir "ready-$SuccessfulTransaction-attempt-1-v1.json"
+    $ready = ReadJson $readyPath
+    if (-not $ready -or $ready.transactionId -cne $SuccessfulTransaction) { throw 'Recovered installation lacks durable ready/process identity' }
+    Copy-Item -LiteralPath $readyPath -Destination (Join-Path $evidence 'successful-ready.json') -Force
+    $msiLogs = Join-Path $env:ProgramData "go-mapi\updates\logs\$SuccessfulTransaction"
+    if (-not (Test-Path -LiteralPath $msiLogs)) { throw 'Automatic recovered installation has no MSI log directory' }
+    Copy-Item -LiteralPath $msiLogs -Destination (Join-Path $evidence 'recovered-msi') -Recurse -Force
+    $starts = @(Get-Content -LiteralPath (Join-Path $evidence 'process-start.ndjson') | ForEach-Object { $_ | ConvertFrom-Json })
+    $stops = @(Get-Content -LiteralPath (Join-Path $evidence 'process-stop.ndjson') | ForEach-Object { $_ | ConvertFrom-Json })
+    $runners = @($starts | Where-Object name -eq 'go-mapi-update-runner.exe' | Sort-Object { [uint64]$_.timeCreated })
+    if ($runners.Count -ne 5) { throw "Expected five physical runners (B2+C3), observed $($runners.Count)" }
+    for ($i=0; $i -lt $runners.Count; $i++) {
+        $runner = $runners[$i]
+        $stop = @($stops | Where-Object { $_.pid -eq $runner.pid -and $_.sessionId -eq $runner.sessionId -and [uint64]$_.timeCreated -ge [uint64]$runner.timeCreated } | Sort-Object { [uint64]$_.timeCreated } | Select-Object -First 1)
+        if ($stop.Count -ne 1) { throw "Runner $($runner.pid) has no observed stop" }
+        if ($i+1 -lt $runners.Count -and [uint64]$stop[0].timeCreated -gt [uint64]$runners[$i+1].timeCreated) { throw 'Managed runners overlapped' }
+    }
+    $runnerPids = @($runners | ForEach-Object pid)
+    $clients = @($starts | Where-Object { $_.name -eq 'msiexec.exe' -and $_.parentPid -in $runnerPids })
+    if ($clients.Count -ne 1 -or $clients[0].pid -ne $ready.installer.pid -or $clients[0].parentPid -ne $ready.runner.pid) { throw 'Managed installer starts differ from the one recovered transaction' }
+    Record 'no-overlap-proof' ([ordered]@{ runnerStarts=$runners; runnerStops=@($stops | Where-Object pid -in $runnerPids); installerStarts=$clients; ready=$ready })
+}
+function RunReadinessRecovery($Baseline) {
+    StartReadinessProcessEvidence
+    SetReadinessObstruction $caseB
+    SelectTarget $caseB
+    $failure = Until 'B durable readiness failure' {
+        $r=ReadJson $recoveryPath
+        if ($r -and $r.reservation.candidate.packageVersion -eq $manifest.packages.$caseB.release -and $r.consumed -eq 1 -and $r.failedAt -ne '0001-01-01T00:00:00Z') { $r }
+    } -PollMilliseconds 500 -Seconds (ReadinessWaitLimit)
+    AssertReadinessFailure $failure $caseB
+    Record 'B-backoff-before-restart' (Snapshot)
+    Restart-Service go-mapi -Force
+    $restored = ReadJson $recoveryPath
+    if ($restored.consumed -ne 1 -or $restored.dueAt -cne $failure.dueAt -or $restored.reservation.transactionId -cne $failure.reservation.transactionId) { throw 'Service restart lost backoff/count' }
+    Remove-Item -LiteralPath $obstructionPath -Force
+    Record 'B-obstruction-removed' ([ordered]@{ dueAt=$restored.dueAt; transactionId=$restored.reservation.transactionId })
+    $b = Until 'automatic B recovery commit' {
+        $s=Snapshot
+        Record 'recovery-observation' $s
+        if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and
+            $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence -and $s.recovery.stage -eq 'completed') { $s }
+    } -PollMilliseconds 1000 -Seconds (ReadinessWaitLimit -Install)
+    $b = AssertCommitted $caseB $Baseline.service.processId
+    if ($b.recovery.consumed -ne 2 -or $b.recovery.reservation.transactionId -ceq $failure.reservation.transactionId) { throw 'B recovery did not use exactly one fresh automatic reservation' }
+    SetReadinessObstruction $caseC
+    SelectTarget $caseC
+    $seen = @{}
+    $exhausted = Until 'C exact three-launch readiness exhaustion' {
+        $s=Snapshot; $r=$s.recovery
+        Record 'recovery-observation' $s
+        if ($r -and $r.reservation.candidate.packageVersion -eq $manifest.packages.$caseC.release -and $r.failedAt -ne '0001-01-01T00:00:00Z') {
+            if (-not $seen.ContainsKey($r.reservation.transactionId)) { AssertReadinessFailure $r $caseC; $seen[$r.reservation.transactionId]=$r.consumed }
+            if ($r.stage -eq 'exhausted' -and $r.consumed -eq 3 -and -not $s.pending) { $r }
+        }
+    } -PollMilliseconds 500 -Seconds (ReadinessWaitLimit -Persistent)
+    if ($seen.Count -ne 3) { throw 'Persistent fixture did not observe exactly three distinct failed reservations' }
+    AwaitHealthy $caseB | Out-Null
+    Restart-Service go-mapi -Force
+    Remove-Item -LiteralPath $obstructionPath -Force
+    $window = $startupDelaySeconds + $heartbeatSeconds + $checkIntervalSeconds + (2 * $failureBaseSeconds) + 10
+    $end = [DateTime]::UtcNow.AddSeconds($window)
+    if ($end -gt $overallDeadline) { throw 'Insufficient deadline for full exhausted recovery/discovery opportunity' }
+    while ([DateTime]::UtcNow -lt $end) {
+        $s=Snapshot
+        if ($s.pending -or $s.recovery.consumed -ne 3 -or $s.recovery.stage -ne 'exhausted' -or
+            $s.recovery.reservation.transactionId -cne $exhausted.reservation.transactionId) { throw 'Exhausted C reopened after restart/obstruction removal' }
+        Record 'exhausted-opportunity' $s
+        Start-Sleep -Milliseconds 1000
+    }
+    AwaitHealthy $caseB | Out-Null
+    AssertRecoveryProcessHistory $b.recovery.reservation.transactionId
+    Record 'readiness-recovery-passed' ([ordered]@{ sku=$SKU; transientTransactions=@($failure.reservation.transactionId,$b.recovery.reservation.transactionId); persistentTransactions=@($seen.Keys); exhausted=$exhausted; windowSeconds=$window })
+}
+
 Record 'service-timers' ([ordered]@{ validationTimers=[bool]$timers; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; checkIntervalSeconds=$checkIntervalSeconds; failureDelayBaseSeconds=$failureBaseSeconds; phase=$Phase; sku=$SKU })
 $passed = $false
-$cleanupOnExit = $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
+$cleanupOnExit = $Phase -eq 'ReadinessRecovery' -or $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
 $cleanupError = $null
 $cleanupDeferred = $null
 $cleanMachineConfirmed = $false
 try {
     if ($Phase -eq 'Cleanup') {
         Record 'cleanup-requested' ([ordered]@{ packageManifest=$PackageManifest; owner=ReadJson $ownerPath })
-    } elseif ($Phase -in @('Hosted','PrepareNoUser','InterruptSameBoot','PrepareReboot')) {
+    } elseif ($Phase -in @('Hosted','ReadinessRecovery','PrepareNoUser','InterruptSameBoot','PrepareReboot')) {
         if ((Get-Service go-mapi -ErrorAction SilentlyContinue) -or @(InstalledTestProducts).Count -ne 0 -or
             (Get-ScheduledTask -TaskName 'go-mapi Auto Update' -ErrorAction SilentlyContinue)) {
             throw 'Clean machine required: go-mapi service, machine product or legacy task already exists'
@@ -482,14 +627,14 @@ try {
         Target $caseB $manifest.packages.$caseA.serviceVersion
         Target $caseC $manifest.packages.$caseB.serviceVersion
         if ($SKU -eq 'suite' -and $Phase -eq 'Hosted') { Target 'systemB' $manifest.packages.$caseA.serviceVersion 'system' }
-        if ($Phase -eq 'PrepareNoUser') { SelectTarget $caseA }
+        if ($Phase -in @('PrepareNoUser','ReadinessRecovery')) { SelectTarget $caseA }
         Msi '/i' $manifest.packages.$caseA.msi 'bootstrap-A' @('GOMAPI_AUTO_UPDATE=1')
         $a = Until 'healthy A' { $s=Snapshot; if ($s.status.health -eq 'healthy' -and $s.marker.packageRelease -eq $manifest.packages.$caseA.release) { $s } } 3
         Record 'bootstrap' $a
         $owner = ReadJson $ownerPath
         $owner | Add-Member -NotePropertyName baselineServicePid -NotePropertyValue $a.service.processId
         WriteJson $ownerPath $owner
-        if ($Phase -ne 'PrepareNoUser') {
+        if ($Phase -notin @('PrepareNoUser','ReadinessRecovery')) {
             if ($SKU -eq 'suite' -and $Phase -eq 'Hosted') {
                 $priorDiscovery = ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
                 $beforeFailures = if ($priorDiscovery) { [int]$priorDiscovery.failures } else { 0 }
@@ -504,7 +649,9 @@ try {
             SelectTarget $caseB
         }
     }
-    if ($Phase -eq 'Hosted') {
+    if ($Phase -eq 'ReadinessRecovery') {
+        RunReadinessRecovery $a
+    } elseif ($Phase -eq 'Hosted') {
         # A first failure delay can still be owed: suite B follows the wrong-SKU rejection,
         # and under short start-up timers a check may reach the fixture before B is selected.
         $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } } `
@@ -657,6 +804,17 @@ try {
     if ($Phase -in @('PrepareNoUser','PrepareReboot')) { $cleanupOnExit = $true }
     throw
 } finally {
+    # Remove only the owned obstruction before any product cleanup. Preserve all
+    # bounded private hits/journal/status before uninstalling the fixture products.
+    if ($Phase -eq 'ReadinessRecovery' -or $Phase -eq 'Cleanup') {
+        if (Test-Path -LiteralPath $obstructionPath) { Remove-Item -LiteralPath $obstructionPath -Force }
+        if (Test-Path -LiteralPath $recoveryPath) { Copy-Item -LiteralPath $recoveryPath -Destination (Join-Path $evidence 'final-recovery.json') -Force }
+        Get-ChildItem -LiteralPath $stateDir -Filter 'readiness-hit-*.json' -File -ErrorAction SilentlyContinue | Copy-Item -Destination $evidence -Force
+    }
+    foreach ($subscription in $processSubscriptions) {
+        Unregister-Event -SourceIdentifier $subscription.source -ErrorAction SilentlyContinue
+        Remove-Job -Job $subscription.job -Force -ErrorAction SilentlyContinue
+    }
     if ($cleanupOnExit) {
         $cleanupError = $null
         if ($Phase -in @('Cleanup','VerifyReboot') -or $cleanMachineConfirmed) {

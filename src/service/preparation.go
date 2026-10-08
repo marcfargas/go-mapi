@@ -124,6 +124,10 @@ func (authorizer *FilePreparationAuthorizer) AuthorizeAndSave(ctx context.Contex
 	if err != nil {
 		return err
 	}
+	recovery, _ := NewFileRecoveryStore(authorizer.storage)
+	if err := recovery.reserveLocked(ctx, decision.Pending, decision.Observation.Marker, expires, decision.CurrentTime(), false); err != nil {
+		return err
+	}
 	_, err = authorizer.storage.WriteAtomic(ctx, []string{"pending-v2.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), "")
 	return err
 }

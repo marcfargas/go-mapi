@@ -503,7 +503,31 @@ func RunProductionUpdateRunner(transactionID string) error {
 	if transaction == nil || transaction.TransactionID != transactionID {
 		return ErrStateConflict
 	}
+	recovery, _ := NewFileRecoveryStore(stateStorage)
+	pending.FinalGrant = func(ctx context.Context, p PendingV1) error {
+		return recovery.validateGrantLocked(ctx, p, func(context.Context) (machineProductMarker, bool, error) {
+			marker, err := readMachineProductMarker()
+			if err != nil {
+				return marker, false, err
+			}
+			enabled, err := readMachineAutoUpdate()
+			return marker, enabled, err
+		}, time.Now().UTC())
+	}
 	runtime := WindowsRunnerRuntime{storage: updateStorage, suite: transaction.SKU == update.Suite}
+
+	self, err := runtime.SelfIdentity()
+	if err != nil {
+		return err
+	}
+	// This validation-only return precedes UpdateRunner.Run, suite drain and MSI creation.
+	obstructed, err := validationReadinessObstruction(context.Background(), stateStorage, *transaction, self, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if obstructed {
+		return nil
+	}
 	return (UpdateRunner{Pending: pending, Ready: ready, Artifacts: artifacts, Integrity: ProductionInstallerVerifier{}, VerifyIdentity: verifyStagedMSIIdentity, Runtime: runtime, Clock: systemClock{}, AuthorizePending: authorize, SuiteQuiesce: suiteQuiescer(admission, pending, &forceEnd), ExpectedSKU: transaction.SKU}).Run(context.Background(), transactionID)
 }
 
