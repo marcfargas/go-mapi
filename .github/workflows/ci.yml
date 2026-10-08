@@ -79,6 +79,7 @@ jobs:
       - run: just prepare-windows -Wails -Packages -Install
       - run: just test-windows
       - run: pwsh -NoProfile -File scripts/tests/BuildCi.Tests.ps1
+      - run: pwsh -NoProfile -File scripts/tests/MachineReadinessEvidence.Tests.ps1
       - name: Build and verify release standalone app once for both user packages
         shell: pwsh
         run: |
@@ -292,7 +293,7 @@ jobs:
       # Every scenario result stays visible when one fails.
       fail-fast: false
       matrix:
-        scenario: [cross-sku, update, suite-update, update-interruption]
+        scenario: [cross-sku, update, suite-update, update-interruption, readiness-recovery, suite-readiness-recovery]
     env:
       CGO_ENABLED: '1'
     steps:

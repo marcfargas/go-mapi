@@ -8,7 +8,8 @@ param(
     # first failure delay); a release build rejects every one of them.
     [int]$ValidationStartupDelaySeconds,
     [int]$ValidationHeartbeatSeconds,
-    [int]$ValidationFailureBaseSeconds
+    [int]$ValidationFailureBaseSeconds,
+    [switch]$ValidationReadinessFault
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +28,7 @@ $validationSet = @($validationNames | Where-Object { $PSBoundParameters.Contains
 if ($RequireMachineReleaseTrust -and $validationSet.Count -gt 0) { throw 'Release service must not carry validation timers' }
 if ($validationSet.Count -ne 0 -and $validationSet.Count -ne $validationNames.Count) { throw 'Validation timers must be supplied together' }
 $validationTimers = $validationSet.Count -eq $validationNames.Count
+if ($ValidationReadinessFault -and ($RequireMachineReleaseTrust -or -not $validationTimers)) { throw 'Readiness obstruction requires a disposable validation build and is forbidden in releases' }
 if ($validationTimers -and ($ValidationStartupDelaySeconds -lt 1 -or $ValidationStartupDelaySeconds -gt 120 -or
     $ValidationHeartbeatSeconds -lt 1 -or $ValidationHeartbeatSeconds -gt 60 -or
     $ValidationFailureBaseSeconds -lt 1 -or $ValidationFailureBaseSeconds -gt 900)) { throw 'Validation timers must shorten the production values' }
@@ -83,6 +85,7 @@ try {
         $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationHeartbeatSeconds=$ValidationHeartbeatSeconds"
         $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationFailureBaseSeconds=$ValidationFailureBaseSeconds"
     }
+    if ($ValidationReadinessFault) { $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineValidationReadinessFault=enabled" }
     if ($machineOrigin) { $ldflags += " -X github.com/marcfargas/go-mapi/service.MachineReleaseMetadataOrigin=$machineOrigin" }
     $ldflags += " -X github.com/marcfargas/go-mapi/internal/mapi/update.MachineArtifactOrigin=$ArtifactOrigin"
     Push-Location $root
