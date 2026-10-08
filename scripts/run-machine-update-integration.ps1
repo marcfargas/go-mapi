@@ -77,7 +77,14 @@ function Record([string]$Kind, $Value) {
     Add-Content -LiteralPath $events -Value (([ordered]@{ atUtc=[DateTime]::UtcNow.ToString('o'); kind=$Kind; value=$Value }) | ConvertTo-Json -Depth 10 -Compress) -Encoding utf8
 }
 function ReadJson([string]$Path) { if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json } else { $null } }
-function Hash([string]$Path) { if (Test-Path -LiteralPath $Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null } }
+function Hash([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    # Snapshot polling must not hold the installed image against MSI removal.
+    # Get-FileHash's path overload denies delete-sharing on Windows; use the
+    # same SHA256 calculation through a stream that permits replacement.
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try { (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant() } finally { $stream.Dispose() }
+}
 function Snapshot {
     $marker = Get-ItemProperty -LiteralPath $markerPath -ErrorAction SilentlyContinue
     $service = Get-CimInstance Win32_Service -Filter "Name='go-mapi'" -ErrorAction SilentlyContinue

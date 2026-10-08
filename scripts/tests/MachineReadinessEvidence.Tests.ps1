@@ -5,7 +5,7 @@ $scriptPath = Join-Path $PSScriptRoot '../run-machine-update-integration.ps1'
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($scriptPath,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'Integration script parse failed' }
-foreach ($name in @('AssertHealthy','Until','WaitLimit','AwaitHealthy','AssertRecoveryProcessHistory')) {
+foreach ($name in @('Hash','AssertHealthy','Until','WaitLimit','AwaitHealthy','AssertRecoveryProcessHistory')) {
     $definition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name},$true)
     if (-not $definition) { throw "Missing observer function $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -56,6 +56,45 @@ $callback=[scriptblock]::Create($register.CommandElements[-1].ScriptBlock.Extent
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('readiness-evidence-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+        # The actual snapshot hash must coexist with DELETE access used by MSI.
+        # A normal path-based Get-FileHash fails this test with Win32 error 32.
+        Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class ReadinessHashFileAccess {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+}
+'@
+        $hashPath=Join-Path $temp 'hash-probe.bin'
+        $stream=[IO.File]::Open($hashPath,'Create','ReadWrite','None')
+        try { $stream.SetLength(64MB) } finally { $stream.Dispose() }
+        $expectedHash=(Get-FileHash -LiteralPath $hashPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hashDefinition=$ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Hash'},$true).Extent.Text
+        $worker=[powershell]::Create()
+        try {
+            [void]$worker.AddScript({param($definition,$path,$expected)
+                . ([scriptblock]::Create($definition))
+                $timer=[Diagnostics.Stopwatch]::StartNew(); $count=0
+                while ($timer.Elapsed.TotalSeconds -lt 2) {
+                    if ((Hash $path) -cne $expected) { throw 'Snapshot hash bytes changed' }
+                    $count++
+                }
+                $count
+            }).AddArgument($hashDefinition).AddArgument($hashPath).AddArgument($expectedHash)
+            $async=$worker.BeginInvoke(); $granted=0; $failures=@()
+            while (-not $async.IsCompleted) {
+                $handle=[ReadinessHashFileAccess]::CreateFileW($hashPath,0x10000,7,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+                if ($handle -eq [IntPtr](-1)) { $failures += [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+                else { [void][ReadinessHashFileAccess]::CloseHandle($handle); $granted++ }
+                Start-Sleep -Milliseconds 1
+            }
+            $hashes=@($worker.EndInvoke($async))
+            if ($worker.HadErrors -or $hashes.Count -ne 1 -or $hashes[0] -lt 1 -or $granted -lt 1 -or $failures.Count -ne 0) {
+                throw "Snapshot hashing interfered with DELETE access: $($failures -join ',')"
+            }
+        } finally { $worker.Dispose() }
+    }
     foreach ($kind in @('Start','Stop')) {
         $path=Join-Path $temp "process-$kind.ndjson"
         $Event=[pscustomobject]@{
