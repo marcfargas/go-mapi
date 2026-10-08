@@ -292,7 +292,7 @@ jobs:
       # Every scenario result stays visible when one fails.
       fail-fast: false
       matrix:
-        scenario: [cross-sku, update, suite-update, update-interruption]
+        scenario: [cross-sku, update, suite-update, update-interruption, readiness-recovery, suite-readiness-recovery]
     env:
       CGO_ENABLED: '1'
     steps:

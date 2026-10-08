@@ -398,6 +398,7 @@ try {
                 $serviceBuildArgs.ValidationStartupDelaySeconds = $ValidationStartupDelaySeconds
                 $serviceBuildArgs.ValidationHeartbeatSeconds = $ValidationHeartbeatSeconds
                 $serviceBuildArgs.ValidationFailureBaseSeconds = $ValidationFailureBaseSeconds
+                $serviceBuildArgs.ValidationReadinessFault = $true
             }
             & (Join-Path $source 'src\service\build.ps1') @serviceBuildArgs
             if (-not (Test-Path $servicePath)) { throw "Service build failed: $serviceVersion" }
@@ -456,7 +457,7 @@ try {
     }
     $fixtureRecord = [ordered]@{ metadataOrigin=$MetadataOrigin; artifactOrigin=$ArtifactOrigin; checkIntervalSeconds=$effectiveCheckIntervalSeconds; signing='self-signed-disposable'; signerThumbprint=$signer.Thumbprint; signerPublicCertificate=$publicCert; serviceVersionDerivative='src/service/VERSION only in isolated archive' }
     # Absent means production timers; the harness scales its waits from this object.
-    if ($validationTimerRecord) { $fixtureRecord.timers = $validationTimerRecord }
+    if ($validationTimerRecord) { $fixtureRecord.timers = $validationTimerRecord; $fixtureRecord.readinessObstruction = 'target-bound-pre-run-v1' }
     WriteJson (Join-Path $evidence 'machine-test-packages.json') ([ordered]@{
         schema='go-mapi-machine-test-packages-v1'; sourceCommit=$commit; generatedAtUtc=[DateTime]::UtcNow.ToString('o');
         fixture=$fixtureRecord;

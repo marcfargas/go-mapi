@@ -221,7 +221,7 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	}
 	// Every scenario keeps its own runner, result and artifact; none is dropped.
 	for _, want := range []string{
-		"scenario: [cross-sku, update, suite-update, update-interruption]",
+		"scenario: [cross-sku, update, suite-update, update-interruption, readiness-recovery, suite-readiness-recovery]",
 		"fail-fast: false",
 		"needs: [admin-msi-fixtures]",
 		"-Scenario ${{ matrix.scenario }}\n",
@@ -258,9 +258,9 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22",
-		"[ValidateSet('all','cross-sku','update','suite-update','update-interruption')][string]$Scenario = 'all'",
+		"[ValidateSet('all','cross-sku','update','suite-update','update-interruption','readiness-recovery','suite-readiness-recovery')][string]$Scenario = 'all'",
 		"if (InScenario 'cross-sku')", "if (InScenario 'update')", "if (InScenario 'suite-update')", "if (InScenario 'update-interruption')",
-		"Invoke-Phase 'suite-update' 'suite' 'Cleanup'", "InScenario $_"} {
+		"Invoke-Phase 'suite-update' 'suite' 'Cleanup'", "Invoke-Phase 'readiness-recovery' 'system' 'ReadinessRecovery'", "Invoke-Phase 'suite-readiness-recovery' 'suite' 'ReadinessRecovery'", "InScenario $_"} {
 		if !strings.Contains(string(sequence), want) {
 			t.Errorf("hosted machine sequence is missing %q", want)
 		}
@@ -374,6 +374,13 @@ func TestMachineUpdateWaitLimitsTolerateSlowRunners(t *testing.T) {
 	}
 	if margin < 180 {
 		t.Errorf("slow-runner margin %d s is below 180 s", margin)
+	}
+	// Readiness cases include real Installer idle shutdown and up to three
+	// missing-ready observations. They have a separate declared bounded budget.
+	for _, required := range []string{"function ReadinessWaitLimit", "-Seconds (ReadinessWaitLimit)", "-Seconds (ReadinessWaitLimit -Install)", "-Seconds (ReadinessWaitLimit -Persistent)", "AssertRecoveryProcessHistory", "Expected five physical runners (B2+C3)"} {
+		if !strings.Contains(script, required) {
+			t.Errorf("readiness proof lacks %q", required)
+		}
 	}
 	// No wait carries a literal limit, so none escapes the formula above.
 	if regexp.MustCompile(`-Seconds \d`).MatchString(script) {

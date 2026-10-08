@@ -160,6 +160,7 @@ type Dependencies struct {
 	Clock                Clock
 	Boot                 BootIdentity
 	IDs                  IDGenerator
+	Recovery             *FileRecoveryStore
 	RecoveryLock         func() (func(), error)
 	RetireRepair         func(context.Context, PendingV1, ProductSnapshot) error
 }
@@ -252,6 +253,16 @@ func (coordinator *Coordinator) installationEligibility(ctx context.Context, rel
 	if err != nil {
 		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
 	}
+	if coordinator.deps.Recovery != nil {
+		r, err := coordinator.deps.Recovery.Load(ctx, coordinator.config.SKU)
+		if err != nil {
+			return installed, candidate, next, false, err
+		}
+		offered := PendingV1{SKU: coordinator.config.SKU, Old: installed, Candidate: candidate, Replay: next, ArtifactSHA256: release.Payload().Artifact.SHA256}
+		if r != nil && !r.allows(offered, coordinator.deps.Clock.Now()) {
+			return installed, candidate, next, false, nil
+		}
+	}
 	last, err := coordinator.deps.LastResult.Load(ctx)
 	if err != nil {
 		return ProductSnapshot{}, ProductSnapshot{}, update.ReplayState{}, false, err
@@ -271,6 +282,37 @@ func (coordinator *Coordinator) InstallPrepared(ctx context.Context, release upd
 		return "", ErrBusy
 	}
 	defer coordinator.mu.Unlock()
+	// Own all old runner entrypoints through final reservation/pending writes.
+	// Release before spawning so the new detached owner can claim runner.lock.
+	var releaseRunner func()
+	requireStopped := false
+	if coordinator.deps.Recovery != nil {
+		if coordinator.deps.RecoveryLock == nil {
+			return "", ErrBusy
+		}
+		unlock, err := coordinator.deps.RecoveryLock()
+		if err != nil {
+			return "", ErrBusy
+		}
+		releaseRunner = unlock
+		defer func() {
+			if releaseRunner != nil {
+				releaseRunner()
+			}
+		}()
+		r, err := coordinator.deps.Recovery.Load(ctx, coordinator.config.SKU)
+		if err != nil {
+			return "", err
+		}
+		requireStopped = r != nil && r.Stage != "completed" && r.Stage != "msi-terminal" && r.Stage != "exhausted"
+		idle, err := coordinator.deps.InstallerServer.Idle(ctx, requireStopped)
+		if err != nil {
+			return "", err
+		}
+		if !idle {
+			return "", ErrBusy
+		}
+	}
 	installed, candidate, nextReplay, eligible, err := coordinator.installationEligibility(ctx, release)
 	if err != nil {
 		return "", err
@@ -288,11 +330,20 @@ func (coordinator *Coordinator) InstallPrepared(ctx context.Context, release upd
 		Old: installed, Candidate: candidate, Replay: nextReplay, ArtifactSHA256: artifact.SHA256,
 		Phase: PhasePrepared, PreparedAt: now, UpdatedAt: now, Attempt: 1, RetryDeadline: &retryDeadline,
 	}
-	handoffCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	handoffCtx, cancel := context.WithTimeout(ctx, recoveryPrelaunchBound)
 	defer cancel()
 	pending.LaunchBootID, err = coordinator.deps.Boot.CurrentBootID(handoffCtx)
 	if err != nil || pending.LaunchBootID == "" {
 		return "", fmt.Errorf("read launch boot identity: %w", err)
+	}
+	if coordinator.deps.Recovery != nil {
+		idle, err := coordinator.deps.InstallerServer.Idle(handoffCtx, requireStopped)
+		if err != nil {
+			return "", err
+		}
+		if !idle {
+			return "", ErrBusy
+		}
 	}
 	if coordinator.deps.PrepareAuthorization != nil {
 		if coordinator.deps.ObservePreparation == nil {
@@ -309,18 +360,22 @@ func (coordinator *Coordinator) InstallPrepared(ctx context.Context, release upd
 	if err != nil {
 		return "", fmt.Errorf("persist prepared transaction: %w", err)
 	}
+	if releaseRunner != nil {
+		releaseRunner()
+		releaseRunner = nil
+	}
 	coordinator.deps.Events.Record(ctx, Event{Code: EventPrepared, TransactionID: pending.TransactionID})
 	receipt, err := coordinator.deps.Launcher.Launch(handoffCtx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
 	if err != nil {
-		return "", fmt.Errorf("launch detached update runner: %w", err)
+		return "", coordinator.handoffFailure(pending, receipt, fmt.Errorf("launch detached update runner: %w", err))
 	}
 	if !receipt.Ready || validateProcessIdentity(&receipt.Runner) != nil || validateProcessIdentity(&receipt.Installer) != nil {
-		return "", errors.New("detached runner did not provide durable ready evidence")
+		return "", coordinator.handoffFailure(pending, receipt, errors.New("detached runner did not provide durable ready evidence"))
 	}
 	durable, err := coordinator.deps.Pending.Load(context.WithoutCancel(ctx))
 	if err != nil || durable == nil || durable.TransactionID != pending.TransactionID || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) ||
 		durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
-		return "", errors.New("runner readiness does not match durable transaction evidence")
+		return "", coordinator.handoffFailure(pending, receipt, errors.New("runner readiness does not match durable transaction evidence"))
 	}
 	coordinator.deps.Events.Record(context.WithoutCancel(ctx), Event{Code: EventHandedOff, TransactionID: pending.TransactionID})
 	return OutcomeHandedOff, nil
@@ -330,6 +385,9 @@ func (coordinator *Coordinator) InstallPrepared(ctx context.Context, release upd
 // already persisted retry authorization. It never performs release discovery
 // or creates a new transaction.
 func (coordinator *Coordinator) ResumePreparedRetry(ctx context.Context) (Outcome, error) {
+	if coordinator.deps.Recovery != nil {
+		return coordinator.Reconcile(ctx)
+	}
 	if coordinator.deps.Launcher == nil || coordinator.deps.RetryGate == nil {
 		return "", errors.New("prepared retry launcher is not configured")
 	}
@@ -357,6 +415,9 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 	if err != nil {
 		return "", fmt.Errorf("load pending update: %w", err)
 	}
+	if coordinator.deps.Recovery != nil && (pending == nil || pending.Phase == PhasePrepared || pending.Phase == PhaseHandoffFenced) {
+		return coordinator.reconcileHandoff(ctx, pending)
+	}
 	if pending == nil {
 		return OutcomeNoUpdate, nil
 	}
@@ -376,6 +437,15 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		}
 		return OutcomeRepairRequired, nil
 	}
+	if coordinator.deps.Recovery != nil && pending.Result == ResultRetryScheduled {
+		r, err := coordinator.deps.Recovery.Load(ctx, pending.SKU)
+		if err != nil {
+			return "", err
+		}
+		if r != nil && r.busyGap(*pending) {
+			return coordinator.reconcileHandoff(ctx, pending)
+		}
+	}
 	observed := *pending
 	savePending := func() error { return coordinator.deps.Pending.CompareAndSave(ctx, &observed, *pending) }
 	// A scheduled 1618 retry is consumed by the explicit recovery entrypoint. Reconciliation
@@ -387,6 +457,9 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 				return "", err
 			}
 			return coordinator.retireTerminal(ctx, *pending, OutcomeRolledBack)
+		}
+		if coordinator.deps.Recovery != nil && coordinator.deps.Launcher != nil {
+			return coordinator.retryInstaller(ctx, *pending, coordinator.deps.Clock.Now())
 		}
 		return OutcomeBackoff, nil
 	}
@@ -546,7 +619,15 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context) (Outcome, error) 
 		outcome := OutcomeRolledBack
 		if pending.Exit.Code == 1618 {
 			pending.Result = ResultBusyExhausted
-			if pending.Schema == PendingSchemaV2 && pending.RetryDeadline != nil && pending.Attempt < coordinator.config.MaxInstallerBusyRetries {
+			budget := true
+			if coordinator.deps.Recovery != nil {
+				r, err := coordinator.deps.Recovery.Load(ctx, pending.SKU)
+				if err != nil {
+					return "", err
+				}
+				budget = r != nil && r.Consumed < maxRecoveryLaunches
+			}
+			if budget && pending.Schema == PendingSchemaV2 && pending.RetryDeadline != nil && pending.Attempt < coordinator.config.MaxInstallerBusyRetries {
 				delay := 30 * time.Second
 				if pending.Attempt > 1 {
 					delay = 120 * time.Second
@@ -725,7 +806,17 @@ func (coordinator *Coordinator) retryInstaller(ctx context.Context, pending Pend
 	pending.Phase, pending.Result = PhasePrepared, ResultNone
 	pending.Runner, pending.Installer, pending.InstallerThread, pending.Exit, pending.NextAttemptAt = nil, nil, nil, nil, nil
 	pending.UpdatedAt = now
-	if err := coordinator.deps.Pending.CompareAndSave(ctx, &previous, pending); err != nil {
+	if coordinator.deps.Recovery != nil {
+		if coordinator.deps.IDs == nil {
+			return "", ErrUnauthorizedCandidate
+		}
+		pending.TransactionID = coordinator.deps.IDs.NewID()
+		pending.AppDrainDeadline = nil
+		err = coordinator.deps.Recovery.reserveBusy(ctx, previous, pending, now)
+	} else {
+		err = coordinator.deps.Pending.CompareAndSave(ctx, &previous, pending)
+	}
+	if err != nil {
 		return "", err
 	}
 	return coordinator.launchPreparedRetry(ctx, pending, artifact)
@@ -788,17 +879,17 @@ func (coordinator *Coordinator) resumePreparedRetry(ctx context.Context, pending
 func (coordinator *Coordinator) launchPreparedRetry(ctx context.Context, pending PendingV1, artifact StagedArtifact) (Outcome, error) {
 	receipt, err := coordinator.deps.Launcher.Launch(ctx, HandoffRequest{TransactionID: pending.TransactionID, Attempt: pending.Attempt, Artifact: artifact})
 	if err != nil {
-		return "", err
+		return "", coordinator.handoffFailure(pending, receipt, err)
 	}
 	if !receipt.Ready || validateProcessIdentity(&receipt.Runner) != nil || validateProcessIdentity(&receipt.Installer) != nil {
-		return "", errors.New("retry runner has no durable ready evidence")
+		return "", coordinator.handoffFailure(pending, receipt, errors.New("retry runner has no durable ready evidence"))
 	}
 	durable, err := coordinator.deps.Pending.Load(context.WithoutCancel(ctx))
 	if err != nil {
-		return "", err
+		return "", coordinator.handoffFailure(pending, receipt, err)
 	}
 	if durable == nil || durable.TransactionID != pending.TransactionID || durable.Attempt != pending.Attempt || (durable.Phase != PhaseRunning && durable.Phase != PhaseInstallerRunning) || durable.Runner == nil || durable.Installer == nil || *durable.Runner != receipt.Runner || *durable.Installer != receipt.Installer {
-		return "", errors.New("retry readiness does not match durable transaction")
+		return "", coordinator.handoffFailure(pending, receipt, errors.New("retry readiness does not match durable transaction"))
 	}
 	return OutcomeHandedOff, nil
 }
@@ -810,6 +901,11 @@ func (coordinator *Coordinator) retireTerminal(ctx context.Context, pending Pend
 	}
 	if err := coordinator.deps.LastResult.Save(ctx, result); err != nil {
 		return "", fmt.Errorf("persist last transaction result: %w", err)
+	}
+	if coordinator.deps.Recovery != nil {
+		if err := coordinator.deps.Recovery.Finalize(ctx, pending, coordinator.deps.Clock.Now()); err != nil {
+			return "", err
+		}
 	}
 	if err := coordinator.deps.Pending.CompareAndClear(ctx, pending); err != nil {
 		return "", fmt.Errorf("retire terminal transaction: %w", err)

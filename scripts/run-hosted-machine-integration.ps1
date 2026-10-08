@@ -8,7 +8,7 @@ param(
     # runs one scenario per runner: the scenarios share the machine-global
     # service, MSI product, certificate stores and fixture port, so they cannot
     # share a machine. -CleanupOnly is scoped to the same scenario.
-    [ValidateSet('all','cross-sku','update','suite-update','update-interruption')][string]$Scenario = 'all'
+    [ValidateSet('all','cross-sku','update','suite-update','update-interruption','readiness-recovery','suite-readiness-recovery')][string]$Scenario = 'all'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -41,7 +41,7 @@ $deferred = Join-Path $root 'update-interruption'
 # idle shutdown (about 6 minutes), which no validation timer shortens.
 function InScenario([string]$Name) { $Scenario -eq 'all' -or $Scenario -eq $Name }
 $validationTimers = [bool]$fixture.fixture.PSObject.Properties['timers']
-$validationDeadlines = @{ 'update' = 15; 'suite-update' = 20 }
+$validationDeadlines = @{ 'update' = 15; 'suite-update' = 20; 'readiness-recovery' = 20; 'suite-readiness-recovery' = 25 }
 function Invoke-Phase([string]$Name, [string]$SKU, [string]$Phase, [int]$Deadline = 35) {
     if ($validationTimers -and $Phase -ne 'Cleanup' -and $validationDeadlines.ContainsKey($Name)) { $Deadline = $validationDeadlines[$Name] }
     $path = Join-Path $root $Name
@@ -81,6 +81,8 @@ try {
             Invoke-Phase 'suite-update' 'suite' 'Hosted' 45
             Invoke-Phase 'suite-update' 'suite' 'Cleanup'
         }
+        if (InScenario 'readiness-recovery') { Invoke-Phase 'readiness-recovery' 'system' 'ReadinessRecovery' }
+        if (InScenario 'suite-readiness-recovery') { Invoke-Phase 'suite-readiness-recovery' 'suite' 'ReadinessRecovery' }
         if (InScenario 'update-interruption') { Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22 }
     }
 } catch { $primary = $_.Exception.Message }
@@ -88,9 +90,9 @@ finally {
     $names = if (Test-Path -LiteralPath (Join-Path $deferred 'cleanup-deferred.json') -PathType Leaf) {
         Write-Warning "Machine cleanup is deferred to ephemeral runner disposal; evidence: $deferred"
         @('update','update-interruption')
-    } else { @('suite-update','update','update-interruption') }
+    } else { @('suite-readiness-recovery','readiness-recovery','suite-update','update','update-interruption') }
     foreach ($name in @($names | Where-Object { InScenario $_ })) {
-        try { Invoke-Phase $name $(if ($name -eq 'suite-update') { 'suite' } else { 'system' }) 'Cleanup' }
+        try { Invoke-Phase $name $(if ($name -in @('suite-update','suite-readiness-recovery')) { 'suite' } else { 'system' }) 'Cleanup' }
         catch { $cleanupFailures += "$name`: $($_.Exception.Message)" }
     }
 }

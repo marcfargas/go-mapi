@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
@@ -93,13 +92,16 @@ func (launcher *DetachedRunnerLauncher) Launch(ctx context.Context, request Hand
 		return HandoffReceipt{}, err
 	}
 	defer releaseRunner()
+	if err := ctx.Err(); err != nil {
+		return HandoffReceipt{}, err
+	}
 	identity, err := launcher.spawner.SpawnDetached(runnerPath, request.TransactionID)
 	if err != nil || validateProcessIdentity(&identity) != nil {
 		return HandoffReceipt{}, errors.New("spawn detached update runner")
 	}
-	ready, err := launcher.awaiter.Await(ctx, launcher.ready, request.TransactionID, request.Attempt, identity)
+	ready, err := launcher.awaiter.Await(context.WithoutCancel(ctx), launcher.ready, request.TransactionID, request.Attempt, identity)
 	if err != nil {
-		return HandoffReceipt{}, fmt.Errorf("await durable runner readiness: %w", err)
+		return HandoffReceipt{Runner: identity}, fmt.Errorf("await durable runner readiness: %w", err)
 	}
 	return HandoffReceipt{Runner: ready.Runner, Installer: ready.Installer, Ready: true}, nil
 }
@@ -132,7 +134,7 @@ func (launcher *DetachedRunnerLauncher) stageRunner(ctx context.Context, transac
 		return "", nil, errors.New("installed service executable exceeds runner bound")
 	}
 	hash := sha256.New()
-	if _, err := io.Copy(hash, source); err != nil {
+	if _, err := copyContext(ctx, hash, source); err != nil {
 		source.Close()
 		return "", nil, err
 	}
