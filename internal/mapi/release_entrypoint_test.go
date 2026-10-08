@@ -50,9 +50,10 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 		t.Fatalf("read workflow directory: %v", err)
 	}
 	expectedWorkflows := map[string]bool{
-		"ci.yml":            true,
-		"app-release.yml":   true,
-		"admin-release.yml": true,
+		"ci.yml":                true,
+		"app-release.yml":       true,
+		"admin-release.yml":     true,
+		"hosted-capability.yml": true,
 	}
 	seenWorkflows := make(map[string]bool, len(expectedWorkflows))
 	for _, entry := range entries {
@@ -71,6 +72,19 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 			t.Fatalf("read %s: %v", entry.Name(), err)
 		}
 		content := string(workflow)
+		if entry.Name() == "hosted-capability.yml" {
+			for _, required := range []string{
+				"push:", "'t3code/569-installed-attachment-e2e-20261008'", "github.sha",
+				"if: github.event.created == true",
+			} {
+				if !strings.Contains(content, required) {
+					t.Errorf("one-shot hosted capability workflow is missing %q", required)
+				}
+			}
+			if strings.Contains(content, "workflow_dispatch:") || strings.Contains(content, "branches: ['**']") {
+				t.Error("hosted capability must remain branch-scoped and non-manual")
+			}
+		}
 		for _, forbidden := range []string{
 			"contents: write", "softprops/action-gh-release", "azure/artifact-signing-action",
 			"microsoft/microsoft-store-apppublisher", "wingetcreate.exe", "tags: ['app-v*']", "tags: ['admin-v*']",

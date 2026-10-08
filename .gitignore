@@ -44,6 +44,8 @@ TODO.md
 # Test outputs
 test-results/
 playwright-report/
+__pycache__/
+*.py[cod]
 .claude/*
 !.claude/skills/
 

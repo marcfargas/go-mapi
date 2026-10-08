@@ -1,0 +1,47 @@
+name: Hosted installed attachment capability
+
+on:
+  push:
+    branches:
+      - 't3code/569-installed-attachment-e2e-20261008'
+      - 't3code/569-capability-repair-20261009'
+
+permissions:
+  contents: read
+
+jobs:
+  hosted-capability:
+    name: Hosted Windows session capability (alpha.9 input only)
+    if: github.event.created == true
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Validate explicit source identity
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          if ($env:REQUESTED_SOURCE_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'source_sha must be an exact 40-character Git commit ID'
+          }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Run bounded capability probe
+        shell: pwsh
+        env:
+          REQUESTED_SOURCE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-hosted-capability'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          pwsh -NoProfile -File tests/installed-attachment/hosted-capability.ps1 -SourceSHA $env:REQUESTED_SOURCE_SHA -EvidenceDirectory $evidence
+          if ($LASTEXITCODE -ne 0) { throw "Hosted capability probe exited $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-capability-${{ github.run_id }}
+          path: ${{ runner.temp }}/ticket569-hosted-capability/
+          if-no-files-found: warn
+          retention-days: 14
