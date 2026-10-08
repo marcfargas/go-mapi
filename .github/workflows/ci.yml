@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_authenticode_diagnostic:
+        description: 'Run only the bounded alpha.9 signature diagnostic (no install or user/profile changes)'
+        required: false
+        type: boolean
+        default: false
 
   schedule:
     - cron: '0 3 * * *'
@@ -25,8 +30,50 @@ permissions:
   contents: read
 
 jobs:
+  alpha9-authenticode-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true }}
+    name: Alpha.9 Authenticode diagnostics (no install)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Download and pin the alpha.9 MSI and validation proof
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-authenticode-diagnostic'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          gh release download suite-v3.2.0-alpha.9 --repo marcfargas/go-mapi `
+            --pattern 'go-mapi-suite-3.2.0-alpha.9-x64.msi' `
+            --pattern 'suite-3.2.0-alpha.9.validation.json' `
+            --dir $evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned alpha.9 input download failed' }
+      - name: Capture signature, WinVerifyTrust, chain, and owned-root cleanup evidence
+        shell: pwsh
+        env:
+          TICKET569_AUTHENTICODE_EVIDENCE: ${{ runner.temp }}\ticket569-authenticode-diagnostic
+        run: |
+          $msi = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'go-mapi-suite-3.2.0-alpha.9-x64.msi'
+          $proof = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'suite-3.2.0-alpha.9.validation.json'
+          $result = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'authenticode-diagnostic.json'
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/run-authenticode-diagnostic.ps1 `
+            -MsiPath $msi -ProofPath $proof -EvidencePath $result
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode diagnostic collection or cleanup failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ticket569-authenticode-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/ticket569-authenticode-diagnostic/
+          if-no-files-found: warn
+          retention-days: 14
+
   user-component:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: User component (cross-platform)
     runs-on: ubuntu-latest
     env:
@@ -54,7 +101,7 @@ jobs:
           retention-days: 7
 
   user-windows-shell:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: User component Windows shell
     runs-on: windows-latest
     needs: build-interceptor
@@ -89,6 +136,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'installed attachment process/result tests failed' }
           powershell.exe -NoProfile -NonInteractive -File tests/installed-attachment/process-observer-check.ps1
           if ($LASTEXITCODE -ne 0) { throw 'installed attachment retained-handle process observer check failed' }
+          pwsh -NoProfile -NonInteractive -File scripts/tests/AuthenticodeDiagnostic.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticode diagnostic safety and workflow routing tests failed' }
           $files = Get-ChildItem tests/installed-attachment -Filter '*.ps1' -File
           foreach ($file in $files) {
             $tokens = $null; $errors = $null
@@ -196,7 +245,7 @@ jobs:
           retention-days: 7
 
   build-interceptor:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Build interceptor (${{ matrix.arch }}, ${{ matrix.config }})
     runs-on: windows-latest
     strategy:
@@ -238,7 +287,7 @@ jobs:
   # runner. The fixtures are built and signed once here and reused by every
   # scenario job; admin-msi below is the aggregate gate.
   admin-msi-fixtures:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Build machine MSI test fixtures
     runs-on: windows-latest
     timeout-minutes: 45
@@ -302,7 +351,7 @@ jobs:
           retention-days: 7
 
   admin-msi-scenario:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Machine MSI scenario (${{ matrix.scenario }})
     runs-on: windows-latest
     timeout-minutes: 45
@@ -367,7 +416,7 @@ jobs:
   # docs/component-integration-gate.md refer to, and fails unless the fixture
   # build and every scenario job succeeded (a skipped or cancelled one fails it).
   admin-msi:
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Validate machine MSI lifecycle and installed updater
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -384,7 +433,7 @@ jobs:
           fi
 
   go-race:
-    if: github.event_name == 'schedule' || inputs.run_race
+    if: ${{ github.event_name == 'schedule' || (inputs.run_race && !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true)) }}
     name: Go test -race (windows-latest)
     runs-on: windows-latest
     env:
