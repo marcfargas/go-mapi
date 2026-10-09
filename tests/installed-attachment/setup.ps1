@@ -8,6 +8,13 @@ param(
     [Parameter(Mandatory)] [string] $ExpectedAppSHA256,
     [Parameter(Mandatory)] [string] $ExpectedDllSHA256,
     [Parameter(Mandatory)] [string] $EvidenceDirectory,
+    [string] $BaselineReleaseApiPath,
+    [string] $BaselineValidationPath,
+    [string] $BaselineManifestPath,
+    [string] $BaselineTargetsPath,
+    [string] $BaselineAppArtifactsPath,
+    [string] $BaselinePortableEvidenceArchivePath,
+    [string] $BaselinePortableEvidencePath,
     [string] $ExpectedPriorAppSHA256,
     [string] $ExpectedPriorDllSHA256,
     [string] $WebViewBootstrapper,
@@ -28,9 +35,29 @@ foreach ($hash in @($ExpectedMsiSHA256, $ExpectedAppSHA256, $ExpectedDllSHA256))
 }
 $msiHash = (Get-FileHash -LiteralPath $MsiPath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($msiHash -ne $ExpectedMsiSHA256.ToLowerInvariant()) { throw 'Staged MSI bytes differ from the selected immutable package hash' }
-$signature = Get-AuthenticodeSignature -LiteralPath $MsiPath
-Write-Atomic (Join-Path $EvidenceDirectory 'package-input.json') @{ Kind = $PackageKind; Path = $MsiPath; SHA256 = $msiHash; SignatureStatus = [string]$signature.Status; Signer = $(if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }) }
-if ($signature.Status -ne 'Valid') { throw "MSI Authenticode signature is not valid: $($signature.Status)" }
+if ($PackageKind -eq 'baseline') {
+    if ($ExpectedMsiSHA256.ToLowerInvariant() -cne 'bcf00f8511b8f076582ff06f9ecb00a67aa9476dd3cbdebc5f6b975f4ec94a68' -or
+        (Split-Path -Leaf $MsiPath) -cne 'go-mapi-suite-3.2.0-alpha.7-x64.msi') { throw 'Only the prevalidated immutable alpha.7 fixture may enter baseline setup' }
+    foreach ($assetPath in @($BaselineReleaseApiPath, $BaselineValidationPath, $BaselineManifestPath, $BaselineTargetsPath, $BaselineAppArtifactsPath, $BaselinePortableEvidenceArchivePath, $BaselinePortableEvidencePath)) {
+        if (!$assetPath) { throw 'Baseline setup requires all pinned alpha.7 release assets and API provenance' }
+    }
+    if (Test-Path -LiteralPath $BaselinePortableEvidencePath) { throw 'Pinned alpha.7 portable evidence extraction path is occupied' }
+    Expand-Archive -LiteralPath $BaselinePortableEvidenceArchivePath -DestinationPath $BaselinePortableEvidencePath -ErrorAction Stop
+    Import-Module (Join-Path $PSScriptRoot 'alpha7-baseline.psm1') -Force
+    $baselineAdmission = Get-Alpha7HistoricalAdmission `
+        -MsiPath $MsiPath -ReleaseApiPath $BaselineReleaseApiPath -ValidationPath $BaselineValidationPath `
+        -ManifestPath $BaselineManifestPath -TargetsPath $BaselineTargetsPath -AppArtifactsPath $BaselineAppArtifactsPath `
+        -PortableEvidencePath $BaselinePortableEvidencePath `
+        -EvidencePath (Join-Path $EvidenceDirectory 'alpha7-native-admission.json') `
+        -RequestedPackageKind 'exact-alpha7-historical-fixture'
+    Write-Atomic (Join-Path $EvidenceDirectory 'package-input.json') @{ Kind = $PackageKind; Path = $MsiPath; SHA256 = $msiHash; Admission = $baselineAdmission.admission; PackageTuple = $baselineAdmission.tuple; Native = $baselineAdmission.native; Qualification = $baselineAdmission.qualification }
+} else {
+    if ($BaselineReleaseApiPath -or $BaselineValidationPath -or $BaselineManifestPath -or $BaselineTargetsPath -or $BaselineAppArtifactsPath) { throw 'Candidate cannot carry or request the alpha.7 expired-fixture inputs' }
+    $validity = Join-Path $EvidenceDirectory 'candidate-validity-install.json'
+    & (Join-Path $PSScriptRoot 'verify-candidate-current.ps1') -MsiPath $MsiPath -ExpectedMsiSHA256 $ExpectedMsiSHA256 -Phase install -EvidencePath $validity
+    if ($LASTEXITCODE -ne 0) { throw 'Candidate failed the strict current-valid install-time signature check' }
+    Write-Atomic (Join-Path $EvidenceDirectory 'package-input.json') @{ Kind = $PackageKind; Path = $MsiPath; SHA256 = $msiHash; CandidateValidityEvidence = $validity }
+}
 
 if ($PackageKind -eq 'baseline') {
     if (Test-Path -LiteralPath $InstalledAppPath -PathType Leaf) { throw 'A suite app is already installed; refusing to overwrite a fresh alpha.7 baseline' }
@@ -59,6 +86,12 @@ if ($WebViewBootstrapper) {
 $install = Start-Process -FilePath msiexec.exe -ArgumentList @('/i', $MsiPath, '/qn', 'GOMAPI_AUTO_UPDATE=0', '/norestart') -PassThru -Wait
 Write-Atomic (Join-Path $EvidenceDirectory 'msi-install.json') @{ Kind = $PackageKind; PID = $install.Id; ExitCode = [int]$install.ExitCode; MSI_SHA256 = $msiHash; StartedAt = $install.StartTime.ToUniversalTime().ToString('o'); FinishedAt = [DateTime]::UtcNow.ToString('o') }
 if ($install.ExitCode -ne 0) { throw "MSI installer exited $($install.ExitCode); reboot-required 3010 needs an explicit observed reboot/reconnect" }
+
+if ($PackageKind -eq 'candidate') {
+    $validity = Join-Path $EvidenceDirectory 'candidate-validity-install-complete.json'
+    & (Join-Path $PSScriptRoot 'verify-candidate-current.ps1') -MsiPath $MsiPath -ExpectedMsiSHA256 $ExpectedMsiSHA256 -Phase install-complete -EvidencePath $validity
+    if ($LASTEXITCODE -ne 0) { throw 'Candidate stopped being current-valid during installation' }
+}
 
 if (!(Test-Path -LiteralPath $InstalledAppPath -PathType Leaf) -or !(Test-Path -LiteralPath $InstalledDllPath -PathType Leaf)) { throw 'Installed app or x64 MAPI DLL is missing after MSI completion' }
 $appHash = (Get-FileHash -LiteralPath $InstalledAppPath -Algorithm SHA256).Hash.ToLowerInvariant()

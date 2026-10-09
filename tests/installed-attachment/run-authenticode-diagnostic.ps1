@@ -12,6 +12,11 @@ Import-Module -Name $modulePath -Force
 $trustHelper = Join-Path $PSScriptRoot '..\..\scripts\azure-test-signing-trust.ps1'
 $trustStatePath = Join-Path $env:RUNNER_TEMP 'ticket569-authenticode-test-root.json'
 $observationTime = [DateTime]::UtcNow
+function Get-BytesSha256([byte[]] $Bytes) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
 
 try {
     $pins = Assert-Alpha9DiagnosticInputs -MsiPath $MsiPath -ProofPath $ProofPath
@@ -84,7 +89,7 @@ $lifecycle = Invoke-OwnedTrustDiagnosticLifecycle `
             $rootPresent = Test-Path -LiteralPath $storePath
             if ($rootPresent) {
                 $certificate = Get-Item -LiteralPath $storePath -ErrorAction Stop
-                $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($certificate.RawData)).ToLowerInvariant()
+                $rawHash = Get-BytesSha256 $certificate.RawData
                 $rootMatches = $rawHash -ceq $pins.pinnedTestRootSha256
             }
         } catch { $rootInventoryException = [pscustomobject]@{ type = $_.Exception.GetType().FullName; message = $_.Exception.Message; hresult = ('0x{0:X8}' -f [int32]$_.Exception.HResult) } }
@@ -117,7 +122,7 @@ $lifecycle = Invoke-OwnedTrustDiagnosticLifecycle `
         }
         if ($present) {
             $certificate = Get-Item -LiteralPath $storePath -ErrorAction Stop
-            $rawHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($certificate.RawData)).ToLowerInvariant()
+            $rawHash = Get-BytesSha256 $certificate.RawData
             if ($rawHash -cne $pins.pinnedTestRootSha256) { throw 'Preserved preexisting TEST root bytes changed during cleanup' }
         }
         return [pscustomobject]@{ rootPresentAfterCleanup = $present; preexistingRootPreserved = ($present -and $expectedPresent); ownedRootRemoved = (-not $present -and -not $expectedPresent); errors = @() }

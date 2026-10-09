@@ -12,9 +12,11 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 from evidence import RunFault, read_final_snapshot, run_bounded
+from baseline_identity import ALPHA7, BaselineIdentityError, classify_alpha7_native_admission, require_candidate_current_valid, validate_alpha7_assets, validate_alpha7_portable_evidence
 from host_backend import (
     Handoff,
     collect_guest_run,
@@ -33,6 +35,35 @@ FIXTURES = {
 }
 SUBJECT = "Ticket569 installed Windows seam"
 RECIPIENT = "test@example.invalid"
+
+
+def alpha7_observation_from_diagnostic(native: dict, msi_sha256: str, msi_size: int, portable: dict, revocation_coverage: str) -> dict:
+    """Map the emitted PowerShell diagnostic shape into the host classifier schema."""
+    signature = native["signature"]
+    timestamp = native["rfc3161SigningTime"]
+    wvt = native["winVerifyTrust"]
+    historical = portable["historical"]
+    return {
+        "collectionComplete": native.get("collectionComplete") is True and native.get("signatureDetailsComplete") is True,
+        "msiSHA256": msi_sha256, "msiSize": msi_size,
+        "signerSHA1": signature["signer"]["thumbprint"], "timestampSHA1": signature["timestamp"]["thumbprint"],
+        "signerNotBeforeUtc": signature["signer"]["notBeforeUtc"], "signerNotAfterUtc": signature["signer"]["notAfterUtc"],
+        "lifetimeSigningEku": ALPHA7["lifetimeSigningEku"], "timestampUtc": historical["timestampUtc"],
+        "rfc3161GenTimeUtc": timestamp["signingTimeUtc"],
+        "rfc3161MessageImprintSHA256": timestamp["messageImprint"]["hashedMessage"],
+        "signingRootSHA256": historical["signingRootSHA256"], "timestampRootSHA256": historical["timestampRootSHA256"],
+        "authenticodeStatus": signature["status"], "authenticodeMessage": signature["statusMessage"],
+        "winVerifyTrustHResult": wvt["verifyHResultHex"],
+        "winVerifyTrustCloseHResult": wvt["stateCloseHResultHex"],
+        "digestVerified": historical["digestVerified"], "signatureVerified": historical["signatureVerified"],
+        "timestampVerified": historical["timestampVerified"], "revocationCoverage": revocation_coverage,
+        "ancillaryDiagnostic": native.get("signerChain"),
+    }
+
+
+def classify_alpha7_diagnostic(native: dict, msi_sha256: str, msi_size: int, portable: dict, revocation_coverage: str) -> dict:
+    observation = alpha7_observation_from_diagnostic(native, msi_sha256, msi_size, portable, revocation_coverage)
+    return classify_alpha7_native_admission(observation, kind=ALPHA7["kind"])
 
 
 def sha256(data: bytes) -> str:
@@ -76,8 +107,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--x64-dll-path", default=r"C:\Program Files\go-mapi\interceptor\AMD64\go-mapi.dll", help="suite-installed x64 interceptor path")
     parser.add_argument("--expected-app-sha256")
     parser.add_argument("--expected-dll-sha256")
+    parser.add_argument("--candidate-msi", type=Path, help="published immutable current-valid candidate MSI for a fixed run")
+    parser.add_argument("--candidate-msi-sha256", help="expected candidate MSI SHA-256 for current-valid checks")
     parser.add_argument("--fake-binary", type=Path, help="Windows fake helper built from this source")
     parser.add_argument("--historical-alpha7", action="store_true", help="accept only the specific historical attachment-path rejection")
+    parser.add_argument("--alpha7-admission", type=Path, help="exact setup evidence from the native expired-only alpha.7 fixture gate")
     parser.add_argument("--timeout-seconds", type=float, default=240)
     parser.add_argument("--verify-matrix", nargs=3, type=Path, metavar=("ALPHA7_MOUNT", "CANDIDATE_MOUNT", "CANDIDATE_NORMAL"), help="verify and combine the three complete case directories")
     parser.add_argument("--matrix-report", type=Path, help="fresh aggregate output path for --verify-matrix")
@@ -87,11 +121,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cua-session", help="owned persistent rdpilot session name")
     parser.add_argument("--rdp-port", type=int, help="loopback RDP tunnel port exposed by this handoff")
     parser.add_argument("--baseline-msi", type=Path, help="published immutable suite alpha.7 MSI")
+    parser.add_argument("--baseline-release-api", type=Path, help="pinned GitHub release API response for alpha.7")
+    parser.add_argument("--baseline-validation", type=Path, help="pinned alpha.7 validation provenance asset")
+    parser.add_argument("--baseline-manifest", type=Path, help="pinned alpha.7 signed-input manifest asset")
+    parser.add_argument("--baseline-targets", type=Path, help="pinned alpha.7 suite-targets.json asset")
+    parser.add_argument("--baseline-app-artifacts", type=Path, help="pinned alpha.7 app-artifacts.json asset")
+    parser.add_argument("--baseline-portable-evidence", type=Path, help="complete pinned legacy-alpha7-authenticity portable verifier evidence directory")
     parser.add_argument("--baseline-msi-sha256")
     parser.add_argument("--baseline-app-sha256")
     parser.add_argument("--baseline-dll-sha256")
-    parser.add_argument("--candidate-msi", type=Path, help="published immutable fixed prerelease MSI")
-    parser.add_argument("--candidate-msi-sha256")
     parser.add_argument("--candidate-app-sha256")
     parser.add_argument("--candidate-dll-sha256")
     parser.add_argument("--webview-bootstrapper", type=Path)
@@ -242,8 +280,22 @@ def verify_matrix(paths: tuple[Path, Path, Path], source_sha: str) -> dict:
     historical, candidate_mount, candidate_normal = reports
     if historical.get("outcome") != "expected-alpha7-attachment-directory-rejection" or historical.get("candidateOracle") != "failed":
         raise RunFault("matrix-alpha7", "fresh alpha.7 case did not prove the expected candidate-oracle failure")
+    admission = historical.get("historicalAdmission")
+    if (
+        not isinstance(admission, dict)
+        or admission.get("admission") != "legacy-fixture-admitted:expired-lifetime-signing"
+        or admission.get("packageKind") != ALPHA7["kind"]
+        or admission.get("tuple", {}).get("msiSha256") != ALPHA7["msiSHA256"]
+        or admission.get("native", {}).get("winVerifyTrust", {}).get("verifyHResultHex") != "0x800B0101"
+        or admission.get("native", {}).get("signature", {}).get("status") != "UnknownError"
+    ):
+        raise RunFault("matrix-alpha7", "alpha.7 case lacks exact native expired-only fixture admission evidence")
     if candidate_mount.get("outcome") != "passed" or candidate_normal.get("outcome") != "passed":
         raise RunFault("matrix-candidate", "both fixed installed candidate profile cases must pass")
+    for report in (candidate_mount, candidate_normal):
+        validity = report.get("candidateValidity")
+        if not isinstance(validity, dict) or validity.get("status") != "candidate-current-valid":
+            raise RunFault("matrix-candidate-validity", "each fixed candidate case requires its own current-Valid signature observation")
     if candidate_mount["appSHA256"] != candidate_normal["appSHA256"] or candidate_mount["x64DllSHA256"] != candidate_normal["x64DllSHA256"]:
         raise RunFault("matrix-package", "fixed candidate app/DLL hashes differ between normal and mounted cases")
     archive_hashes = {report.get("sourceArchiveSHA256") for report in reports}
@@ -272,6 +324,7 @@ def verify_matrix(paths: tuple[Path, Path, Path], source_sha: str) -> dict:
         "userSID": next(iter(sids)),
         "actualProfilePath": next(iter(profile_paths)),
         "historicalAlpha7": "expected attachment-directory resolution rejection",
+        "historicalAlpha7Admission": "legacy-fixture-admitted:expired-lifetime-signing",
         "candidateVHD": "pass",
         "candidateNormal": "pass",
         "candidateAppSHA256": candidate_mount["appSHA256"],
@@ -454,6 +507,55 @@ def cleanup_test_signing_trust(
     return {"state": state, "cleanup": proof}, helper_output
 
 
+def prepare_alpha7_signing_trust(handoff: Handoff, helper_path: str, state_path: str, progress: dict[str, object]) -> tuple[dict, str]:
+    progress["attempted"] = True
+    progress["stateExpected"] = True
+    invocation = (
+        "$ErrorActionPreference='Stop'; "
+        f"& {powershell_quote(helper_path)} -Mode 'Prepare' -StatePath {powershell_quote(state_path)}"
+    )
+    try:
+        result = handoff.ssh(invocation, timeout_seconds=180)
+        state = remote_file_json(handoff, state_path)
+    except Exception as exc:
+        try:
+            state = remote_file_json(handoff, state_path)
+            if state is not None:
+                progress["state"] = state
+        except Exception as inspect_error:
+            progress["stateObservationError"] = f"{type(inspect_error).__name__}: {inspect_error}"
+        raise RunFault("alpha7-trust-prepare", f"pinned alpha.7 trust preparation failed: {type(exc).__name__}: {exc}") from exc
+    if (not state or state.get("schema") != "go-mapi-alpha7-test-root-fixture-v1"
+            or state.get("sha256") != "41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e"
+            or state.get("sha1") != "DFA0E53504EF5328FAEC21AD7DF14C10B07C4FCB"
+            or state.get("store") != "LocalMachine/Root"):
+        raise RunFault("alpha7-trust-prepare", "guest did not establish the exact pinned alpha.7 TEST root ownership state")
+    progress["state"] = state
+    return state, result.stdout
+
+
+def cleanup_alpha7_signing_trust(handoff: Handoff, helper_path: str, state_path: str, progress: dict[str, object]) -> tuple[dict, str]:
+    state = remote_file_json(handoff, state_path)
+    if state is None:
+        if not progress.get("stateExpected"):
+            return {"statePresent": False, "cleanupNeeded": False}, ""
+        raise RunFault("alpha7-trust-cleanup", "alpha.7 trust preparation was attempted but its ownership state is missing")
+    invocation = (
+        "$ErrorActionPreference='Stop'; "
+        f"& {powershell_quote(helper_path)} -Mode 'Cleanup' -StatePath {powershell_quote(state_path)}; "
+        f"Remove-Item -LiteralPath {powershell_quote(state_path)} -Force -ErrorAction Stop; "
+        f"[ordered]@{{StatePresent=(Test-Path -LiteralPath {powershell_quote(state_path)}); "
+        f"RootPresent=(Test-Path -LiteralPath 'Cert:\\LocalMachine\\Root\\{state['sha1']}')}} | ConvertTo-Json -Compress"
+    )
+    result = handoff.ssh(invocation, timeout_seconds=120)
+    proof = json.loads(result.stdout.strip().splitlines()[-1])
+    if (proof.get("StatePresent") or
+            (not state.get("preexisting") and proof.get("RootPresent")) or
+            (state.get("preexisting") and not proof.get("RootPresent"))):
+        raise RunFault("alpha7-trust-cleanup", f"alpha.7 TEST root cleanup did not preserve the observed ownership state: {proof}")
+    return {"state": state, "cleanup": proof}, result.stdout
+
+
 def archive_source(source_root: Path, source_sha: str, destination: Path) -> str:
     destination.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
@@ -619,16 +721,44 @@ def latch_matrix_cleanup(
 def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     required = (
         args.evidence_dir, args.handoff_status, args.cua_session, args.rdp_port,
-        args.baseline_msi, args.baseline_msi_sha256, args.baseline_app_sha256, args.baseline_dll_sha256,
+        args.baseline_msi, args.baseline_release_api, args.baseline_validation, args.baseline_manifest,
+        args.baseline_targets, args.baseline_app_artifacts,
+        args.baseline_portable_evidence,
+        args.baseline_msi_sha256, args.baseline_app_sha256, args.baseline_dll_sha256,
         args.candidate_msi, args.candidate_msi_sha256, args.candidate_app_sha256, args.candidate_dll_sha256,
         args.webview_bootstrapper, args.webview_sha256,
     )
     if any(value is None for value in required):
-        raise RunFault("arguments", "crabbox-matrix requires handoff, CUA/RDP session, both immutable MSI inputs and all package hashes")
+        raise RunFault("arguments", "crabbox-matrix requires handoff, CUA/RDP session, the full pinned alpha.7 asset tuple, candidate inputs and package hashes")
     for digest in (args.baseline_msi_sha256, args.baseline_app_sha256, args.baseline_dll_sha256, args.candidate_msi_sha256, args.candidate_app_sha256, args.candidate_dll_sha256):
         if not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
             raise RunFault("package-identity", "all package identities must be SHA-256 digests")
+    try:
+        alpha7_assets = validate_alpha7_assets(
+            {
+                "msi": args.baseline_msi,
+                "validation": args.baseline_validation,
+                "manifest": args.baseline_manifest,
+                "targets": args.baseline_targets,
+            "appArtifacts": args.baseline_app_artifacts,
+            },
+            release_api=args.baseline_release_api,
+            kind=ALPHA7["kind"],
+        )
+    except (BaselineIdentityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RunFault("alpha7-identity", str(exc)) from exc
+    try:
+        alpha7_portable = validate_alpha7_portable_evidence(args.baseline_portable_evidence)
+    except (BaselineIdentityError, OSError, ValueError) as exc:
+        raise RunFault("alpha7-portable-evidence", str(exc)) from exc
+    if args.baseline_msi_sha256.lower() != ALPHA7["msiSHA256"]:
+        raise RunFault("alpha7-identity", "caller-supplied alpha.7 MSI hash differs from the fixed historical tuple")
     archive, archive_hash, evidence = prepare_crabbox_inputs(args, source_root)
+    portable_archive = evidence / "alpha7-portable-evidence.zip"
+    with zipfile.ZipFile(portable_archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        for item in sorted(args.baseline_portable_evidence.rglob("*")):
+            if item.is_file():
+                bundle.write(item, item.relative_to(args.baseline_portable_evidence).as_posix())
     handoff = Handoff.load(args.handoff_status)
     work_root = args.remote_work_root.rstrip("\\")
     if not re.fullmatch(r"C:\\crabbox\\work\\ticket569", work_root, re.IGNORECASE):
@@ -637,7 +767,14 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     staging = work_root + r"\staging"
     fake_path = staging + r"\fake-gmail.exe"
     source_zip = work_root + r"\source-" + args.source_sha[:12] + ".zip"
-    baseline_msi_guest = staging + r"\baseline.msi"
+    baseline_msi_guest = staging + "\\" + ALPHA7["msiName"]
+    baseline_release_api_guest = staging + r"\alpha7-release-api.json"
+    baseline_validation_guest = staging + "\\" + ALPHA7["validationName"]
+    baseline_manifest_guest = staging + "\\" + ALPHA7["manifestName"]
+    baseline_targets_guest = staging + "\\" + ALPHA7["targetsName"]
+    baseline_app_artifacts_guest = staging + "\\" + ALPHA7["appArtifactsName"]
+    portable_evidence_guest = staging + r"\alpha7-portable-evidence.zip"
+    portable_extract_guest = staging + r"\alpha7-portable-evidence"
     candidate_msi_guest = staging + r"\candidate.msi"
     webview_guest = staging + r"\webview-bootstrapper.exe"
     handoff.ssh(
@@ -649,6 +786,12 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     )
     handoff.push(archive, source_zip)
     handoff.push(args.baseline_msi, baseline_msi_guest)
+    handoff.push(args.baseline_release_api, baseline_release_api_guest)
+    handoff.push(args.baseline_validation, baseline_validation_guest)
+    handoff.push(args.baseline_manifest, baseline_manifest_guest)
+    handoff.push(args.baseline_targets, baseline_targets_guest)
+    handoff.push(args.baseline_app_artifacts, baseline_app_artifacts_guest)
+    handoff.push(portable_archive, portable_evidence_guest)
     handoff.push(args.candidate_msi, candidate_msi_guest)
     handoff.push(args.webview_bootstrapper, webview_guest)
     fake_local = evidence / "fake-gmail.exe"
@@ -658,6 +801,8 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     atomic_json(evidence / "staged-inputs.json", {
         "sourceSHA": args.source_sha, "sourceArchiveSHA256": archive_hash,
         "baselineMSISHA256": args.baseline_msi_sha256.lower(),
+        "baselineTuple": alpha7_assets,
+        "baselinePortableEvidence": alpha7_portable,
         "candidateMSISHA256": args.candidate_msi_sha256.lower(),
         "fakeSourceSHA": args.source_sha, "fakeBinarySHA256": fake_hash,
         "webviewBootstrapperSHA256": args.webview_sha256.lower(),
@@ -671,9 +816,68 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     run_root = work_root + r"\cases"
     test_trust_state_path = run_root + r"\azure-test-root.json"
     test_trust_helper_path = source_dir + r"\scripts\azure-test-signing-trust.ps1"
+    alpha7_trust_state_path = run_root + r"\alpha7-test-root.json"
+    alpha7_trust_helper_path = source_dir + r"\scripts\azure-alpha7-test-trust.ps1"
 
     def record_event(name: str, value: dict) -> None:
         atomic_json(evidence / f"{name}.json", value)
+
+    candidate_validity_checks: list[dict] = []
+    candidate_identity: tuple[str, str, str] | None = None
+    alpha7_admission: dict | None = None
+
+    def verify_candidate_current(label: str, phase: str) -> dict:
+        nonlocal candidate_identity
+        remote_path = run_root + rf"\candidate-validity-{label}.json"
+        script_path = scripts + r"\verify-candidate-current.ps1"
+        script_error: Exception | None = None
+        try:
+            remote_script(handoff, script_path, {
+                "MsiPath": candidate_msi_guest,
+                "ExpectedMsiSHA256": args.candidate_msi_sha256,
+                "Phase": phase,
+                "EvidencePath": remote_path,
+            })
+        except Exception as exc:
+            script_error = exc
+        observed = remote_file_json(handoff, remote_path)
+        if observed is None:
+            raise RunFault("candidate-validity", f"candidate {label} native validity evidence is missing") from script_error
+        atomic_json(evidence / f"candidate-validity-{label}.json", observed)
+        try:
+            checked = require_candidate_current_valid(observed, checked_at_utc=observed.get("checkedAtUtc", ""))
+        except BaselineIdentityError as exc:
+            raise RunFault("candidate-validity", f"candidate {label}: {exc}") from (script_error or exc)
+        if observed.get("msiSha256", "").lower() != args.candidate_msi_sha256.lower():
+            raise RunFault("candidate-validity", f"candidate {label} observed MSI hash differs from the selected package")
+        identity = (observed.get("signerSHA1", ""), observed.get("timestampSHA1", ""), observed.get("signerNotAfterUtc", ""))
+        if candidate_identity is None:
+            candidate_identity = identity
+        elif identity != candidate_identity:
+            raise RunFault("candidate-validity", f"candidate {label} signer/timestamp/NotAfter identity changed during the matrix")
+        candidate_validity_checks.append(checked | {"phase": phase, "label": label})
+        return checked
+
+    def collect_candidate_install_checks() -> None:
+        nonlocal candidate_identity
+        for label in ("install", "install-complete"):
+            remote_path = run_root + rf"\setup-candidate\candidate-validity-{label}.json"
+            observed = remote_file_json(handoff, remote_path)
+            if observed is None:
+                raise RunFault("candidate-validity", f"candidate setup {label} evidence is missing")
+            atomic_json(evidence / f"candidate-validity-setup-{label}.json", observed)
+            try:
+                checked = require_candidate_current_valid(observed, checked_at_utc=observed.get("checkedAtUtc", ""))
+            except BaselineIdentityError as exc:
+                raise RunFault("candidate-validity", f"candidate setup {label}: {exc}") from exc
+            if observed.get("msiSha256", "").lower() != args.candidate_msi_sha256.lower():
+                raise RunFault("candidate-validity", f"candidate setup {label} MSI hash differs from selected package")
+            identity = (observed.get("signerSHA1", ""), observed.get("timestampSHA1", ""), observed.get("signerNotAfterUtc", ""))
+            if candidate_identity is None:
+                candidate_identity = identity
+            elif identity != candidate_identity:
+                raise RunFault("candidate-validity", f"candidate setup {label} signer/timestamp/NotAfter identity changed")
+            candidate_validity_checks.append(checked | {"phase": observed.get("phase"), "label": f"setup-{label}"})
 
     cua_number = 0
 
@@ -705,6 +909,9 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
         guest_expected = run_root + "\\" + run_id + ".expected.json"
         local_root = evidence / run_id
         local_root.mkdir(parents=True, exist_ok=False)
+        candidate_validity = None if historical else verify_candidate_current(case, "fixed-vhd-run" if profile_kind == "mount-point" else "fixed-normal-run")
+        if historical and alpha7_admission is None:
+            raise RunFault("alpha7-admission", "historical case cannot run without the exact native expired-only fixture admission")
         spec = {"runId": run_id, "subject": SUBJECT, "recipient": RECIPIENT, "attachments": {name: sha256(data) for name, data in FIXTURES.items()}}
         local_expected = local_root / "expected.json"
         atomic_json(local_expected, spec)
@@ -770,6 +977,8 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
             "cuaLaunchedLauncherProcessExit": launcher_process_exit,
             "candidateOracle": outcome.get("candidateAssertion", "passed"),
             "outcome": outcome.get("historicalOutcome", "passed"), "result": outcome,
+            "candidateValidity": candidate_validity,
+            "historicalAdmission": alpha7_admission if historical else None,
         }
         atomic_json(local_root / "execution-final.json", report)
         return report
@@ -779,38 +988,27 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     active_identity: dict | None = None
     profile_state = "normal"
     test_trust_progress: dict[str, object] = {"stateExpected": False}
+    alpha7_trust_progress: dict[str, object] = {"attempted": False, "stateExpected": False}
     cleanup_errors: list[str] = []
     matrix_archive_collected = False
     primary_failure: dict | None = None
     try:
-        trust_prepare, trust_state = prepare_test_signing_trust(
-            handoff,
-            test_trust_helper_path,
-            test_trust_state_path,
-            [baseline_msi_guest, candidate_msi_guest],
-            test_trust_progress,
+        alpha7_trust_state, alpha7_trust_output = prepare_alpha7_signing_trust(
+            handoff, alpha7_trust_helper_path, alpha7_trust_state_path, alpha7_trust_progress
         )
-        # These are Windows guest paths while this runner usually executes on
-        # Linux; pathlib.Path.name would leave the whole backslash path intact.
-        expected_trust_files = {
-            baseline_msi_guest.rsplit("\\", 1)[-1],
-            candidate_msi_guest.rsplit("\\", 1)[-1],
-        }
-        observed_trust_files = {item.get("file") for item in (trust_state or {}).get("baseline", [])}
-        if (
-            trust_state is None
-            or trust_state.get("schema") != "go-mapi-azure-test-root-fixture-v1"
-            or trust_state.get("certificateSha256") != "41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e"
-            or trust_state.get("store") != "LocalMachine/Root"
-            or observed_trust_files != expected_trust_files
-        ):
-            raise RunFault("test-trust-prepare", "guest did not prepare the pinned Azure TEST ONLY root for both staged suite MSIs")
-        record_event("test-root-prepare", {"state": trust_state, "helperOutput": trust_prepare.stdout})
+        record_event("alpha7-test-root-prepare", {"state": alpha7_trust_state, "helperOutput": alpha7_trust_output})
         cua = connect()
         rdp_connected = True
         # Install and verify the unchanged historical package before converting the real profile.
         setup_args = {
             "PackageKind": "baseline", "MsiPath": baseline_msi_guest,
+            "BaselineReleaseApiPath": baseline_release_api_guest,
+            "BaselineValidationPath": baseline_validation_guest,
+            "BaselineManifestPath": baseline_manifest_guest,
+            "BaselineTargetsPath": baseline_targets_guest,
+            "BaselineAppArtifactsPath": baseline_app_artifacts_guest,
+            "BaselinePortableEvidenceArchivePath": portable_evidence_guest,
+            "BaselinePortableEvidencePath": portable_extract_guest,
             "ExpectedMsiSHA256": args.baseline_msi_sha256,
             "InstalledAppPath": args.app_path, "InstalledDllPath": args.x64_dll_path,
             "ExpectedAppSHA256": args.baseline_app_sha256, "ExpectedDllSHA256": args.baseline_dll_sha256,
@@ -819,6 +1017,24 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
         setup_args["WebViewBootstrapper"] = webview_guest
         setup_args["ExpectedWebViewSHA256"] = args.webview_sha256
         remote_script(handoff, scripts + r"\setup.ps1", setup_args)
+        alpha7_admission = remote_file_json(handoff, run_root + r"\setup-alpha7\alpha7-native-admission.json")
+        if (
+            not alpha7_admission
+            or alpha7_admission.get("admission") != "legacy-fixture-admitted:expired-lifetime-signing"
+            or alpha7_admission.get("packageKind") != ALPHA7["kind"]
+            or alpha7_admission.get("tuple", {}).get("msiSha256") != ALPHA7["msiSHA256"]
+            or alpha7_admission.get("native", {}).get("winVerifyTrust", {}).get("verifyHResultHex") != "0x800B0101"
+        ):
+            raise RunFault("alpha7-admission", "guest did not report the exact native expired-only alpha.7 fixture admission")
+        try:
+            classification = classify_alpha7_diagnostic(
+                alpha7_admission["native"], alpha7_admission["tuple"]["msiSha256"], alpha7_admission["tuple"]["msiSize"],
+                alpha7_admission["portableEvidence"], alpha7_admission["revocationCoverage"],
+            )
+            alpha7_admission["pythonClassification"] = classification
+        except (KeyError, BaselineIdentityError, TypeError) as exc:
+            raise RunFault("alpha7-admission", f"portable/native alpha.7 runtime classification failed: {exc}") from exc
+        atomic_json(evidence / "alpha7-native-admission.json", alpha7_admission)
         identity = get_identity(cua, "before-vhd")
         active_identity = identity
         profile_path, sid = identity["UserProfile"], identity["SID"]
@@ -845,6 +1061,16 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
         if vhd_identity["SID"] != sid or vhd_identity["UserProfile"] != profile_path or not vhd_identity["IsReparsePoint"]:
             raise RunFault("profile-vhd", "reconnected standard user does not use the same actual VHD-mounted profile")
         alpha7 = run_case(cua, vhd_identity, "alpha7-vhd", "mount-point", True, args.baseline_app_sha256, args.baseline_dll_sha256)
+        trust_prepare, trust_state = prepare_test_signing_trust(
+            handoff, test_trust_helper_path, test_trust_state_path, [candidate_msi_guest], test_trust_progress
+        )
+        observed_trust_files = {item.get("file") for item in (trust_state or {}).get("baseline", [])}
+        if (trust_state is None or trust_state.get("schema") != "go-mapi-azure-test-root-fixture-v1"
+                or trust_state.get("certificateSha256") != "41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e"
+                or trust_state.get("store") != "LocalMachine/Root"
+                or observed_trust_files != {candidate_msi_guest.rsplit("\\", 1)[-1]}):
+            raise RunFault("test-trust-prepare", "strict candidate trust preparation was not bound to the one candidate MSI")
+        record_event("test-root-prepare", {"state": trust_state, "helperOutput": trust_prepare.stdout})
         setup_args = {
             "PackageKind": "candidate", "MsiPath": candidate_msi_guest,
             "ExpectedMsiSHA256": args.candidate_msi_sha256,
@@ -853,7 +1079,9 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
             "ExpectedPriorAppSHA256": args.baseline_app_sha256, "ExpectedPriorDllSHA256": args.baseline_dll_sha256,
             "EvidenceDirectory": run_root + r"\setup-candidate",
         }
+        verify_candidate_current("before-install", "install")
         remote_script(handoff, scripts + r"\setup.ps1", setup_args)
+        collect_candidate_install_checks()
         candidate_vhd_identity = get_identity(cua, "candidate-vhd")
         active_identity = candidate_vhd_identity
         candidate_vhd = run_case(cua, candidate_vhd_identity, "candidate-vhd", "mount-point", False, args.candidate_app_sha256, args.candidate_dll_sha256)
@@ -875,6 +1103,7 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
         if normal_identity["SID"] != sid or normal_identity["UserProfile"] != profile_path or normal_identity["IsReparsePoint"]:
             raise RunFault("profile-normal", "restored standard user does not use the original normal profile")
         candidate_normal = run_case(cua, normal_identity, "candidate-normal", "normal", False, args.candidate_app_sha256, args.candidate_dll_sha256)
+        verify_candidate_current("completion", "completion")
         reports = []
         for report in (alpha7, candidate_vhd, candidate_normal):
             path = evidence / report["runId"] / "execution-final.json"
@@ -883,6 +1112,14 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
         aggregate["sourceArchiveSHA256"] = archive_hash
         aggregate["leaseId"] = handoff.lease_id
         aggregate["hostedCapability"] = "not-exercised-by-crabbox-backend"
+        aggregate["alpha7Admission"] = alpha7_admission
+        aggregate["candidateCurrentValidityChecks"] = candidate_validity_checks
+        aggregate["candidateValidityWindow"] = {
+            "signerSHA1": candidate_identity[0] if candidate_identity else None,
+            "timestampSHA1": candidate_identity[1] if candidate_identity else None,
+            "signerNotAfterUtc": candidate_identity[2] if candidate_identity else None,
+            "repeatability": "published bytes must be replaced by a freshly signed immutable candidate after NotAfter",
+        }
         atomic_json(evidence / "matrix-final.json", aggregate)
         return 0
     except Exception as exc:
@@ -936,6 +1173,18 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
                     record_event("test-root-cleanup", {"error": f"{type(exc).__name__}: {exc}"})
                 except Exception as write_exc:
                     cleanup_errors.append(f"test-root cleanup evidence write failed: {type(write_exc).__name__}")
+        if alpha7_trust_progress["attempted"]:
+            try:
+                alpha7_trust, helper_output = cleanup_alpha7_signing_trust(
+                    handoff, alpha7_trust_helper_path, alpha7_trust_state_path, alpha7_trust_progress
+                )
+                record_event("alpha7-test-root-cleanup", {"result": alpha7_trust, "helperOutput": helper_output})
+            except Exception as exc:
+                cleanup_errors.append(f"Alpha.7 TEST signing trust cleanup failed: {type(exc).__name__}: {exc}")
+                try:
+                    record_event("alpha7-test-root-cleanup", {"error": f"{type(exc).__name__}: {exc}"})
+                except Exception as write_exc:
+                    cleanup_errors.append(f"alpha.7 trust cleanup evidence write failed: {type(write_exc).__name__}")
         try:
             if evidence.exists() and not (evidence / "guest-matrix" / "evidence-index.json").exists():
                 collect_guest_run(handoff, run_root, work_root + r"\cases.zip", evidence / "guest-matrix")
@@ -983,6 +1232,60 @@ def main() -> int:
         args.run_root.mkdir(parents=True, exist_ok=True)
         if not args.fake_binary.is_file():
             raise RunFault("fake-helper", "a Windows fake-gmail helper binary is required")
+        alpha7_admission = None
+        if args.historical_alpha7:
+            if args.alpha7_admission is None or not args.alpha7_admission.is_file():
+                raise RunFault("alpha7-admission", "historical alpha.7 mode requires native exact-fixture admission evidence")
+            try:
+                alpha7_admission = json.loads(args.alpha7_admission.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RunFault("alpha7-admission", "alpha.7 admission evidence is missing or malformed") from exc
+            if (
+                alpha7_admission.get("admission") != "legacy-fixture-admitted:expired-lifetime-signing"
+                or alpha7_admission.get("packageKind") != ALPHA7["kind"]
+                or alpha7_admission.get("tuple", {}).get("msiSha256") != ALPHA7["msiSHA256"]
+                or alpha7_admission.get("tuple", {}).get("portableEvidenceSha256Sums") != ALPHA7["portableEvidenceSHA256SUMS"]
+                or alpha7_admission.get("native", {}).get("winVerifyTrust", {}).get("verifyHResultHex") != "0x800B0101"
+                or alpha7_admission.get("native", {}).get("signature", {}).get("status") != "UnknownError"
+                or alpha7_admission.get("native", {}).get("signature", {}).get("signer", {}).get("thumbprint", "").upper() != ALPHA7["signerSHA1"]
+                or alpha7_admission.get("native", {}).get("signature", {}).get("timestamp", {}).get("thumbprint", "").upper() != ALPHA7["timestampSHA1"]
+            ):
+                raise RunFault("alpha7-admission", "historical mode evidence does not match the exact expired-only alpha.7 tuple")
+        elif args.alpha7_admission is not None:
+            raise RunFault("alpha7-admission", "candidate case cannot request alpha.7 expiry admission")
+        candidate_validity = None
+        if not args.historical_alpha7:
+            if args.candidate_msi is None or not args.candidate_msi.is_file() or not args.candidate_msi_sha256:
+                raise RunFault("candidate-validity", "fixed candidate run requires its exact MSI bytes and expected hash")
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", args.candidate_msi_sha256):
+                raise RunFault("candidate-validity", "candidate MSI identity must be a SHA-256 digest")
+            if hashlib.sha256(args.candidate_msi.read_bytes()).hexdigest() != args.candidate_msi_sha256.lower():
+                raise RunFault("candidate-validity", "candidate MSI bytes differ from the selected exact package hash")
+
+            def direct_candidate_check(phase: str) -> dict:
+                validity_path = args.run_root / f"candidate-validity-{phase}.json"
+                command = [
+                    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                    str(source_root / "tests" / "installed-attachment" / "verify-candidate-current.ps1"),
+                    "-MsiPath", str(args.candidate_msi), "-ExpectedMsiSHA256", args.candidate_msi_sha256,
+                    "-Phase", phase if phase in {"fixed-vhd-run", "fixed-normal-run", "completion"} else "completion",
+                    "-EvidencePath", str(validity_path),
+                ]
+                try:
+                    checked_process = subprocess.run(command, capture_output=True, text=True, timeout=40, check=False)
+                except subprocess.TimeoutExpired as exc:
+                    raise RunFault("candidate-validity", f"candidate {phase} native verifier timed out") from exc
+                try:
+                    observed = json.loads(validity_path.read_text(encoding="utf-8"))
+                    checked = require_candidate_current_valid(observed, checked_at_utc=observed.get("checkedAtUtc", ""))
+                except (OSError, UnicodeError, json.JSONDecodeError, BaselineIdentityError) as exc:
+                    raise RunFault("candidate-validity", f"candidate {phase} native evidence is missing, malformed or expired") from exc
+                if checked_process.returncode or observed.get("msiSha256", "").lower() != args.candidate_msi_sha256.lower():
+                    raise RunFault("candidate-validity", f"candidate {phase} failed native current-valid verification: {checked_process.stderr[-1000:]}")
+                return checked
+
+            phase = "fixed-vhd-run" if args.profile_kind == "mount-point" else "fixed-normal-run"
+            candidate_validity = [direct_candidate_check(phase)]
         expected_path = args.run_root.parent / (run_id + ".expected.json")
         spec = {
             "runId": run_id,
@@ -1026,6 +1329,7 @@ def main() -> int:
             outcome = candidate_pass(
                 args.run_root, run_id, args.expected_app_sha256, args.expected_dll_sha256, args.profile_kind
             )
+            candidate_validity.append(direct_candidate_check("completion"))
         report = {
             "schemaVersion": 1,
             "runId": run_id,
@@ -1037,6 +1341,8 @@ def main() -> int:
             **direct_exit_fields(result.returncode, transaction_child_exit),
             "candidateOracle": outcome.get("candidateAssertion", "passed"),
             "outcome": outcome.get("historicalOutcome", "passed"),
+            "historicalAdmission": alpha7_admission,
+            "candidateValidity": candidate_validity,
             "result": outcome,
         }
         atomic_json(args.run_root / "execution-final.json", report)

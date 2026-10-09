@@ -117,13 +117,29 @@ uses the full configured case lifetime plus an attachment allowance, so the
 historical 90-second alpha.7 failure remains observable. It needs Windows but
 no CrabBox lease or GUI.
 
-The hosted capability workflow is a one-shot first-creation push on either
-`t3code/569-installed-attachment-e2e-20261008` or the cause-fixed repair branch
-`t3code/569-capability-repair-20261009`. Its job runs only when the selected
-branch is created. It checks out and passes that event's immutable `github.sha`,
-so later pushes and default/develop branches do not repeat the probe.
+The hosted capability workflow is a one-shot first-creation push on
+`t3code/569-reviewed-preflight-20261009`. It checks out and passes that event's
+immutable `github.sha`. The no-MSI preflight builds the client, daemon, MCP
+server and bridge from rdpilot commit
+`8f799dd1e37422a8966833a08e4ec279f645ec58` outside the go-mapi checkout. Its
+loopback RDP connection uses the disposable non-admin user's credentials only
+through a private `PasswordCommand` environment and an isolated runtime.
+Native MCP UI Automation must identify the unique test-certificate subject and
+Root-store consent prompt in that exact user session before the bounded `y`
+answer is sent. The preflight independently verifies that the exact certificate
+appeared and was removed from `CurrentUser/Root`; it never imports an MSI or
+substitutes machine-wide trust. Missing, ambiguous or unanswered prompts remain
+unknown/harness failures and cannot establish hosted unavailability.
+
+The same bounded preflight measures actual-user sign-in and normal/VHD profile
+capability, then restores the disposable user and profile. It retains atomic
+child and final parent evidence, PID/creation/exit proofs, and guarded VHD
+restoration. A decisive normal-route limitation and a VHD-only limitation are
+reported separately. This hosted job does not run an installed-MSI case and
+does not itself establish the later candidate signing window or hosted package
+acceptance.
 
 Push CI checks the source commit with Windows-hosted PowerShell parsing and
-runs both portable failure-contract suites from that exact commit. Those CI
-checks do not establish an interactive session or mounted profile; the matrix
-result records the CrabBox lease identity and profile transition evidence.
+runs the portable failure-contract suites from that exact commit. Those CI
+checks do not establish an interactive session or mounted profile; only the
+one-shot hosted preflight observes those capabilities.

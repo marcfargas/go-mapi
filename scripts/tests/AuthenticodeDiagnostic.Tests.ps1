@@ -16,6 +16,71 @@ function Assert-Throws([scriptblock] $Action, [string] $Message) {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('ticket569-authenticode-tests-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 try {
+    # Exercise the actual MSI SIP/CryptQueryObject path against exact owner-pinned
+    # public bytes. No trust-store preparation or installation occurs. The diagnostic
+    # records ambient WinVerifyTrust output, but this test checks decoder/adapter shape
+    # only and never claims native alpha.7 admission.
+    $alpha7Msi = Join-Path $tempRoot 'go-mapi-suite-3.2.0-alpha.7-x64.msi'
+    $alpha7Uri = 'https://github.com/marcfargas/go-mapi/releases/download/suite-v3.2.0-alpha.7/go-mapi-suite-3.2.0-alpha.7-x64.msi'
+    Invoke-WebRequest -Uri $alpha7Uri -OutFile $alpha7Msi -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+    $alpha7Hash = (Get-FileHash -LiteralPath $alpha7Msi -Algorithm SHA256).Hash.ToLowerInvariant()
+    Assert ($alpha7Hash -ceq 'bcf00f8511b8f076582ff06f9ecb00a67aa9476dd3cbdebc5f6b975f4ec94a68') 'Downloaded RFC3161 decoder fixture differs from the pinned alpha.7 MSI'
+    $alpha7Signature = Get-AuthenticodeSignature -LiteralPath $alpha7Msi -ErrorAction Stop
+    Assert ($alpha7Signature.SignerCertificate -and $alpha7Signature.TimeStamperCertificate) 'Pinned alpha.7 decoder fixture did not expose signer and timestamp certificates'
+    Initialize-WinVerifyTrustType
+    $alpha7Diagnostic = Get-AuthenticodeDiagnostic -MsiPath $alpha7Msi -ObservationTimeUtc ([DateTime]::UtcNow)
+    Assert ($alpha7Diagnostic.collectionComplete -and $null -eq $alpha7Diagnostic.rfc3161Exception) 'Real alpha.7 diagnostic collection lost its RFC3161 proof'
+    Assert ($alpha7Diagnostic.signature.signingTimeUtc -eq '2026-09-28T17:32:29.4750000Z') 'Real alpha.7 diagnostic did not retain RFC3161 genTime on the signature record'
+    $classificationInput = Join-Path $tempRoot 'alpha7-real-diagnostic.json'
+    $classificationPayload = @{
+        native=$alpha7Diagnostic; msiSHA256=$alpha7Hash; msiSize=(Get-Item -LiteralPath $alpha7Msi).Length
+        portable=@{ historical=@{
+            timestampUtc='2026-09-28T17:32:29Z'
+            signingRootSHA256='41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
+            timestampRootSHA256='5367f20c7ade0e2bca790915056d086b720c33c1fa2a2661acf787e3292e1270'
+            digestVerified=$true; signatureVerified=$true; timestampVerified=$true
+        } }
+    }
+    [IO.File]::WriteAllText($classificationInput, (ConvertTo-Json -InputObject $classificationPayload -Depth 32), [Text.UTF8Encoding]::new($false))
+    $classificationOutput = & python (Join-Path $repoRoot 'tests/installed-attachment/alpha7-diagnostic-classification.py') $classificationInput 2>&1
+    $classificationText = $classificationOutput -join ' '
+    Assert ($LASTEXITCODE -eq 0 -and $classificationText -match 'ALPHA7_DECODER_ADAPTER_SHAPE_PASSED' -and
+        $classificationText -match 'nativeWinVerifyTrustHResult' -and $classificationText -match 'nativeAdmissionClaimed": false') `
+        "Actual Get-AuthenticodeDiagnostic output failed host-side alpha.7 decoder/adapter shape validation: $classificationText"
+    Write-Output $classificationText
+    Import-Module (Join-Path $repoRoot 'tests/installed-attachment/authenticode-rfc3161.psm1') -Force
+    $alpha7Timestamp = Get-AuthenticodeRfc3161Observation -MsiPath $alpha7Msi `
+        -SignerCertificate $alpha7Signature.SignerCertificate -TimestampCertificate $alpha7Signature.TimeStamperCertificate `
+        -CheckedAtUtc ([DateTime]::UtcNow)
+    Assert ($alpha7Timestamp.signingTimeSource -eq 'rfc3161-tstinfo-genTime' -and $alpha7Timestamp.signingTimeUtc -eq '2026-09-28T17:32:29.4750000Z') 'MSI SIP decoder returned the wrong RFC3161 genTime'
+    Assert ($alpha7Timestamp.messageImprint.algorithmOid -eq '2.16.840.1.101.3.4.2.1' -and $alpha7Timestamp.messageImprint.hashedMessage -eq '6642489753c751c14ceae5961828d0db45f38c22c23eed7ab264c258b811c885') 'MSI RFC3161 imprint differs from the pinned outer signer digest'
+    Assert ($alpha7Timestamp.timestampSignerThumbprint -eq '9D64791BDBA7AB705D8EEB6BC275951F512BC45C' -and $alpha7Timestamp.tokenSignatureVerified) 'RFC3161 CMS token signature or timestamp signer identity was not verified'
+    $legacyProbePath = Join-Path $tempRoot 'rfc3161-windows-powershell51.ps1'
+    @'
+param([string] $MsiPath, [string] $ModulePath)
+$ErrorActionPreference = 'Stop'
+Import-Module $ModulePath -Force
+$signature = Get-AuthenticodeSignature -LiteralPath $MsiPath -ErrorAction Stop
+$proof = Get-AuthenticodeRfc3161Observation -MsiPath $MsiPath -SignerCertificate $signature.SignerCertificate `
+    -TimestampCertificate $signature.TimeStamperCertificate -CheckedAtUtc ([DateTime]::UtcNow)
+$proof | ConvertTo-Json -Compress -Depth 4
+'@ | Set-Content -LiteralPath $legacyProbePath -Encoding ascii
+    $legacyOutput = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $legacyProbePath `
+        -MsiPath $alpha7Msi -ModulePath (Join-Path $repoRoot 'tests/installed-attachment/authenticode-rfc3161.psm1') 2>&1
+    $legacyExit = $LASTEXITCODE
+    Assert ($legacyExit -eq 0) "Windows PowerShell 5.1 could not decode the pinned MSI RFC3161 token: $($legacyOutput -join ' ')"
+    $legacyProof = (($legacyOutput | Select-Object -Last 1) | ConvertFrom-Json)
+    Assert ($legacyProof.signingTimeUtc -eq '2026-09-28T17:32:29.4750000Z' -and $legacyProof.tokenSignatureVerified) 'Windows PowerShell 5.1 returned a different RFC3161 observation'
+    $encodedCms = [Ticket569Rfc3161Cms]::ReadEmbeddedSignedMessage($alpha7Msi)
+    $encryptedDigest = [Ticket569Rfc3161Cms]::ReadEmbeddedEncryptedDigest($alpha7Msi)
+    $tamperedDigest = [byte[]]$encryptedDigest.Clone(); $tamperedDigest[0] = $tamperedDigest[0] -bxor 1
+    $mismatch = Assert-Throws {
+        Get-AuthenticodeRfc3161ObservationFromCms -EncodedMessage $encodedCms -OuterEncryptedDigest $tamperedDigest `
+            -SignerCertificate $alpha7Signature.SignerCertificate -TimestampCertificate $alpha7Signature.TimeStamperCertificate `
+            -CheckedAtUtc ([DateTime]::UtcNow)
+    } 'Tampered outer signer digest unexpectedly passed RFC3161 imprint binding'
+    Assert ($mismatch -like '*messageImprint*') 'Tampered signer digest did not fail at the RFC3161 messageImprint binding'
+
     # A same-named but altered MSI must be rejected before any trust helper can run.
     $fakeMsi = Join-Path $tempRoot 'go-mapi-suite-3.2.0-alpha.9-x64.msi'
     $fakeProof = Join-Path $tempRoot 'suite-3.2.0-alpha.9.validation.json'
@@ -55,21 +120,41 @@ try {
 
     # A collected negative chain status is diagnostic evidence, but an exception while
     # collecting either required signer/timestamp chain must keep the observation incomplete.
-    Add-Type 'public static class Ticket569WinVerifyTrust { public static object Verify(string path) { return new { verifyHResultHex = "0x800B0109" }; } }'
-    $diagnosticModule = Get-Module -Name authenticode-diagnostic
-    $rsa = [System.Security.Cryptography.RSA]::Create(2048)
-    $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
-        'CN=synthetic-authenticode-test', $rsa,
-        [System.Security.Cryptography.HashAlgorithmName]::SHA256,
-        [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-    $fixtureCertificate = $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+    # Exercise mocked WinVerifyTrust and chain-provider cases in a separate CLR.
+    # The real alpha.7 diagnostic above initialized the production static type in
+    # this process; Add-Type cannot redefine it to return synthetic values.
+    $isolatedDiagnosticPath = Join-Path $tempRoot 'isolated-diagnostic-fixtures.ps1'
+    @'
+param([string] $ModulePath)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+public static class Ticket569WinVerifyTrust {
+ public static object Verify(string path) { return new { verifyHResultHex = "0x800B0109" }; }
+}
+"@
+Import-Module -Name $ModulePath -Force
+$diagnosticModule = Get-Module -Name authenticode-diagnostic
+& $diagnosticModule { function script:Import-Module { param([string] $Name, [switch] $Force) } }
+$rsa = [System.Security.Cryptography.RSA]::Create(2048)
+$request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+    'CN=synthetic-authenticode-test', $rsa,
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+$fixtureCertificate = $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddDays(1))
+try {
     & $diagnosticModule {
         param($certificate)
         $script:chainCollectionFails = $true
+        $script:rfcCollectionFails = $false
         $script:fixtureCertificate = $certificate
         function script:Get-AuthenticodeSignature {
             param($LiteralPath, $ErrorAction)
             [pscustomobject]@{ Status = 'UnknownError'; StatusMessage = 'synthetic'; SignatureType = 'Authenticode'; IsOSBinary = $false; SignerCertificate = $script:fixtureCertificate; TimeStamperCertificate = $script:fixtureCertificate }
+        }
+        function script:Get-AuthenticodeRfc3161Observation {
+            param($MsiPath, $SignerCertificate, $TimestampCertificate, $CheckedAtUtc)
+            if ($script:rfcCollectionFails) { throw [InvalidOperationException]::new('synthetic RFC3161 collection failure') }
+            [pscustomobject]@{ signingTimeUtc='2026-09-28T17:32:29.4750000Z'; signingTimeSource='rfc3161-tstinfo-genTime' }
         }
         function script:Get-ChainDiagnostic {
             param($Certificate, $VerificationTimeUtc, $CertificateRole)
@@ -80,13 +165,24 @@ try {
         }
     } $fixtureCertificate
     $chainFailure = Get-AuthenticodeDiagnostic -MsiPath $PSCommandPath -ObservationTimeUtc ([DateTime]::UtcNow)
-    Assert (-not $chainFailure.collectionComplete) 'Signer/timestamp chain collection exceptions were reported complete'
-    Assert ($chainFailure.signerChain.exception.message -and $chainFailure.timestampChain.exception.message) 'Chain collection failure evidence was lost'
+    if ($chainFailure.collectionComplete -or -not $chainFailure.signerChain.exception.message -or -not $chainFailure.timestampChain.exception.message) { throw 'Signer/timestamp chain collection exceptions were reported complete or lost' }
     & $diagnosticModule { $script:chainCollectionFails = $false }
     $negativeChain = Get-AuthenticodeDiagnostic -MsiPath $PSCommandPath -ObservationTimeUtc ([DateTime]::UtcNow)
-    Assert ($negativeChain.collectionComplete -and $negativeChain.signerChain.buildSucceeded -eq $false -and $negativeChain.signerChain.chainStatus[0].status -eq 'UntrustedRoot') 'A collected negative chain status was treated as a collection failure'
+    if (-not $negativeChain.collectionComplete -or $negativeChain.signerChain.buildSucceeded -ne $false -or $negativeChain.signerChain.chainStatus[0].status -ne 'UntrustedRoot') { throw 'A collected negative chain status was treated as a collection failure' }
+    & $diagnosticModule { $script:rfcCollectionFails = $true }
+    $rfcFailure = Get-AuthenticodeDiagnostic -MsiPath $PSCommandPath -ObservationTimeUtc ([DateTime]::UtcNow)
+    if ($rfcFailure.collectionComplete -or $rfcFailure.rfc3161Exception.message -notlike '*synthetic RFC3161 collection failure*') { throw 'RFC3161 collection exception was reported as complete' }
+    Write-Output 'TICKET569_SYNTHETIC_AUTHENTICODE_FIXTURES_PASSED'
+} finally {
     $fixtureCertificate.Dispose()
     $rsa.Dispose()
+}
+'@ | Set-Content -LiteralPath $isolatedDiagnosticPath -Encoding ascii
+    $isolatedOutput = & pwsh -NoProfile -NonInteractive -File $isolatedDiagnosticPath -ModulePath $modulePath 2>&1
+    $isolatedExit = $LASTEXITCODE
+    $isolatedText = $isolatedOutput -join ' '
+    Assert ($isolatedExit -eq 0 -and $isolatedText -match 'TICKET569_SYNTHETIC_AUTHENTICODE_FIXTURES_PASSED') `
+        "Isolated synthetic Authenticode fixtures failed in a fresh CLR: $isolatedText"
 
     # Root-store inventory is a required observation: an exception is incomplete,
     # while an observed absence or mismatch remains collected diagnostic data.

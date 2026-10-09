@@ -19,6 +19,12 @@ function Get-FileSha256([string] $Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
 }
 
+function Get-BytesSha256([byte[]] $Bytes) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
 function Assert-Alpha9DiagnosticInputs([string] $MsiPath, [string] $ProofPath) {
     foreach ($file in @($MsiPath, $ProofPath)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Pinned alpha.9 input is missing: $file" }
@@ -196,6 +202,7 @@ function Get-ChainDiagnostic([System.Security.Cryptography.X509Certificates.X509
                 subject = $_.Certificate.Subject
                 issuer = $_.Certificate.Issuer
                 thumbprint = $_.Certificate.Thumbprint
+                certificateSha256 = Get-BytesSha256 $_.Certificate.RawData
                 notBeforeUtc = $_.Certificate.NotBefore.ToUniversalTime().ToString('o')
                 notAfterUtc = $_.Certificate.NotAfter.ToUniversalTime().ToString('o')
                 status = @($_.ChainElementStatus | ForEach-Object {
@@ -218,6 +225,7 @@ function Test-ChainDiagnosticCollected([object] $Chain) {
 }
 
 function Get-AuthenticodeDiagnostic([string] $MsiPath, [DateTime] $ObservationTimeUtc) {
+    Import-Module (Join-Path $PSScriptRoot 'authenticode-rfc3161.psm1') -Force
     $result = [ordered]@{
         observationTimeUtc = $ObservationTimeUtc.ToUniversalTime().ToString('o')
         msiPath = $MsiPath
@@ -225,6 +233,8 @@ function Get-AuthenticodeDiagnostic([string] $MsiPath, [DateTime] $ObservationTi
         signature = $null
         signatureDetailsComplete = $false
         signatureException = $null
+        rfc3161SigningTime = $null
+        rfc3161Exception = $null
         winVerifyTrust = $null
         winVerifyTrustException = $null
         collectionComplete = $false
@@ -237,6 +247,8 @@ function Get-AuthenticodeDiagnostic([string] $MsiPath, [DateTime] $ObservationTi
             statusMessage = [string]$signature.StatusMessage
             signatureType = [string]$signature.SignatureType
             isOSBinary = [bool]$signature.IsOSBinary
+            signingTimeUtc = $null
+            signingTimeSource = $null
             signer = if ($signature.SignerCertificate) {
                 [pscustomobject]@{ subject = $signature.SignerCertificate.Subject; issuer = $signature.SignerCertificate.Issuer; thumbprint = $signature.SignerCertificate.Thumbprint; notBeforeUtc = $signature.SignerCertificate.NotBefore.ToUniversalTime().ToString('o'); notAfterUtc = $signature.SignerCertificate.NotAfter.ToUniversalTime().ToString('o') }
             } else { $null }
@@ -247,12 +259,22 @@ function Get-AuthenticodeDiagnostic([string] $MsiPath, [DateTime] $ObservationTi
         $result.signatureDetailsComplete = ($null -ne $signature.SignerCertificate -and $null -ne $signature.TimeStamperCertificate)
         $result.signerChain = Get-ChainDiagnostic $signature.SignerCertificate $ObservationTimeUtc 'signer'
         $result.timestampChain = Get-ChainDiagnostic $signature.TimeStamperCertificate $ObservationTimeUtc 'timestamp'
+        if ($result.signatureDetailsComplete) {
+            try {
+                $result.rfc3161SigningTime = Get-AuthenticodeRfc3161Observation -MsiPath $MsiPath `
+                    -SignerCertificate $signature.SignerCertificate -TimestampCertificate $signature.TimeStamperCertificate `
+                    -CheckedAtUtc $ObservationTimeUtc
+                $result.signature.signingTimeUtc = $result.rfc3161SigningTime.signingTimeUtc
+                $result.signature.signingTimeSource = $result.rfc3161SigningTime.signingTimeSource
+            } catch { $result.rfc3161Exception = Get-ExceptionEvidence $_.Exception }
+        }
     } catch { $result.signatureException = Get-ExceptionEvidence $_.Exception }
 
     try { $result.winVerifyTrust = [Ticket569WinVerifyTrust]::Verify($MsiPath) }
     catch { $result.winVerifyTrustException = Get-ExceptionEvidence $_.Exception }
     $result.collectionComplete = ($null -ne $result.signature -and $result.signatureDetailsComplete -and $null -ne $result.winVerifyTrust -and
         $null -eq $result.signatureException -and $null -eq $result.winVerifyTrustException -and
+        $null -eq $result.rfc3161Exception -and
         (Test-ChainDiagnosticCollected $result.signerChain) -and
         (Test-ChainDiagnosticCollected $result.timestampChain))
     return [pscustomobject]$result
