@@ -3,19 +3,23 @@ name: Hosted installed attachment capability
 on:
   push:
     branches:
-      - 't3code/569-installed-attachment-e2e-20261008'
-      - 't3code/569-capability-repair-20261009'
+      - 't3code/569-reviewed-preflight-20261009'
 
 permissions:
   contents: read
 
 jobs:
   hosted-capability:
-    name: Hosted Windows session capability (alpha.9 input only)
+    name: Hosted Windows MSI-free capability preflight
     if: github.event.created == true
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - name: Start job-wide probe deadline before source preparation
+        shell: pwsh
+        run: |
+          $started = [DateTime]::UtcNow.ToString('o')
+          "HOSTED_CAPABILITY_JOB_STARTED_AT_UTC=$started" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - name: Validate explicit source identity
         shell: pwsh
         env:
@@ -28,15 +32,40 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+      - name: Fetch exact pinned rdpilot source outside the go-mapi checkout
+        shell: pwsh
+        run: |
+          $rdpilot = Join-Path $env:RUNNER_TEMP 'rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58'
+          git clone --filter=blob:none --no-checkout https://github.com/chispa-sideral/rdpilot.git $rdpilot
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch pinned rdpilot source' }
+          git -C $rdpilot checkout --detach 8f799dd1e37422a8966833a08e4ec279f645ec58
+          if ($LASTEXITCODE -ne 0) { throw 'Could not check out exact pinned rdpilot commit' }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Build the pinned native CUA client
+        run: |
+          $expected = '8f799dd1e37422a8966833a08e4ec279f645ec58'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $expected) { throw 'Pinned rdpilot checkout differs from the reviewed source commit' }
+          cargo build --release --locked -p rdpilot-cli -p rdpilot-daemon -p rdpilot-mcp -p rdpilot-bridge --target x86_64-pc-windows-msvc
+        working-directory: ${{ runner.temp }}/rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58
+        shell: pwsh
       - name: Run bounded capability probe
         shell: pwsh
         env:
           REQUESTED_SOURCE_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
+          RDPILOT_BIN_DIR: ${{ runner.temp }}\rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58\target\x86_64-pc-windows-msvc\release
+          RDPILOT_SOURCE_SHA: 8f799dd1e37422a8966833a08e4ec279f645ec58
         run: |
           $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-hosted-capability'
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          pwsh -NoProfile -File tests/installed-attachment/hosted-capability.ps1 -SourceSHA $env:REQUESTED_SOURCE_SHA -EvidenceDirectory $evidence
+          pwsh -NoProfile -File tests/installed-attachment/hosted-capability.ps1 -SourceSHA $env:REQUESTED_SOURCE_SHA -EvidenceDirectory $evidence -DeadlineMinutes 30 -JobStartedAtUtc $env:HOSTED_CAPABILITY_JOB_STARTED_AT_UTC
           if ($LASTEXITCODE -ne 0) { throw "Hosted capability probe exited $LASTEXITCODE" }
       - uses: actions/upload-artifact@v4
         if: always()

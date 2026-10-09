@@ -138,7 +138,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'installed attachment retained-handle process observer check failed' }
           pwsh -NoProfile -NonInteractive -File scripts/tests/AuthenticodeDiagnostic.Tests.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Authenticode diagnostic safety and workflow routing tests failed' }
-          $files = Get-ChildItem tests/installed-attachment -Filter '*.ps1' -File
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-verdict-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability verdict and root ownership fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/alpha7-admission-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'alpha.7 native/portable admission gate fault checks failed' }
+          $files = Get-ChildItem tests/installed-attachment -Include '*.ps1','*.psm1' -File -Recurse
           foreach ($file in $files) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
