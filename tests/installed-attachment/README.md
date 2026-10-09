@@ -118,18 +118,31 @@ historical 90-second alpha.7 failure remains observable. It needs Windows but
 no CrabBox lease or GUI.
 
 The hosted capability workflow is a one-shot first-creation push on
-`t3code/569-msi-free-preflight-20261009`. It checks out and passes that event's
+`t3code/569-bounded-preflight-20261009`. It checks out and passes that event's
 immutable `github.sha`. The no-MSI preflight builds the client, daemon, MCP
-server and bridge from rdpilot commit
+server and bridge binaries from rdpilot commit
 `8f799dd1e37422a8966833a08e4ec279f645ec58` outside the go-mapi checkout. Its
 loopback RDP connection uses the disposable non-admin user's credentials only
-through a private `PasswordCommand` environment and an isolated runtime.
+through the worker-to-owner control pipe and a bounded CurrentUser-only
+one-shot pipe from the owner to the exact pinned `rdpilot` `PasswordCommand`
+child. The password never enters a process environment, command line or file.
 Native MCP UI Automation must identify the unique test-certificate subject and
-Root-store consent prompt in that exact user session before the bounded `y`
-answer is sent. The preflight independently verifies that the exact certificate
+Root-store consent prompt in that exact user session before clicking its
+identity-bound affirmative UIA control. The preflight independently verifies that the exact certificate
 appeared and was removed from `CurrentUser/Root`; it never imports an MSI or
 substitutes machine-wide trust. Missing, ambiguous or unanswered prompts remain
 unknown/harness failures and cannot establish hosted unavailability.
+
+Before the session owner starts, the bounded CUA build stage downloads only the
+audited `nightly-cua-driver-rs-v0.30.5-nightly.20260929.36522098176` Windows
+archive, enforces a 60-second and exact-byte-count limit, and checks its fixed
+SHA-256. It copies the bridge just built from the pinned rdpilot source into
+that same bundle and records both file hashes. The session owner supplies the supported process-local `RDPILOT_BUNDLE_PATH`
+override to the CLI, daemon and MCP, and retains a private configuration copy; its per-login hosts file pins that exact CUA release and sets
+`CuaAutoDownload no`. Thus the daemon has the locally built bridge and exact
+verified archive available without its dynamic download defaults. The source
+and release input are pinned, but runtime compatibility of those guest
+components remains unrun and is not claimed by local tests.
 
 The same bounded preflight measures actual-user sign-in and normal/VHD profile
 capability, then restores the disposable user and profile. It retains atomic
@@ -143,3 +156,36 @@ Push CI checks the source commit with Windows-hosted PowerShell parsing and
 runs the portable failure-contract suites from that exact commit. Those CI
 checks do not establish an interactive session or mounted profile; only the
 one-shot hosted preflight observes those capabilities.
+
+The hosted owner stops and flushes its retained prompt service before each
+planned disconnect and remains available for the second planned login. Unexpected
+stream loss stays fatal. Consent screenshots use immutable content-addressed
+filenames. Helpers wait for exact identity gates before mutation and retain their
+process handles through result writes and the finishing hold. Windows PowerShell
+5.1 remains the importer and recovery participant runtime.
+
+Recovery on the retained second login may attach a removal-only MCP watcher
+after the prior planned service stop. It rechecks the owned SID, session, loaded
+profile and volume, then uses the existing bridge; it never reconnects or replays
+the import. Unavailable identity or an unexpected stream loss remains unverified.
+
+The absolute cutoffs are J+21 for work, J+24 for cleanup, J+25 for local final
+evidence/watchdog, and J+27 for upload. Failure evidence can still be retained
+after a missed local-final cutoff, with failure qualification and a verified
+complete-set index and secret scan. A retained upload Job Object limits the actual
+node20 upload child to at most two minutes or the remaining seconds, including
+subminute attempts. Successful upload exit remains attempted-unverified until
+the root independently audits the downloaded artifact. Runner cache integration
+and Windows kernel behavior require Windows CI; portable arithmetic is insufficient.
+The cached upload entry receives explicit upstream defaults: overwrite false,
+hidden files excluded, and compression level 6. CI checks the production wrapper
+environment against the hash-pinned upstream compiled input parser with action
+startup and networking suppressed; this does not prove artifact retention.
+
+`profile.ps1` defaults to the lease interface used by the SSH runner. Hosted
+callers explicitly supply the sole-writer mutation hook and absolute deadline.
+The VHD route can produce a typed limitation only for actual CredWriteW
+ERROR_NOT_SUPPORTED (50), verified mounted-profile identity, a feasible normal
+control, and verified credential absence without cleanup errors. Other native
+errors, helper failures and unknowns remain failures. This describes the observed
+API refusal and does not claim a general Windows VHD limitation.
