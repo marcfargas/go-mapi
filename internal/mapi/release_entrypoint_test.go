@@ -74,7 +74,7 @@ func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
 		content := string(workflow)
 		if entry.Name() == "hosted-capability.yml" {
 			for _, required := range []string{
-				"push:", "'t3code/569-installed-attachment-e2e-20261008'", "github.sha",
+				"push:", "'t3code/569-msi-free-preflight-20261009'", "github.sha",
 				"if: github.event.created == true",
 			} {
 				if !strings.Contains(content, required) {
