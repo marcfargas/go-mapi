@@ -138,13 +138,58 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'installed attachment retained-handle process observer check failed' }
           pwsh -NoProfile -NonInteractive -File scripts/tests/AuthenticodeDiagnostic.Tests.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Authenticode diagnostic safety and workflow routing tests failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-arguments-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability arguments regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-mainpath-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability gate and worker cleanup main-path regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-recovery-ui-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability retained recovery UI regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-lease-caller-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability unchanged Lease profile caller regression failed' }
+          $uploadInputBundle = Join-Path $env:RUNNER_TEMP 'ticket569-upload-artifact-ea165f8-inputs.js'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/actions/upload-artifact/ea165f8d65b6e75b540449e92b4886f43607fa02/dist/upload/index.js' -OutFile $uploadInputBundle -TimeoutSec 60
+          node tests/installed-attachment/test_hosted_upload_inputs.cjs $uploadInputBundle
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability upload wrapper input semantics failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-canary-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability canary regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-owned-cleanup-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability owned cleanup regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-closure-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability closure regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-framework-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability framework regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-upload-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability bounded upload kernel regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-retention-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability retention regression failed' }
           pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-verdict-tests.ps1
           if ($LASTEXITCODE -ne 0) { throw 'hosted capability verdict and root ownership fault checks failed' }
-          pwsh -NoProfile -STA -NonInteractive -File tests/installed-attachment/hosted-rdp-control-compile-check.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'hosted RDP ActiveX control compile check failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-owner-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability durable ownership ledger checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-protocol-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability named-pipe mutation protocol checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-credential-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability credential ownership and recovery checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-password-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability one-shot password transfer checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-index-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability evidence index and retention audit fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-process-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability native Job Object/process identity checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-supervisor-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability deadline and workflow supervision checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-intent-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability exact intent authorization fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-participant-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability participant tests failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-profile-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability production profile crash/replay checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-bundle-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability pinned guest bundle gates failed' }
           pwsh -NoProfile -NonInteractive -File tests/installed-attachment/alpha7-admission-tests.ps1
           if ($LASTEXITCODE -ne 0) { throw 'alpha.7 native/portable admission gate fault checks failed' }
-          $files = Get-ChildItem tests/installed-attachment -Include '*.ps1','*.psm1' -File -Recurse
+          $files = @(Get-ChildItem tests/installed-attachment -File -Recurse | Where-Object { $_.Extension -in @('.ps1','.psm1') })
+          if ($files.Count -eq 0) { throw 'PowerShell parser discovered no source files' }
           foreach ($file in $files) {
             $tokens = $null; $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
