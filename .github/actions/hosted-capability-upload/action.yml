@@ -1,0 +1,13 @@
+name: Bounded hosted capability evidence upload
+description: Retain the actual upload child and enforce the smaller of two minutes and the absolute J+27 remainder.
+inputs:
+  name: { required: true }
+  path: { required: true }
+  if-no-files-found: { default: error }
+  retention-days: { default: '14' }
+  job-start-counter: { required: true }
+  counter-frequency: { required: true }
+  boot-marker: { required: true }
+runs:
+  using: node20
+  main: upload.js

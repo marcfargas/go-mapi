@@ -4,14 +4,44 @@ param(
     [Parameter(Mandatory)][string] $RunId,
     [Parameter(Mandatory)][ValidateSet('normal', 'mount-point')][string] $ProfileKind,
     [Parameter(Mandatory)][string] $ExpectedSID,
+    [Parameter(Mandatory)][ValidatePattern('^[a-f0-9]{40}$')][string] $SourceSHA,
+    [Parameter(Mandatory)][ValidatePattern('^Ticket569-[a-f0-9]{32}-helper$')][string] $SupervisorPipeName,
+    [Parameter(Mandatory)][int] $ExpectedSessionId,
     [string] $VhdPath,
+    [Parameter(Mandatory)][string] $LaunchGateName,
+    [Parameter(Mandatory)][long] $JobStartCounter,
+    [Parameter(Mandatory)][long] $CounterFrequency,
     [ValidateRange(0, 15)][int] $HoldAfterWriteSeconds = 3
 )
 
 $ErrorActionPreference = 'Stop'
+$null=Import-Module (Join-Path $PSScriptRoot 'hosted-capability-credential.psm1') -Force -PassThru
+$null=Import-Module (Join-Path $PSScriptRoot 'hosted-capability-protocol.psm1') -Force -PassThru
+Set-HostedCapabilityProtocolDeadline -DeadlineCounter ($JobStartCounter+21L*60L*$CounterFrequency) -CounterFrequency $CounterFrequency
+$script:supervisorConnection=$null
+Import-Module (Join-Path $PSScriptRoot 'hosted-capability-native.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'hosted-capability-clock.psm1') -Force
+$launchGate=Open-HostedCapabilityGate -Name $LaunchGateName -Access 0x00100000
+try{
+    if($CounterFrequency -ne [Diagnostics.Stopwatch]::Frequency -or $LaunchGateName -cne "Global\Ticket569-$RunId-user-$ProfileKind"){throw 'User probe gate/clock identity mismatch'}
+    $gateUntil=$JobStartCounter+21L*60L*$CounterFrequency
+    while(!$launchGate.Wait((Get-HostedCapabilityWaitBudget $gateUntil $CounterFrequency 50))){if([Diagnostics.Stopwatch]::GetTimestamp() -ge $gateUntil){throw 'User probe identity gate exceeded J+21'}}
+}finally{$launchGate.Dispose()}
+function Invoke-HostedCredentialNativeWrite([string]$Target,[string]$Secret){
+    try{[Ticket569HostedCredentialV2]::Write($Target,$Secret)}catch{
+        $native=$_.Exception
+        while($native.InnerException){$native=$native.InnerException}
+        if($native -is [ComponentModel.Win32Exception]){
+            $record.nativeFailureFromApi=$true;$record.nativeOperation='CredWriteW';$record.nativeWin32ErrorCode=$native.NativeErrorCode
+        }
+        throw
+    }
+}
 $startedAt = [DateTime]::UtcNow
 $record = [ordered]@{
     schema = 'go-mapi-hosted-user-probe-v2'
+    nativeFailureFromApi = $false
+    nativeRefusalAcknowledged = $false
     runId = $RunId
     profileKind = $ProfileKind
     startedAtUtc = $startedAt.ToString('o')
@@ -39,6 +69,16 @@ $record = [ordered]@{
 }
 $runCredentialTarget = "ticket569-hosted-capability-$RunId"
 $credentialWasWritten = $false
+
+function Invoke-HostedChildMutation([string] $Operation,[object] $ResourceIdentity,[object] $Precondition,[scriptblock] $Action) {
+    if(!$script:supervisorConnection){$script:supervisorConnection=Connect-HostedCapabilityHelper -PipeName $SupervisorPipeName -TimeoutMilliseconds 10000}
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent();$process=Get-Process -Id $PID
+    $target=@{};foreach($key in $ResourceIdentity.Keys){$target[$key]=$ResourceIdentity[$key]}
+    $target.sid=$identity.User.Value;$target.sessionId=[int]$process.SessionId
+    $receipt=Invoke-HostedHelperMutation -Connection $script:supervisorConnection -RunId $RunId -SourceSHA $SourceSHA.ToLowerInvariant() `
+        -Operation $Operation -ResourceIdentity $target -Precondition $Precondition -Action $Action
+    $receipt.result
+}
 
 function Write-Atomic([string] $Path, [object] $Value) {
     $parent = Split-Path -Parent $Path
@@ -113,12 +153,8 @@ public static class Ticket569HostedCredentialV2 {
     if ($admin) { $record.conditions.Add('user-is-administrator') }
     if ($record.windowStation -ne 'WinSta0' -or $record.desktop -ne 'Default') { $record.conditions.Add('interactive-desktop-mismatch') }
     if (!$profile -or !$profile.Loaded -or $profile.LocalPath -ne $env:USERPROFILE -or $record.userProfileApi -ne $env:USERPROFILE -or !$record.profileHivePresent) { $record.conditions.Add('actual-loaded-profile-identity-mismatch') }
-
-    $secret = [guid]::NewGuid().ToString('N')
-    $credentialWritten = [Ticket569HostedCredentialV2]::Write($runCredentialTarget, $secret)
-    $credentialWasWritten = [bool]$credentialWritten
-    $credentialRead = [Ticket569HostedCredentialV2]::ReadMatches($runCredentialTarget, $secret)
-    $record.credential = [ordered]@{ write=$credentialWritten; read=$true; bytesMatch=$credentialRead }
+    if($record.sessionId -ne $ExpectedSessionId){$record.conditions.Add('expected-session-id-mismatch')}
+    if($record.conditions.Count){throw 'Credential mutation refused because exact interactive non-admin loaded-profile identity checks failed'}
 
     if ($ProfileKind -eq 'mount-point') {
         $reparse = (& fsutil.exe reparsepoint query $env:USERPROFILE 2>&1 | Out-String)
@@ -140,24 +176,47 @@ public static class Ticket569HostedCredentialV2 {
         }
         if ($record.profileMount.reparseTag -ne '0xA0000003' -or !$record.profileMount.attached -or !$record.profileMount.volumeMatchesVhd) { $record.conditions.Add('real-vhd-profile-identity-mismatch') }
     }
+    if($record.conditions.Count){throw 'Real VHD profile identity did not validate before credential mutation'}
+    $secret = [guid]::NewGuid().ToString('N')
+    $credentialPrewriteError=[Ticket569HostedCredentialV2]::ReadError($runCredentialTarget)
+    $credentialWritten = Invoke-HostedCapabilityCredentialWrite -PrewriteReadErrorCode $credentialPrewriteError -WriteAction {
+        Invoke-HostedChildMutation 'write-owned-run-credential' @{target=$runCredentialTarget;sid=$identity.User.Value;sessionId=$process.SessionId} @{credentialAbsent=$true;credReadError=$credentialPrewriteError} { Invoke-HostedCredentialNativeWrite $runCredentialTarget $secret }
+    }
+    $record.nativeOperation=$null
+    $credentialWasWritten = [bool]$credentialWritten
+    $credentialRead = Invoke-HostedChildMutation 'read-owned-run-credential' @{target=$runCredentialTarget;sid=$identity.User.Value;sessionId=$process.SessionId} @{credentialJustWritten=$credentialWasWritten} { [Ticket569HostedCredentialV2]::ReadMatches($runCredentialTarget, $secret) }
+    $record.credential = [ordered]@{ write=$credentialWritten; read=$true; bytesMatch=$credentialRead }
+
+
 } catch {
+    $nativeError=$_.Exception
+    $acknowledged=$false
+    while($nativeError){if($nativeError.Data['Ticket569MutationObservationAcknowledged'] -eq $true){$acknowledged=$true};if(!$nativeError.InnerException){break};$nativeError=$nativeError.InnerException}
+    $record.nativeRefusalAcknowledged=[bool]($record.nativeFailureFromApi -and $acknowledged)
+    if($nativeError -is [ComponentModel.Win32Exception]){$record.nativeWin32ErrorCode=$nativeError.NativeErrorCode}
     $record.conditions.Add("probe-exception:$($_.Exception.GetType().FullName):$($_.Exception.Message)")
 } finally {
     if ($credentialWasWritten) {
-        $deleteError = [Ticket569HostedCredentialV2]::Delete($runCredentialTarget)
-        $readError = [Ticket569HostedCredentialV2]::ReadError($runCredentialTarget)
+        try {
+            $deleteError = Invoke-HostedChildMutation 'delete-owned-run-credential' @{target=$runCredentialTarget;sid=$ExpectedSID;sessionId=$record.sessionId} @{credentialWasWritten=$true;targetExactRunScoped=$true} { [Ticket569HostedCredentialV2]::Delete($runCredentialTarget) }
+            $readError = Invoke-HostedChildMutation 'verify-owned-run-credential-absence' @{target=$runCredentialTarget;sid=$ExpectedSID;sessionId=$record.sessionId} @{deleteError=$deleteError} { [Ticket569HostedCredentialV2]::ReadError($runCredentialTarget) }
+        } catch { $record.cleanupErrors.Add("Acknowledged credential cleanup failed: $($_.Exception.GetType().FullName)") }
         if ($null -eq $record.credential) { $record.credential = [ordered]@{} }
         $record.credential.deleteError = $deleteError
         $record.credential.absenceReadError = $readError
         $record.credential.absentAfterCleanup = ($readError -eq 1168)
         if ($deleteError -notin @(0, 1168) -or $readError -ne 1168) { $record.cleanupErrors.Add("WinCred cleanup failed: CredDelete=$deleteError CredRead=$readError") }
     }
+    if('Ticket569HostedCredentialV2' -as [type]){
+        try{$record.credentialFinalCredReadError=[Ticket569HostedCredentialV2]::ReadError($runCredentialTarget)}catch{$record.cleanupErrors.Add('Final actual CredRead did not complete')}
+    }
+    if($script:supervisorConnection){Close-HostedCapabilitySupervisorConnection -Connection $script:supervisorConnection;$script:supervisorConnection=$null}
 }
 
 $record.completedAtUtc = [DateTime]::UtcNow.ToString('o')
 $record.passed = ($record.conditions.Count -eq 0 -and $record.cleanupErrors.Count -eq 0 -and $record.credential.bytesMatch -and $record.credential.absentAfterCleanup)
 try { Write-Atomic $OutputPath $record }
 catch { [Console]::Error.WriteLine("final evidence write failed: $($_.Exception.Message)"); exit 2 }
-if ($HoldAfterWriteSeconds -gt 0) { Start-Sleep -Seconds $HoldAfterWriteSeconds }
+if ($HoldAfterWriteSeconds -gt 0) { Start-Sleep -Milliseconds ([int][Math]::Max(0,[Math]::Min($HoldAfterWriteSeconds*1000,[Math]::Floor(($gateUntil-[Diagnostics.Stopwatch]::GetTimestamp())*1000.0/$CounterFrequency)))) }
 if (!$record.passed) { exit 1 }
 exit 0
