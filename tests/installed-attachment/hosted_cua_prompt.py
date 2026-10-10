@@ -15,12 +15,9 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
+import threading
 import time
-import uuid
 
 
 class PromptFault(RuntimeError):
@@ -105,7 +102,7 @@ def validate_schema(schema, value, path="$", depth=0):
             raise PromptFault(f"MCP argument is above advertised maximum at {path}")
 
 
-def prompt_button(state, expected_name, expected_thumbprint):
+def prompt_button(state, expected_name, expected_thumbprint, action="import"):
     """Return the exact affirmative control in the observed consent window."""
     serialized = json.dumps(state, ensure_ascii=False).casefold()
     observed_thumbprints = re.sub(r"[^0-9a-f]", "", serialized)
@@ -120,17 +117,19 @@ def prompt_button(state, expected_name, expected_thumbprint):
             continue
         role = str(element.get("role", "")).casefold()
         label = str(element.get("label", "")).strip().casefold()
-        if role in {"button", "push button"} and label in {"yes", "install", "allow"} and element.get("enabled") is not False:
+        affirmative_labels = {"yes", "install", "allow"} if action == "import" else {"yes", "remove", "delete"}
+        if role in {"button", "push button"} and label in affirmative_labels and element.get("enabled") is not False:
             token = element.get("element_token")
             if isinstance(token, str):
                 affirmative.append(token)
     return affirmative[0] if len(affirmative) == 1 else None
 
 
-def prompt_matches(value, expected_name, expected_thumbprint):
-    """Match visible root-consent text and both observed certificate identities."""
+def prompt_matches(value, expected_name, expected_thumbprint, action="import"):
+    """Match visible root add/remove consent text and both certificate identities."""
     text = json.dumps(value, ensure_ascii=False).casefold()
-    root_consent = ("root" in text and any(token in text for token in ("add", "install", "trust")))
+    action_words = ("add", "install", "trust") if action == "import" else ("remove", "delete")
+    root_consent = ("root" in text and any(token in text for token in action_words))
     observed_thumbprints = re.sub(r"[^0-9a-f]", "", text)
     wanted_thumbprint = re.sub(r"[^0-9a-f]", "", expected_thumbprint.casefold())
     return expected_name.casefold() in text and wanted_thumbprint in observed_thumbprints and root_consent
@@ -151,7 +150,7 @@ class Mcp:
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
-            str(self.binary), "--session", self.session, env=self.env,
+            *(list(self.binary) if isinstance(self.binary, (list, tuple)) else [str(self.binary)]), "--session", self.session, env=self.env,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -165,7 +164,7 @@ class Mcp:
         listing = await self.request("tools/list", {})
         self.tools = {tool["name"]: tool.get("inputSchema") for tool in listing.get("tools", [])
                       if isinstance(tool, dict) and isinstance(tool.get("name"), str)}
-        for name in ("list_windows", "get_window_state"):
+        for name in ("list_windows", "get_window_state", "click", "launch_app"):
             if name not in self.tools:
                 raise PromptFault(f"pinned Cua did not advertise required tool {name}")
         return {"serverInfo": result["serverInfo"], "toolCount": len(self.tools)}
@@ -213,21 +212,10 @@ class Mcp:
                 await asyncio.wait_for(self.proc.wait(), 5)
             except asyncio.TimeoutError:
                 self.proc.kill()
-                await self.proc.wait()
+                await asyncio.wait_for(self.proc.wait(), 5)
 
 
-def cli(binary, env, *args, timeout=45):
-    completed = subprocess.run([str(binary), *args, "--json"], env=env,
-                               capture_output=True, timeout=timeout, check=False)
-    if completed.returncode:
-        raise PromptFault(f"rdpilot {args[0]} exited {completed.returncode}")
-    try:
-        return json.loads(completed.stdout.decode("utf-8-sig"))
-    except (ValueError, UnicodeError) as exc:
-        raise PromptFault(f"rdpilot {args[0]} returned malformed JSON") from exc
-
-
-async def observe_once(mcp, expected_name, expected_thumbprint, evidence_path):
+async def observe_once(mcp, expected_name, expected_thumbprint, evidence_path, action="import"):
     listed = structured(await mcp.tool("list_windows"))
     candidates = []
     enumerated = []
@@ -248,15 +236,22 @@ async def observe_once(mcp, expected_name, expected_thumbprint, evidence_path):
         })
         state = structured(raw_state)
         visible = {"window": window, "state": state}
-        if prompt_matches(visible, expected_name, expected_thumbprint):
-            token = prompt_button(state, expected_name, expected_thumbprint)
+        if prompt_matches(visible, expected_name, expected_thumbprint, action):
+            token = prompt_button(state, expected_name, expected_thumbprint, action)
             if token:
                 screenshot = next((block for block in raw_state.get("content", []) if block.get("type") == "image"), None)
                 screenshot_record = None
                 if screenshot and screenshot.get("mimeType") == "image/png":
                     screenshot_bytes = base64.b64decode(screenshot.get("data", ""), validate=True)
-                    screenshot_file = Path(evidence_path).with_name("current-user-root-prompt.png")
-                    screenshot_file.write_bytes(screenshot_bytes)
+                    digest = hashlib.sha256(screenshot_bytes).hexdigest()
+                    screenshot_file = Path(evidence_path).with_name(f"current-user-root-{action}-{digest}.png")
+                    # Content-addressed captures never overwrite earlier consent proof.
+                    try:
+                        with screenshot_file.open("xb") as retained:
+                            retained.write(screenshot_bytes)
+                    except FileExistsError:
+                        if screenshot_file.read_bytes() != screenshot_bytes:
+                            raise PromptFault("immutable prompt capture content changed")
                     screenshot_record = {"path": str(screenshot_file), "sha256": hashlib.sha256(screenshot_bytes).hexdigest(), "bytes": len(screenshot_bytes)}
                 if not screenshot_record:
                     continue
@@ -270,8 +265,8 @@ async def observe_once(mcp, expected_name, expected_thumbprint, evidence_path):
     serialized = json.dumps(state, ensure_ascii=False).casefold()
     if expected_name.casefold() not in serialized or re.sub(r"[^0-9a-f]", "", expected_thumbprint.casefold()) not in re.sub(r"[^0-9a-f]", "", serialized):
         return {"status": "window-state-mismatch", "windowId": wid, "pid": pid}
-    # Persist only structured UIA metadata. No screenshot or free-form MCP
-    # exception text is retained in public workflow evidence.
+    # Retain the required synthetic-prompt screenshot plus structured UIA
+    # metadata. Free-form MCP exception text is excluded from the proof.
     return {"status": "exact-prompt-observed", "windowId": wid, "pid": int(pid),
             "certificateNameMatched": True, "thumbprintMatched": True,
             "currentUserRootMatched": True, "affirmativeControlPresent": True,
@@ -279,20 +274,52 @@ async def observe_once(mcp, expected_name, expected_thumbprint, evidence_path):
             "uiaEvidence": ui_evidence}
 
 
-async def run(args):
+async def launch_importer(args, mcp):
+    import_script = Path(args.import_script).resolve()
+    if not import_script.is_file():
+        raise PromptFault("owned CurrentUser Root import script is missing")
+    launch = await mcp.tool("launch_app", {
+        "path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        "start_minimized": True,
+        "additional_arguments": [
+            "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(import_script),
+            "-Mode", "Import", "-LaunchGateName", getattr(args, "import_gate", ""), "-RunId", args.run_id, "-ExpectedSID", args.expected_sid,
+            "-SourceSHA", args.source_sha, "-SupervisorPipeName", args.supervisor_pipe,
+            "-ExpectedSessionId", str(args.expected_session_id),
+            "-CertificatePath", str(Path(args.certificate_path).resolve()),
+            "-Thumbprint", args.thumbprint, "-OutputPath", str(Path(args.import_result).resolve()),
+            "-ObserverScriptPath", str(Path(args.observer_script).resolve()),
+            "-ObserverAttachedPath", str(Path(args.observer_attached).resolve()),
+            "-ObserverExitPath", str(Path(args.observer_exit).resolve()),
+            "-ObserverFailurePath", str(Path(args.observer_failure).resolve()),
+            "-HoldAfterWriteSeconds", "2",
+            "-JobStartCounter", str(args.job_start_counter), "-CounterFrequency", str(args.counter_frequency),
+        ],
+    })
+    receipt = structured(launch)
+    if not isinstance(receipt, dict) or type(receipt.get("pid")) is not int or receipt["pid"] <= 0 or receipt.get("running") is not True:
+        raise PromptFault("pinned launch_app omitted its exact live importer PID receipt")
+    return receipt
+
+
+async def run(args, mcp_override=None, retain_mcp=False, launch_receipt=None):
     bin_dir = Path(args.bin_dir).resolve()
-    cli_bin = bin_dir / ("rdpilot.exe" if os.name == "nt" else "rdpilot")
     mcp_bin = bin_dir / ("rdpilot-mcp.exe" if os.name == "nt" else "rdpilot-mcp")
-    daemon_bin = bin_dir / ("rdpilot-daemon.exe" if os.name == "nt" else "rdpilot-daemon")
-    if not cli_bin.is_file() or not mcp_bin.is_file() or not daemon_bin.is_file():
-        raise PromptFault("pinned rdpilot CLI/daemon/MCP binaries are missing")
-    private = Path(tempfile.mkdtemp(prefix="ticket569-rdpilot-"))
+    if not mcp_bin.is_file():
+        raise PromptFault("pinned native MCP binary is missing")
+    if not args.runtime_root or mcp_override is None or not retain_mcp:
+        raise PromptFault("root-prompt UIA must run through the retained session-owner MCP service")
+    private = Path(args.runtime_root).resolve()
+    if not private.is_dir():
+        raise PromptFault("the persistent rdpilot session-owner runtime is unavailable")
     inherited = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "USERNAME",
-                 "COMPUTERNAME", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA"}
+                 "COMPUTERNAME", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+                 "RDPILOT_BUNDLE_PATH", "RDPILOT_SOURCE_SHA"}
     env = {k: v for k, v in os.environ.items() if k.upper() in inherited}
     for directory in ("runtime", "config", "share", "cache"):
-        (private / directory).mkdir()
+        (private / directory).mkdir(exist_ok=True)
     env.update({
+        "APPDATA": str(private / "appdata"),
         "XDG_RUNTIME_DIR": str(private / "runtime"),
         "XDG_CONFIG_HOME": str(private / "config"),
         "XDG_CACHE_HOME": str(private / "cache"),
@@ -301,64 +328,17 @@ async def run(args):
         "RDPILOT_DAEMON_IDLE_TIMEOUT_MS": "180000",
         "RDPILOT_DAEMON_EMPTY_GRACE_MS": "180000",
     })
-    credentials = json.loads(sys.stdin.readline(2048))
-    password = credentials.get("password")
-    if not isinstance(password, str) or not password or len(password) > 512:
-        raise PromptFault("ephemeral stdin password transfer is malformed")
-    if sys.stdin.readline(1):
-        raise PromptFault("ephemeral stdin password transfer contains extra data")
-    def quote(s): return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
-    password_cmd = ("powershell.exe -NoProfile -NonInteractive -EncodedCommand " +
-                    base64.b64encode(("[Console]::Write([Environment]::GetEnvironmentVariable('E2E_PASSWORD_PROMPT'))").encode("utf-16le")).decode())
-    host_file = private / "hosts"
-    host_file.write_text("\n".join((
-        "Host prompt", f"  HostName {quote(args.host)}",
-        f"  User {quote(args.username)}",
-        f"  Domain {quote(args.domain or os.environ.get('COMPUTERNAME', ''))}",
-        f"  Port {int(args.port)}",
-        f"  PasswordCommand {quote(password_cmd)}", "  AcceptInvalidCerts yes", "",
-    )), encoding="utf-8")
     result = {"schema": "ticket569-hosted-cua-prompt-v1", "status": "unknown",
               "route": "pinned rdpilot CLI + native MCP over loopback RDP",
               "rdpilotSourceCommit": os.environ.get("RDPILOT_SOURCE_SHA"),
               "observation": None, "answerIssued": False, "promptClosed": False}
-    mcp = None
-    daemon = None
+    mcp = mcp_override
     try:
-        daemon = await asyncio.create_subprocess_exec(
-            str(daemon_bin), env=env, stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await asyncio.sleep(1)
-        if daemon.returncode is not None:
-            raise PromptFault("isolated native rdpilot daemon exited during startup")
-        connect_env = dict(env)
-        connect_env["E2E_PASSWORD_PROMPT"] = password
-        connected = cli(cli_bin, connect_env, "connect", "prompt", "-F", str(host_file), "--name", "prompt", timeout=args.connect_timeout)
-        connect_env.pop("E2E_PASSWORD_PROMPT", None)
-        password = None
-        if not connected.get("bridge_live"):
-            raise PromptFault("loopback RDP did not produce a live Cua bridge")
-        mcp = Mcp(mcp_bin, "prompt", env, args.evidence)
-        result["nativeMcp"] = await mcp.start()
-        import_script = Path(args.import_script).resolve()
-        if not import_script.is_file():
-            raise PromptFault("owned CurrentUser Root import script is missing")
-        launch = await mcp.tool("launch_app", {
-            "path": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-            "additional_arguments": [
-                "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", str(import_script),
-                "-RunId", args.run_id, "-ExpectedSID", args.expected_sid,
-                "-ExpectedSessionId", str(args.expected_session_id),
-                "-CertificatePath", str(Path(args.certificate_path).resolve()),
-                "-Thumbprint", args.thumbprint, "-OutputPath", str(Path(args.import_result).resolve()),
-                "-ObserverScriptPath", str(Path(args.observer_script).resolve()),
-                "-ObserverAttachedPath", str(Path(args.observer_attached).resolve()),
-                "-ObserverExitPath", str(Path(args.observer_exit).resolve()),
-                "-ObserverFailurePath", str(Path(args.observer_failure).resolve()),
-                "-HoldAfterWriteSeconds", "2",
-            ],
-        })
+        if mcp.proc is None or mcp.proc.returncode is not None:
+            raise PromptFault("retained native MCP process is not live")
+        if launch_receipt is None:
+            launch_receipt = await launch_importer(args, mcp)
+        result["importLaunchReceipt"] = launch_receipt
         result["importProcessLaunched"] = True
         deadline = time.monotonic() + args.prompt_timeout
         observed = None
@@ -389,9 +369,27 @@ async def run(args):
         observer_failure_path = Path(args.observer_failure)
         child_deadline = time.monotonic() + args.child_timeout
         child_result = None
+        result["removalConsentObserved"] = False
+        result["removalConsentAnswered"] = False
         while time.monotonic() < child_deadline:
             if observer_failure_path.is_file():
                 raise PromptFault("retained process observer failed before the child result was read")
+            if not result["removalConsentAnswered"]:
+                removal = await observe_once(mcp, args.expected_name, args.thumbprint, args.evidence, action="remove")
+                if removal.get("status") == "exact-prompt-observed":
+                    result["removalConsentObserved"] = True
+                    result["removalObservation"] = removal
+                    await mcp.tool("click", prompt_click_arguments(removal))
+                    result["removalConsentAnswered"] = True
+                    removal_close_deadline = time.monotonic() + args.close_timeout
+                    while time.monotonic() < removal_close_deadline:
+                        after_remove = await observe_once(mcp, args.expected_name, args.thumbprint, args.evidence, action="remove")
+                        if after_remove.get("status") == "not-unique" and after_remove.get("candidateCount") == 0:
+                            result["removalPromptClosed"] = True
+                            break
+                        await asyncio.sleep(.4)
+                    if not result.get("removalPromptClosed"):
+                        raise PromptFault("the exact owned Root removal prompt did not close after the bounded answer")
             if observer_exit_path.is_file() and import_result_path.is_file() and observer_attached_path.is_file():
                 try:
                     child_result = json.loads(import_result_path.read_text(encoding="utf-8"))
@@ -423,78 +421,199 @@ async def run(args):
         result["faultType"] = type(exc).__name__
         result["fault"] = str(exc)[:500]
     finally:
-        if "connect_env" in locals():
-            connect_env.pop("E2E_PASSWORD_PROMPT", None)
-            connect_env.clear()
-        password = None
-        if mcp:
+        if mcp and not retain_mcp:
             await mcp.stop()
-        try:
-            cli(cli_bin, env, "disconnect", "--session", "prompt", timeout=15)
-            result["disconnected"] = True
-        except Exception:
-            result["disconnected"] = False
-        if daemon and daemon.returncode is None:
-            daemon.terminate()
-            try:
-                await asyncio.wait_for(daemon.wait(), 5)
-            except asyncio.TimeoutError:
-                daemon.kill()
-                await daemon.wait()
-        result["daemonStopped"] = bool(daemon and daemon.returncode is not None)
-        result["secretCanaryAbsent"] = True
-        secret_bytes = credentials["password"].encode("utf-8")
-        retained_paths = [*private.rglob("*"), Path(args.import_result), Path(args.observer_attached),
-                          Path(args.observer_exit), Path(args.observer_failure),
-                          Path(args.evidence).with_name("current-user-root-prompt.png")]
-        for path in retained_paths:
-            if path.is_file():
-                try:
-                    if secret_bytes in path.read_bytes():
-                        result["secretCanaryAbsent"] = False
-                except OSError:
-                    result["secretCanaryAbsent"] = False
-        if secret_bytes in json.dumps(result).encode("utf-8"):
-            result["secretCanaryAbsent"] = False
-        secret_bytes = b""
-        credentials["password"] = ""
-        # Private config/cache contains session tokens and credentials.
-        shutil.rmtree(private, ignore_errors=True)
-        result["privateRuntimeRemoved"] = not private.exists()
+        result["disconnected"] = False
+        result["sessionOwnerRetained"] = True
+        result["daemonStopped"] = False
+        # This process never receives the login secret. Only the session owner
+        # can report a scan, and only after scanning its actual private runtime.
+        result["privateRuntimeRemoved"] = False
     Path(args.evidence).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    return 0 if (result["status"] == "observed-and-answered" and result.get("disconnected") and
-                 result.get("daemonStopped") and result.get("privateRuntimeRemoved") and result.get("secretCanaryAbsent")) else 1
+    common_success = (result["status"] == "observed-and-answered" and result.get("promptClosed"))
+    return 0 if common_success and result.get("sessionOwnerRetained") else 1
+
+
+async def run_service(args):
+    """Serve one bounded prompt request while retaining the owner-bound MCP."""
+    bin_dir = Path(args.bin_dir).resolve()
+    mcp_bin = bin_dir / ("rdpilot-mcp.exe" if os.name == "nt" else "rdpilot-mcp")
+    inherited = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "USERNAME",
+                 "COMPUTERNAME", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+                 "RDPILOT_BUNDLE_PATH", "RDPILOT_SOURCE_SHA"}
+    env = {k: v for k, v in os.environ.items() if k.upper() in inherited}
+    private = Path(args.runtime_root).resolve()
+    if not private.is_dir():
+        raise PromptFault("the persistent rdpilot session-owner runtime is unavailable")
+    for directory in ("runtime", "config", "share", "cache"):
+        (private / directory).mkdir(exist_ok=True)
+    env.update({
+        "APPDATA": str(private / "appdata"),
+        "XDG_RUNTIME_DIR": str(private / "runtime"),
+        "XDG_CONFIG_HOME": str(private / "config"),
+        "XDG_CACHE_HOME": str(private / "cache"),
+        "RDPILOT_SHARE_ROOT": str(private / "share"),
+        "RDPILOT_DAEMON_SINK_PATH": str(private / "sessions.json"),
+        "RDPILOT_DAEMON_IDLE_TIMEOUT_MS": "1800000",
+        "RDPILOT_DAEMON_EMPTY_GRACE_MS": "1800000",
+    })
+    mcp = Mcp(mcp_bin, args.session_name, env, args.evidence)
+    removal_watch = None
+    command_reader = None
+    try:
+        native = await mcp.start()
+        print(json.dumps({"op": "ready", "nativeMcp": native}, separators=(",", ":")), flush=True)
+        completed = False
+        importer_launch = None
+        loop = asyncio.get_running_loop()
+        command_lines = asyncio.Queue()
+
+        def read_commands():
+            # Keep blocking pipe reads off the asyncio loop so the persistent
+            # UIA watcher can observe a removal prompt while the supervisor is
+            # idle. Stop after the explicit stop command so no read is left
+            # pending when this service exits.
+            while True:
+                line = sys.stdin.readline()
+                try:
+                    loop.call_soon_threadsafe(command_lines.put_nowait, line)
+                except RuntimeError:
+                    return
+                if not line:
+                    return
+                try:
+                    if json.loads(line).get("op") == "stop":
+                        return
+                except (ValueError, AttributeError):
+                    pass
+
+        command_reader = threading.Thread(
+            target=read_commands, name="hosted-cua-command-reader", daemon=True
+        )
+        command_reader.start()
+
+        async def watch_owned_removal():
+            while True:
+                observed = await observe_once(mcp, args.expected_name, args.thumbprint, args.evidence, action="remove")
+                if observed.get("status") == "exact-prompt-observed":
+                    await mcp.tool("click", prompt_click_arguments(observed))
+                    close_deadline = time.monotonic() + args.close_timeout
+                    while time.monotonic() < close_deadline:
+                        after = await observe_once(mcp, args.expected_name, args.thumbprint, args.evidence, action="remove")
+                        if after.get("status") == "not-unique" and after.get("candidateCount") == 0:
+                            evidence = {"status": "observed-and-answered", "observation": observed,
+                                        "promptClosed": True, "atUtc": time.time()}
+                            Path(args.evidence).with_name("current-user-root-removal-consent.json").write_text(
+                                json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+                            return evidence
+                        await asyncio.sleep(.4)
+                    raise PromptFault("the exact owned Root removal prompt did not close after the bounded answer")
+                await asyncio.sleep(.5)
+
+        while True:
+            try:
+                line = await asyncio.wait_for(command_lines.get(), timeout=.5)
+            except asyncio.TimeoutError:
+                if mcp.proc is None or mcp.proc.returncode is not None:
+                    raise PromptFault("session-owner native MCP participant exited while awaiting a command")
+                if removal_watch and removal_watch.done():
+                    removal_watch.result()
+                continue
+            if not line:
+                break
+            if len(line) > 65536:
+                raise PromptFault("session-owner UI command exceeded the bounded request size")
+            command = json.loads(line)
+            op = command.get("op") if isinstance(command, dict) else None
+            if op == "watch-removal" and not completed and importer_launch is None:
+                # New MCP attachment on the retained, already connected owner:
+                # observe only the exact owned removal dialog, never import.
+                completed = True
+                removal_watch = asyncio.create_task(watch_owned_removal())
+                print(json.dumps({"op": "watching-removal", "importerLaunched": False}, separators=(",", ":")), flush=True)
+            elif op == "launch" and not completed and importer_launch is None:
+                importer_launch = await launch_importer(args, mcp)
+                print(json.dumps({"op": "importer-launched", "receipt": importer_launch}, separators=(",", ":")), flush=True)
+            elif op == "run" and not completed:
+                if getattr(args, "import_gate", "") and importer_launch is None:
+                    raise PromptFault("gated importer must be launched and authorized before its prompt run")
+                if importer_launch is None:
+                    code = await run(args, mcp_override=mcp, retain_mcp=True)
+                else:
+                    code = await run(args, mcp_override=mcp, retain_mcp=True, launch_receipt=importer_launch)
+                completed = True
+                removal_watch = asyncio.create_task(watch_owned_removal())
+                try:
+                    value = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    value = {"status": "unknown", "fault": "prompt evidence could not be read"}
+                print(json.dumps({"op": "result", "exitCode": code, "result": value}, separators=(",", ":")), flush=True)
+            elif op == "status":
+                live = mcp.proc is not None and mcp.proc.returncode is None
+                print(json.dumps({"op": "status", "mcpAlive": live,
+                                  "exitCode": mcp.proc.returncode if mcp.proc else None}, separators=(",", ":")), flush=True)
+            elif op == "stop":
+                if removal_watch:
+                    removal_watch.cancel()
+                    try:
+                        await removal_watch
+                    except asyncio.CancelledError:
+                        pass
+                await mcp.stop()
+                print(json.dumps({"op": "stopped", "result": True}, separators=(",", ":")), flush=True)
+                return 0
+            else:
+                raise PromptFault("session-owner UI command is unknown, repeated, or out of order")
+        raise PromptFault("session-owner UI command channel closed before an explicit stop")
+    finally:
+        if removal_watch and not removal_watch.done():
+            removal_watch.cancel()
+            try:
+                await removal_watch
+            except asyncio.CancelledError:
+                pass
+        if command_reader:
+            command_reader.join(timeout=1)
+        reader_alive = command_reader is not None and command_reader.is_alive()
+        await mcp.stop()
+        if reader_alive:
+            raise PromptFault("session-owner command reader did not stop after the bounded command channel ended")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--bin-dir", required=True)
-    parser.add_argument("--host", required=True)
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--username", required=True)
-    parser.add_argument("--domain", default="")
     parser.add_argument("--expected-name", required=True)
     parser.add_argument("--expected-sid", required=True)
     parser.add_argument("--expected-session-id", type=int, required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--supervisor-pipe", required=True)
     parser.add_argument("--thumbprint", required=True)
     parser.add_argument("--certificate-path", required=True)
     parser.add_argument("--import-script", required=True)
     parser.add_argument("--import-result", required=True)
+    parser.add_argument("--import-gate", default="")
+    parser.add_argument("--job-start-counter", required=True, type=int)
+    parser.add_argument("--counter-frequency", required=True, type=int)
     parser.add_argument("--observer-script", required=True)
     parser.add_argument("--observer-attached", required=True)
     parser.add_argument("--observer-exit", required=True)
     parser.add_argument("--observer-failure", required=True)
     parser.add_argument("--evidence", required=True)
-    parser.add_argument("--connect-timeout", type=int, default=180)
+    parser.add_argument("--runtime-root", default="")
+    parser.add_argument("--session-name", default="prompt")
     parser.add_argument("--prompt-timeout", type=int, default=30)
     parser.add_argument("--close-timeout", type=int, default=10)
     parser.add_argument("--child-timeout", type=int, default=30)
+    parser.add_argument("--service", action="store_true")
     args = parser.parse_args(argv)
     try:
-        return asyncio.run(run(args))
+        return asyncio.run(run_service(args) if args.service else run(args))
     except Exception as exc:
-        Path(args.evidence).write_text(json.dumps({
+        evidence_path = Path(args.evidence)
+        failure_path = evidence_path.with_name(evidence_path.stem + "-service-failure.json") if evidence_path.exists() else evidence_path
+        failure_path.write_text(json.dumps({
             "schema": "ticket569-hosted-cua-prompt-v1", "status": "harness-defect",
             "faultType": type(exc).__name__, "fault": str(exc)[:500],
         }, indent=2) + "\n", encoding="utf-8")
