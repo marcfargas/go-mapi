@@ -233,12 +233,13 @@ if ($sessions.Count -ne 1) {{ throw 'Could not identify exactly one active inter
             result = subprocess.run(command, text=True, capture_output=True, timeout=timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RunFault("rdp-reconnect", f"rdpilot reconnect failed: {type(exc).__name__}") from exc
-        if result.returncode:
-            raise RunFault("rdp-reconnect", f"rdpilot connect exited {result.returncode}", result.returncode)
         evidence_dir.mkdir(parents=True, exist_ok=True)
         (evidence_dir / f"rdpilot-connect-{session}.log").write_text(
             result.stdout + result.stderr, encoding="utf-8"
         )
+        if result.returncode:
+            detail = (result.stderr.strip() or result.stdout.strip())[-2000:]
+            raise RunFault("rdp-reconnect", f"rdpilot connect exited {result.returncode}: {detail}", result.returncode)
 
     def rdpilot_disconnect(self, session: str, evidence_dir: Path, *, timeout_seconds: float = 30) -> None:
         try:
