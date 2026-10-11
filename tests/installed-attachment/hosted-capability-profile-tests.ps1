@@ -29,12 +29,39 @@ if($Mode -cne 'Hosted'){
     [pscustomobject]@{result=$observed}
 }
 '@ | Set-Content -LiteralPath $wrapper -Encoding utf8
+# Exact-byte reader that tolerates a compatible concurrent writer handle (debug-session 757: Get-FileHash
+# requests FileShare.Read and is refused by any open writer). It still fails closed on an exclusive handle.
+function Get-SharedReadSha256([string]$Path){
+    $stream=[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+    try{$sha=[Security.Cryptography.SHA256]::Create();try{$hash=[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','')}finally{$sha.Dispose()}}finally{$stream.Dispose()}
+    if($hash -cnotmatch '^[0-9A-F]{64}$'){throw "Shared-read SHA256 produced no valid hash for $Path"}
+    $hash
+}
 function Invoke-ProfileFixture([string]$Action,[string]$Fault,[string]$Evidence,[string]$Mode='Hosted'){
     $stdout=Join-Path $temp "$Action-$Fault.stdout.log";$stderr=Join-Path $temp "$Action-$Fault.stderr.log"
     $child=Start-Process -FilePath $pwsh -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ArgumentList @('-NoProfile','-NonInteractive','-File',"`"$wrapper`"",'-Scripts',"`"$PSScriptRoot`"",'-Action',$Action,'-SID',$local.SID.Value,'-ProfilePath',"`"$profilePath`"",'-BackupPath',"`"$backupPath`"",'-VhdPath',"`"$vhdPath`"",'-EvidenceDirectory',"`"$Evidence`"",'-RunId',$run,'-SourceSHA',$sha,'-Fault',$Fault,'-Mode',$Mode)
     try{$null=$child.Handle;if(!$child.WaitForExit(120000)){$child.Kill();$null=$child.WaitForExit(5000);throw 'Production profile fixture exceeded bounded retained process wait'};Get-Content $stdout|Write-Host;Get-Content $stderr|Write-Host;return $child.ExitCode}finally{$child.Dispose()}
 }
 try{
+# Reader-sharing regression on a fixture-owned file: a compatible held writer keeps the same bytes' hash,
+# changed bytes never match, an exclusive handle fails closed, and no handle or file is leaked.
+$probe=Join-Path $temp 'shared-read-probe.bin';$probeBytes=[byte[]]::new(65536);[Random]::new(757).NextBytes($probeBytes);[IO.File]::WriteAllBytes($probe,$probeBytes)
+$probeBase=Get-SharedReadSha256 $probe
+if($probeBase -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $probe).Hash){throw 'Shared-read SHA256 differs from Get-FileHash for identical unshared bytes'}
+$writer=[IO.FileStream]::new($probe,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
+try{
+    if((Get-SharedReadSha256 $probe) -cne $probeBase){throw 'Shared-read SHA256 failed or changed under a compatible held writer with identical bytes'}
+    $writer.Position=0;$writer.WriteByte([byte](($probeBytes[0]+1)%256));$writer.Flush()
+    if((Get-SharedReadSha256 $probe) -ceq $probeBase){throw 'Shared-read SHA256 matched after the held writer changed bytes'}
+}finally{$writer.Dispose()}
+$exclusive=[IO.FileStream]::new($probe,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
+try{
+    $refused=$null;try{$null=Get-SharedReadSha256 $probe}catch{$refused=$_.Exception;while($refused -and $refused -isnot [IO.IOException]){$refused=$refused.InnerException}}
+    if(!$refused){throw 'Shared-read SHA256 did not fail closed with an IOException under an exclusive handle'}
+}finally{$exclusive.Dispose()}
+Remove-Item -LiteralPath $probe -Force
+if(Test-Path -LiteralPath $probe){throw 'Shared-read probe file leaked'}
+Write-Output 'HOSTED_CAPABILITY_SHARED_READ_HASH_REGRESSION_PASSED'
 foreach($fault in @('rename-normal-profile-to-owned-backup','mount-vhd-at-original-profile-path')){
     if((Test-Path 'T:\') -or (Test-Path 'C:\crabbox\work\ticket569')){throw 'Profile crash fixture requires exact temporary-drive/runtime preabsence'}
     $run=[guid]::NewGuid().ToString('N');$userName='t569p'+$run.Substring(0,8);$local=$null;$initializer=$null;$credential=$null;$secure=$null
@@ -49,7 +76,7 @@ foreach($fault in @('rename-normal-profile-to-owned-backup','mount-vhd-at-origin
         do{$profile=Get-CimInstance Win32_UserProfile -Filter "SID='$($local.SID.Value)'";if($profile -and !$profile.Loaded -and !(Test-Path "Registry::HKEY_USERS\$($local.SID.Value)")){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until)
         if(!$profile -or $profile.Loaded -or $profile.LocalPath -cne $profilePath){throw 'Fixture did not produce the exact unloaded real profile'}
         $sentinel=Join-Path $profilePath ".ticket569-$run-sentinel";[IO.File]::WriteAllText($sentinel,$run)
-        $hiveHash=(Get-FileHash (Join-Path $profilePath 'NTUSER.DAT')).Hash
+        $hiveHash=Get-SharedReadSha256 (Join-Path $profilePath 'NTUSER.DAT')
         $prepare=Join-Path $temp "$fault-prepare";$restore=Join-Path $temp "$fault-restore"
         if((Invoke-ProfileFixture 'prepare-vhd' $fault $prepare) -ne 77){throw 'Production profile did not reach the selected crash between mutation and observation'}
         $replay=Read-HostedCapabilityLedger -Directory (Join-Path $prepare 'ledger') -RunId $run -SourceSHA $sha
@@ -58,7 +85,7 @@ foreach($fault in @('rename-normal-profile-to-owned-backup','mount-vhd-at-origin
         if((Invoke-ProfileFixture 'restore-normal' 'none' (Join-Path $temp "$fault-lease") 'Lease') -ne 0){throw 'Existing lease caller without a hook no longer works'}
         if((Invoke-ProfileFixture 'restore-normal' 'none' (Join-Path $temp "$fault-hosted-missing") 'MissingHostedHook') -eq 0){throw 'Hosted caller without its mandatory hook was accepted'}
         $restored=Read-HostedCapabilityLedger -Directory (Join-Path $restore 'ledger') -RunId $run -SourceSHA $sha
-        if(!$restored.valid -or $restored.pending.Count -ne 0 -or (Test-Path $vhdPath) -or (Test-Path $backupPath) -or (Test-Path 'T:\') -or [IO.File]::ReadAllText($sentinel) -cne $run -or (Get-FileHash (Join-Path $profilePath 'NTUSER.DAT')).Hash -cne $hiveHash){throw 'Guarded restore failed exact original bytes, no-pending replay or VHD/mount absence'}
+        if(!$restored.valid -or $restored.pending.Count -ne 0 -or (Test-Path $vhdPath) -or (Test-Path $backupPath) -or (Test-Path 'T:\') -or [IO.File]::ReadAllText($sentinel) -cne $run -or (Get-SharedReadSha256 (Join-Path $profilePath 'NTUSER.DAT')) -cne $hiveHash){throw 'Guarded restore failed exact original bytes, no-pending replay or VHD/mount absence'}
         Write-Output (ConvertTo-Json -Compress -Depth 10 @{event='actual-production-profile-crash-restored';fault=$fault;syntheticFixtureSHA=$sha;profileSourceSHA256=(Get-FileHash (Join-Path $PSScriptRoot 'profile.ps1')).Hash;pendingIntent=$replay.pending[0];restoreOperations=@($restored.events|ForEach-Object operation)})
     }finally{
         if($initializer){if(!$initializer.HasExited){$initializer.Kill();$null=$initializer.WaitForExit(5000)};$initializer.Dispose()}
