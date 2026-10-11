@@ -37,6 +37,13 @@ function Get-SharedReadSha256([string]$Path){
     if($hash -cnotmatch '^[0-9A-F]{64}$'){throw "Shared-read SHA256 produced no valid hash for $Path"}
     $hash
 }
+# Readiness for the exact-byte proof: Loaded=false and HKU absence can precede release of the hive file itself
+# (CI38143884925: a FileShare.ReadWrite open of NTUSER.DAT was still refused). Only a sharing violation means "not yet";
+# any other open failure fails closed.
+function Test-SharedReadable([string]$Path){
+    try{[IO.FileStream]::new($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite).Dispose();return $true}
+    catch{$e=$_.Exception;while($e -and $e -isnot [IO.IOException]){$e=$e.InnerException};if($e -and $e.HResult -eq -2147024864){return $false};throw}
+}
 function Invoke-ProfileFixture([string]$Action,[string]$Fault,[string]$Evidence,[string]$Mode='Hosted'){
     $stdout=Join-Path $temp "$Action-$Fault.stdout.log";$stderr=Join-Path $temp "$Action-$Fault.stderr.log"
     $child=Start-Process -FilePath $pwsh -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr -ArgumentList @('-NoProfile','-NonInteractive','-File',"`"$wrapper`"",'-Scripts',"`"$PSScriptRoot`"",'-Action',$Action,'-SID',$local.SID.Value,'-ProfilePath',"`"$profilePath`"",'-BackupPath',"`"$backupPath`"",'-VhdPath',"`"$vhdPath`"",'-EvidenceDirectory',"`"$Evidence`"",'-RunId',$run,'-SourceSHA',$sha,'-Fault',$Fault,'-Mode',$Mode)
@@ -51,6 +58,7 @@ if($probeBase -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $probe).Hash){th
 $writer=[IO.FileStream]::new($probe,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
 try{
     if((Get-SharedReadSha256 $probe) -cne $probeBase){throw 'Shared-read SHA256 failed or changed under a compatible held writer with identical bytes'}
+    if(!(Test-SharedReadable $probe)){throw 'Hive readiness reported a compatible held writer as not readable'}
     $writer.Position=0;$writer.WriteByte([byte](($probeBytes[0]+1)%256));$writer.Flush()
     if((Get-SharedReadSha256 $probe) -ceq $probeBase){throw 'Shared-read SHA256 matched after the held writer changed bytes'}
 }finally{$writer.Dispose()}
@@ -58,9 +66,11 @@ $exclusive=[IO.FileStream]::new($probe,[IO.FileMode]::Open,[IO.FileAccess]::Read
 try{
     $refused=$null;try{$null=Get-SharedReadSha256 $probe}catch{$refused=$_.Exception;while($refused -and $refused -isnot [IO.IOException]){$refused=$refused.InnerException}}
     if(!$refused){throw 'Shared-read SHA256 did not fail closed with an IOException under an exclusive handle'}
+    if(Test-SharedReadable $probe){throw 'Hive readiness reported an exclusively held file as readable'}
 }finally{$exclusive.Dispose()}
 Remove-Item -LiteralPath $probe -Force
 if(Test-Path -LiteralPath $probe){throw 'Shared-read probe file leaked'}
+$missingRefused=$false;try{$null=Test-SharedReadable $probe}catch{$missingRefused=$true};if(!$missingRefused){throw 'Hive readiness did not fail closed for a missing hive file'}
 Write-Output 'HOSTED_CAPABILITY_SHARED_READ_HASH_REGRESSION_PASSED'
 foreach($fault in @('rename-normal-profile-to-owned-backup','mount-vhd-at-original-profile-path')){
     if((Test-Path 'T:\') -or (Test-Path 'C:\crabbox\work\ticket569')){throw 'Profile crash fixture requires exact temporary-drive/runtime preabsence'}
@@ -73,8 +83,9 @@ foreach($fault in @('rename-normal-profile-to-owned-backup','mount-vhd-at-origin
         $initializer=Start-Process -FilePath $pwsh -Credential $credential -LoadUserProfile -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-Command','exit 0')
         $null=$initializer.Handle;if(!$initializer.WaitForExit(20000) -or $initializer.ExitCode -ne 0){throw 'Disposable real profile initialization did not exit successfully'}
         $until=[DateTime]::UtcNow.AddSeconds(20)
-        do{$profile=Get-CimInstance Win32_UserProfile -Filter "SID='$($local.SID.Value)'";if($profile -and !$profile.Loaded -and !(Test-Path "Registry::HKEY_USERS\$($local.SID.Value)")){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until)
+        do{$profile=Get-CimInstance Win32_UserProfile -Filter "SID='$($local.SID.Value)'";if($profile -and !$profile.Loaded -and !(Test-Path "Registry::HKEY_USERS\$($local.SID.Value)") -and (Test-SharedReadable (Join-Path $profilePath 'NTUSER.DAT'))){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until)
         if(!$profile -or $profile.Loaded -or $profile.LocalPath -cne $profilePath){throw 'Fixture did not produce the exact unloaded real profile'}
+        if(!(Test-SharedReadable (Join-Path $profilePath 'NTUSER.DAT'))){throw 'Unloaded real profile NTUSER.DAT was still held without read/write sharing at the bounded readiness deadline'}
         $sentinel=Join-Path $profilePath ".ticket569-$run-sentinel";[IO.File]::WriteAllText($sentinel,$run)
         $hiveHash=Get-SharedReadSha256 (Join-Path $profilePath 'NTUSER.DAT')
         $prepare=Join-Path $temp "$fault-prepare";$restore=Join-Path $temp "$fault-restore"
