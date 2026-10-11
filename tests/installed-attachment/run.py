@@ -987,7 +987,7 @@ def run_crabbox_matrix(args: argparse.Namespace, source_root: Path) -> int:
     rdp_connected = False
     active_identity: dict | None = None
     profile_state = "normal"
-    test_trust_progress: dict[str, object] = {"stateExpected": False}
+    test_trust_progress: dict[str, object] = {"attempted": False, "stateExpected": False}
     alpha7_trust_progress: dict[str, object] = {"attempted": False, "stateExpected": False}
     cleanup_errors: list[str] = []
     matrix_archive_collected = False

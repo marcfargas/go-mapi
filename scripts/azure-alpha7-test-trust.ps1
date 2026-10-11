@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $source = 'https://www.microsoft.com/pkiops/certs/Microsoft%20Identity%20Verification%20TEST%20ONLY%20Root%20Certificate%20Authority%202020.crt'
 $sha256Pinned = '41c1fd9b83c54731c84375c07ec2585b61d032961d9c578c1784fca0e3c59f6e'
 $sha1Pinned = 'DFA0E53504EF5328FAEC21AD7DF14C10B07C4FCB'
-$subjectPinned = 'CN=Microsoft Identity Verification TEST ONLY Root Certificate Authority 2020'
+$subjectPinned = 'CN=Microsoft Identity Verification TEST ONLY Root Certificate Authority 2020, O=Microsoft Corporation, C=US'
 
 function Get-CertificateSha256($Certificate) {
     $sha = [Security.Cryptography.SHA256]::Create()
