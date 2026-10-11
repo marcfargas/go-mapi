@@ -6,8 +6,10 @@ import base64
 import hashlib
 from datetime import datetime, timezone
 import json
+import ntpath
 import os
 import re
+import secrets
 import subprocess
 import time
 import zipfile
@@ -161,13 +163,52 @@ if ($sessions.Count -ne 1) {{ throw 'Could not identify exactly one active inter
         self.ssh(script, timeout_seconds=300)
 
     def push(self, source: Path, remote_path: str, *, timeout_seconds: float = 300) -> None:
-        command = ["crabbox-handoff", "push", "--status-file", str(self.status_file), str(source), remote_path]
+        """Stage one local file at the exact guest file path ``remote_path``.
+
+        Native ``crabbox-handoff push`` creates its GUEST_DIR argument as a directory and copies files into it
+        under their local basenames. Push into a fresh sibling transfer directory, then move the single
+        transferred file to the exact name only after its SHA-256 matches the local bytes. An occupied
+        destination, an unexpected transfer layout or a hash mismatch fails before or instead of the move.
+        """
+        parent, name = ntpath.split(remote_path)
+        if not re.fullmatch(r"[A-Za-z]:\\.+", parent) or not name or name in {".", ".."}:
+            raise RunFault("stage-failure", f"guest staging target is not an absolute Windows file path: {remote_path}")
+        try:
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise RunFault("stage-failure", f"local staging source cannot be read: {type(exc).__name__}") from exc
+        transfer_dir = ntpath.join(parent, f".push-{secrets.token_hex(8)}")
+        transferred = ntpath.join(transfer_dir, source.name)
+        try:
+            self.ssh(
+                "$ErrorActionPreference='Stop'; "
+                f"foreach ($path in @({ps_quote(remote_path)},{ps_quote(transfer_dir)})) "
+                "{ if (Test-Path -LiteralPath $path) { throw \"staging path already exists: $path\" } }",
+                timeout_seconds=60,
+            )
+        except RunFault as exc:
+            raise RunFault("stage-failure", f"guest staging destination is occupied or unreadable: {exc}") from exc
+        command = ["crabbox-handoff", "push", "--status-file", str(self.status_file), str(source), transfer_dir]
         try:
             result = subprocess.run(command, text=True, capture_output=True, timeout=timeout_seconds, check=False)
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise RunFault("stage-failure", f"bounded handoff push failed: {type(exc).__name__}") from exc
         if result.returncode:
             raise RunFault("stage-failure", f"handoff push exited {result.returncode}", result.returncode)
+        try:
+            self.ssh(
+                "$ErrorActionPreference='Stop'; "
+                f"$dir={ps_quote(transfer_dir)}; $file={ps_quote(transferred)}; $dest={ps_quote(remote_path)}; "
+                "$items=@(Get-ChildItem -LiteralPath $dir -Force); "
+                "if ($items.Count -ne 1 -or -not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'unexpected transfer layout' }; "
+                f"if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{digest}') {{ throw 'transferred file hash mismatch' }}; "
+                "Move-Item -LiteralPath $file -Destination $dest; "
+                f"if ((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{digest}') {{ throw 'staged file hash mismatch' }}; "
+                "Remove-Item -LiteralPath $dir -Force",
+                timeout_seconds=120,
+            )
+        except RunFault as exc:
+            raise RunFault("stage-failure", f"guest staging verification failed for {name}: {exc}") from exc
 
     def pull(self, remote_path: str, destination: Path, *, timeout_seconds: float = 300) -> None:
         destination.mkdir(parents=True, exist_ok=True)
