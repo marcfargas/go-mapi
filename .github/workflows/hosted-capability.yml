@@ -3,7 +3,7 @@ name: Hosted installed attachment capability
 on:
   push:
     branches:
-      - 't3code/569-msi-free-preflight-20261009'
+      - 't3code/569-bounded-preflight-20261009'
 
 permissions:
   contents: read
@@ -15,24 +15,64 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - name: Start job-wide probe deadline before source preparation
+      - name: Start job-wide probe deadline and validate source SHA shape
+        timeout-minutes: 1
         shell: pwsh
         run: |
           $started = [DateTime]::UtcNow.ToString('o')
+          $counter = [Diagnostics.Stopwatch]::GetTimestamp()
+          $frequency = [Diagnostics.Stopwatch]::Frequency
+          $sample = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+          $boot = $sample.LastBootUpTime.ToUniversalTime().ToString('o')
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-fA-F]{40}$') { throw 'GITHUB_SHA must be an exact 40-character Git commit ID' }
+          $runId = [guid]::NewGuid().ToString('N')
           "HOSTED_CAPABILITY_JOB_STARTED_AT_UTC=$started" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
-      - name: Validate explicit source identity
-        shell: pwsh
-        env:
-          REQUESTED_SOURCE_SHA: ${{ github.sha }}
-        run: |
-          if ($env:REQUESTED_SOURCE_SHA -notmatch '^[0-9a-fA-F]{40}$') {
-            throw 'source_sha must be an exact 40-character Git commit ID'
-          }
+          "HOSTED_CAPABILITY_JOB_STARTED_QPC=$counter" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY=$frequency" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "HOSTED_CAPABILITY_JOB_STARTED_BOOT=$boot" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          "HOSTED_CAPABILITY_RUN_ID=$runId" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - uses: actions/checkout@v4
+        timeout-minutes: 2
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+      - name: Verify exact clean source checkout
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $expected = $env:GITHUB_SHA.ToLowerInvariant()
+          $actual = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $expected) { throw 'Checked-out HEAD differs from the immutable workflow source SHA' }
+          $dirty = (& git status --porcelain --untracked-files=all | Out-String).Trim()
+          if ($dirty) { throw 'Source checkout must be clean before build preparation' }
+      - name: Launch independent J+25 watchdog
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          $watcher = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $watchScript = Join-Path $env:GITHUB_WORKSPACE 'tests/installed-attachment/hosted-capability-watchdog.ps1'
+          $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-hosted-capability'
+          $arguments = @(
+            '-NoProfile','-NonInteractive','-File',$watchScript,
+            '-JobStartCounter',$env:HOSTED_CAPABILITY_JOB_STARTED_QPC,
+            '-CounterFrequency',$env:HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY,
+            '-BootMarker',$env:HOSTED_CAPABILITY_JOB_STARTED_BOOT,
+            '-SupervisorIdentityPath',(Join-Path $evidence 'supervisor-identity.json'),
+            '-BuildJobName',"Global\Ticket569-$env:HOSTED_CAPABILITY_RUN_ID-build",
+            '-WorkerJobName',"Global\Ticket569-$env:HOSTED_CAPABILITY_RUN_ID-worker",
+            '-SessionOwnerJobName',"Global\Ticket569-$env:HOSTED_CAPABILITY_RUN_ID-session-owner",
+            '-RecoveryJobName',"Global\Ticket569-$env:HOSTED_CAPABILITY_RUN_ID-recovery",
+            '-RunId',$env:HOSTED_CAPABILITY_RUN_ID,'-SourceSHA',$env:GITHUB_SHA,
+            '-EvidenceDirectory',$evidence,'-RequireCloseHandshake'
+          )
+          $process = Start-Process -FilePath $watcher -ArgumentList $arguments -PassThru -WindowStyle Hidden
+          $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-hosted-capability'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $watchIdentity = @{ schema='ticket569-watchdog-process-v1'; runId=$env:HOSTED_CAPABILITY_RUN_ID; sourceSHA=$env:GITHUB_SHA; pid=$process.Id; creationFileTimeUtc=$process.StartTime.ToUniversalTime().ToFileTimeUtc() }
+          [IO.File]::WriteAllText((Join-Path $evidence 'watchdog-process-identity.json'),(ConvertTo-Json -InputObject $watchIdentity -Compress)+"`n",[Text.UTF8Encoding]::new($false))
+          "HOSTED_CAPABILITY_WATCHDOG_PID=$($process.Id)" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - name: Fetch exact pinned rdpilot source outside the go-mapi checkout
+        timeout-minutes: 1
         shell: pwsh
         run: |
           $rdpilot = Join-Path $env:RUNNER_TEMP 'rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58'
@@ -41,36 +81,79 @@ jobs:
           git -C $rdpilot checkout --detach 8f799dd1e37422a8966833a08e4ec279f645ec58
           if ($LASTEXITCODE -ne 0) { throw 'Could not check out exact pinned rdpilot commit' }
       - uses: dtolnay/rust-toolchain@stable
+        timeout-minutes: 1
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        timeout-minutes: 1
         with:
           arch: x64
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        timeout-minutes: 1
         with:
           python-version: '3.12'
-      - name: Build the pinned native CUA client
+      - name: Fetch and verify exact CUA guest archive before J+2
+        timeout-minutes: 1
+        shell: pwsh
         run: |
-          $expected = '8f799dd1e37422a8966833a08e4ec279f645ec58'
-          $actual = (git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $actual -cne $expected) { throw 'Pinned rdpilot checkout differs from the reviewed source commit' }
-          cargo build --release --locked -p rdpilot-cli -p rdpilot-daemon -p rdpilot-mcp -p rdpilot-bridge --target x86_64-pc-windows-msvc
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/prepare-hosted-cua-archive.ps1 -RunId $env:HOSTED_CAPABILITY_RUN_ID -SourceSHA $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Bounded pinned CUA archive preparation exited $LASTEXITCODE" }
+      - name: Enforce the shared J+2 non-build preparation gate
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          Import-Module tests/installed-attachment/hosted-capability-clock.psm1 -Force
+          $sample = Get-HostedCapabilityClockSample
+          $clock = Test-HostedCapabilityClock -ExpectedBootMarker $env:HOSTED_CAPABILITY_JOB_STARTED_BOOT -ObservedBootMarker $sample.bootMarker -ExpectedFrequency ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY) -ObservedFrequency $sample.frequency -JobStartCounter ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC) -CurrentCounter $sample.counter
+          if (!$clock.valid) { throw ('Non-build preparation rejected after clock check: ' + ($clock.reasons -join ',')) }
+          $j2 = [long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC + 2L * 60L * [long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY
+          if ($sample.counter -ge $j2) { throw 'Non-build preparation did not complete by the shared J+2 deadline' }
+          "HOSTED_CAPABILITY_NONBUILD_DONE_QPC=$($sample.counter)" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+      - name: Build pinned native CUA client within remaining J+9 time
+        timeout-minutes: 7
+        run: |
+          pwsh -NoProfile -File (Join-Path $env:GITHUB_WORKSPACE 'tests/installed-attachment/build-hosted-cua.ps1') -RepoRoot $env:GITHUB_WORKSPACE -RdpilotRoot (Join-Path $env:RUNNER_TEMP 'rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58') -RunId $env:HOSTED_CAPABILITY_RUN_ID -SourceSHA $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "Bounded pinned CUA build exited $LASTEXITCODE" }
         working-directory: ${{ runner.temp }}/rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58
         shell: pwsh
+      - name: Compute safe actual-start probe step backstop
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          Import-Module tests/installed-attachment/hosted-capability-clock.psm1 -Force
+          $sample = Get-HostedCapabilityClockSample
+          $clock = Test-HostedCapabilityClock -ExpectedBootMarker $env:HOSTED_CAPABILITY_JOB_STARTED_BOOT -ObservedBootMarker $sample.bootMarker -ExpectedFrequency ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY) -ObservedFrequency $sample.frequency -JobStartCounter ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC) -CurrentCounter $sample.counter
+          if (!$clock.valid) { throw 'Probe refused because cross-step clock validation failed' }
+          $backstop = Get-HostedProbeStepBackstop -JobStartCounter ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC) -CounterFrequency ([long]$env:HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY) -ActualStepStartCounter $sample.counter
+          if (!$backstop.launchAllowed -or $backstop.timeoutMinutes -lt 1) { throw 'Insufficient time remains for a safe supervised probe step' }
+          "HOSTED_CAPABILITY_PROBE_TIMEOUT_MINUTES=$($backstop.timeoutMinutes)" | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
       - name: Run bounded capability probe
+        timeout-minutes: ${{ fromJSON(env.HOSTED_CAPABILITY_PROBE_TIMEOUT_MINUTES) }}
         shell: pwsh
         env:
           REQUESTED_SOURCE_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
-          RDPILOT_BIN_DIR: ${{ runner.temp }}\rdpilot-8f799dd1e37422a8966833a08e4ec279f645ec58\target\x86_64-pc-windows-msvc\release
           RDPILOT_SOURCE_SHA: 8f799dd1e37422a8966833a08e4ec279f645ec58
         run: |
           $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-hosted-capability'
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
-          pwsh -NoProfile -STA -File tests/installed-attachment/hosted-capability.ps1 -SourceSHA $env:REQUESTED_SOURCE_SHA -EvidenceDirectory $evidence -DeadlineMinutes 30 -JobStartedAtUtc $env:HOSTED_CAPABILITY_JOB_STARTED_AT_UTC
+          pwsh -NoProfile -File tests/installed-attachment/hosted-capability-supervisor.ps1 -SourceSHA $env:REQUESTED_SOURCE_SHA -EvidenceDirectory $evidence -DeadlineMinutes 30 -RunId $env:HOSTED_CAPABILITY_RUN_ID
           if ($LASTEXITCODE -ne 0) { throw "Hosted capability probe exited $LASTEXITCODE" }
-      - uses: actions/upload-artifact@v4
+      - name: Close watchdog window and index evidence
         if: always()
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tests/installed-attachment/hosted-capability-closeout.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Evidence closeout or upload safety gate failed' }
+      - name: Prepare the standard upload action for the bounded controller
+        if: ${{ false }}
+        uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/hosted-capability-upload
+        if: ${{ always() && env.HOSTED_CAPABILITY_UPLOAD_ALLOWED == 'true' }}
+        timeout-minutes: 2
         with:
           name: hosted-capability-${{ github.run_id }}
           path: ${{ runner.temp }}/ticket569-hosted-capability/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
+          job-start-counter: ${{ env.HOSTED_CAPABILITY_JOB_STARTED_QPC }}
+          counter-frequency: ${{ env.HOSTED_CAPABILITY_JOB_STARTED_QPC_FREQUENCY }}
+          boot-marker: ${{ env.HOSTED_CAPABILITY_JOB_STARTED_BOOT }}
