@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      run_authenticode_diagnostic:
+        description: 'Run only the bounded alpha.9 signature diagnostic (no install or user/profile changes)'
+        required: false
+        type: boolean
+        default: false
 
   schedule:
     - cron: '0 3 * * *'
@@ -25,8 +30,50 @@ permissions:
   contents: read
 
 jobs:
+  alpha9-authenticode-diagnostic:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true }}
+    name: Alpha.9 Authenticode diagnostics (no install)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Download and pin the alpha.9 MSI and validation proof
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'ticket569-authenticode-diagnostic'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          gh release download suite-v3.2.0-alpha.9 --repo marcfargas/go-mapi `
+            --pattern 'go-mapi-suite-3.2.0-alpha.9-x64.msi' `
+            --pattern 'suite-3.2.0-alpha.9.validation.json' `
+            --dir $evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned alpha.9 input download failed' }
+      - name: Capture signature, WinVerifyTrust, chain, and owned-root cleanup evidence
+        shell: pwsh
+        env:
+          TICKET569_AUTHENTICODE_EVIDENCE: ${{ runner.temp }}\ticket569-authenticode-diagnostic
+        run: |
+          $msi = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'go-mapi-suite-3.2.0-alpha.9-x64.msi'
+          $proof = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'suite-3.2.0-alpha.9.validation.json'
+          $result = Join-Path $env:TICKET569_AUTHENTICODE_EVIDENCE 'authenticode-diagnostic.json'
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/run-authenticode-diagnostic.ps1 `
+            -MsiPath $msi -ProofPath $proof -EvidencePath $result
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode diagnostic collection or cleanup failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ticket569-authenticode-diagnostic-${{ github.run_id }}
+          path: ${{ runner.temp }}/ticket569-authenticode-diagnostic/
+          if-no-files-found: warn
+          retention-days: 14
+
   user-component:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: User component (cross-platform)
     runs-on: ubuntu-latest
     env:
@@ -54,7 +101,7 @@ jobs:
           retention-days: 7
 
   user-windows-shell:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: User component Windows shell
     runs-on: windows-latest
     needs: build-interceptor
@@ -69,6 +116,8 @@ jobs:
         with: { go-version: '1.25' }
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.13' }
       - uses: extractions/setup-just@v2
       - name: Set explicit native validation component versions
         shell: pwsh
@@ -77,9 +126,105 @@ jobs:
           Set-Content src/interceptor/interceptor-version.txt -Value 5.0.1-alpha.4 -NoNewline -Encoding ascii
       - run: npm ci
       - run: just prepare-windows -Wails -Packages -Install
+      - name: Validate installed attachment oracle and failure protocol
+        shell: pwsh
+        run: |
+          $env:GOWORK = 'off'
+          go test -C tests/installed-attachment/fake-gmail -count=1
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment fake/oracle tests failed' }
+          python -m unittest discover -s tests/installed-attachment -p 'test_*.py' -v
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment process/result tests failed' }
+          powershell.exe -NoProfile -NonInteractive -File tests/installed-attachment/process-observer-check.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'installed attachment retained-handle process observer check failed' }
+          pwsh -NoProfile -NonInteractive -File scripts/tests/AuthenticodeDiagnostic.Tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticode diagnostic safety and workflow routing tests failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-arguments-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability arguments regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-mainpath-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability gate and worker cleanup main-path regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-recovery-ui-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability retained recovery UI regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-lease-caller-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability unchanged Lease profile caller regression failed' }
+          $uploadInputBundle = Join-Path $env:RUNNER_TEMP 'ticket569-upload-artifact-ea165f8-inputs.js'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/actions/upload-artifact/ea165f8d65b6e75b540449e92b4886f43607fa02/dist/upload/index.js' -OutFile $uploadInputBundle -TimeoutSec 60
+          node tests/installed-attachment/test_hosted_upload_inputs.cjs $uploadInputBundle
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability upload wrapper input semantics failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-canary-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability canary regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-owned-cleanup-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability owned cleanup regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-closure-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability closure regression failed' }
+          $compilerOutput = @(pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-framework-compiler-tests.ps1)
+          $compilerExit = $LASTEXITCODE
+          $compilerOutput | Write-Output
+          if ($compilerExit -ne 0 -or $compilerOutput -cnotcontains 'FRAMEWORK_COMPILER_EXTRACTED_GUARDS_LAUNCH_CLEANUP_PASSED;WINDOWS_CREATE_DACL_ADAPTERS_NATIVE_UNRUN') { throw 'Fixture compiler guard regression failed or required qualified marker missing' }
+          foreach ($suite in @(
+            @('hosted-present-root-tests.ps1', 'PRESENT_ROOT_INTERCEPT_BARRIER_CUTOFF_EXTRACTED_PASSED;PROCESS_PROFILE_CUA_ADAPTERS_NATIVE_PRESENT_UNRUN'),
+            @('hosted-present-root-support-tests.ps1', 'PRESENT_ROOT_SUPPORT_VALIDATOR_CONTAINMENT_FAULTS_PASSED;ALL_SUPPORT_INPUTS_SYNTHETIC_NATIVE_AND_INDEPENDENT_ABSENCE_UNRUN'),
+            @('hosted-present-root-clock-tests.ps1', 'PRESENT_ROOT_SSH_CONTAINMENT_SHARED_CLOCK_EXTRACTED_PASSED;CLOCK_SAMPLE_ADAPTER_NO_WINDOWS_RUNTIME')
+          )) {
+            $supportOutput = @(pwsh -NoProfile -NonInteractive -File (Join-Path 'tests/installed-attachment' $suite[0]))
+            $supportExit = $LASTEXITCODE
+            $supportOutput | Write-Output
+            if ($supportExit -ne 0 -or $supportOutput -cnotcontains $suite[1]) { throw "Supporting source regression failed or qualified marker missing: $($suite[0])" }
+          }
+          $rootOutput = @(pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-root-remove-mainpath-tests.ps1)
+          $rootExit = $LASTEXITCODE
+          $rootOutput | Write-Output
+          if ($rootExit -ne 0) { throw 'hosted Root removal adapted main-path regression failed' }
+          foreach ($marker in @('ROOT_REMOVEOWNED_EXTRACTED_MAINPATH_PASSED;STORE_IDENTITY_ADAPTERS_NO_NATIVE_DELETION', 'RECOVERY_ROOT_LOOP_EXTRACTED_MAINPATH_PASSED;PROCESS_STORE_HEALTH_ADAPTERS', 'RECOVERY_REMOVEOWNED_DIRECT_CLI_ARGV_BINDING_PASSED')) {
+            if ($rootOutput -cnotcontains $marker) { throw "Required Root behavioral proof missing: $marker" }
+          }
+          $frameworkOutput = @(pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-framework-tests.ps1)
+          $frameworkExit = $LASTEXITCODE
+          $frameworkOutput | Write-Output
+          if ($frameworkExit -ne 0) { throw 'hosted capability framework regression failed' }
+          foreach ($marker in @('FRAMEWORK_ACTUAL_EMPTY_STORE_RECOVERY_PASSED;HEALTH_PROTOCOL_ADAPTER_NO_CUA', 'FRAMEWORK_ACTUAL_REMOVEOWNED_ALREADY_ABSENT_CLI_PASSED;SIMULATED_LEDGER_IMPORT_ATTEMPT_NO_IMPORT', 'FRAMEWORK_ACTUAL_PROFILE_ACCOUNT_ABSENCE_PASSED', 'FRAMEWORK_ACTUAL_COMPILER_DIRECTORY_ABSENCE_PASSED')) {
+            if ($frameworkOutput -cnotcontains $marker) { throw "Required actual Framework proof missing (UNRUN is not PASS): $marker" }
+          }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-upload-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability bounded upload kernel regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-retention-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability retention regression failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-verdict-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability verdict and root ownership fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-owner-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability durable ownership ledger checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-protocol-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability named-pipe mutation protocol checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-credential-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability credential ownership and recovery checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-password-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability one-shot password transfer checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-index-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability evidence index and retention audit fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-process-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability native Job Object/process identity checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-supervisor-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability deadline and workflow supervision checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-intent-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability exact intent authorization fault checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-participant-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability participant tests failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-profile-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability production profile crash/replay checks failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/hosted-capability-bundle-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'hosted capability pinned guest bundle gates failed' }
+          pwsh -NoProfile -NonInteractive -File tests/installed-attachment/alpha7-admission-tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'alpha.7 native/portable admission gate fault checks failed' }
+          $files = @(Get-ChildItem tests/installed-attachment -File -Recurse | Where-Object { $_.Extension -in @('.ps1','.psm1') })
+          if ($files.Count -eq 0) { throw 'PowerShell parser discovered no source files' }
+          foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "PowerShell parse failed: $($file.Name): $($errors -join '; ')" }
+          }
       - run: just test-windows
       - run: pwsh -NoProfile -File scripts/tests/BuildCi.Tests.ps1
       - run: pwsh -NoProfile -File scripts/tests/MachineReadinessEvidence.Tests.ps1
+      - run: pwsh -NoProfile -File scripts/tests/DeferredInterruptionGuard.Tests.ps1
       - name: Build and verify release standalone app once for both user packages
         shell: pwsh
         run: |
@@ -178,7 +323,7 @@ jobs:
           retention-days: 7
 
   build-interceptor:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Build interceptor (${{ matrix.arch }}, ${{ matrix.config }})
     runs-on: windows-latest
     strategy:
@@ -220,7 +365,7 @@ jobs:
   # runner. The fixtures are built and signed once here and reused by every
   # scenario job; admin-msi below is the aggregate gate.
   admin-msi-fixtures:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Build machine MSI test fixtures
     runs-on: windows-latest
     timeout-minutes: 45
@@ -284,7 +429,7 @@ jobs:
           retention-days: 7
 
   admin-msi-scenario:
-    if: github.event_name != 'schedule'
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Machine MSI scenario (${{ matrix.scenario }})
     runs-on: windows-latest
     timeout-minutes: 45
@@ -349,7 +494,7 @@ jobs:
   # docs/component-integration-gate.md refer to, and fails unless the fixture
   # build and every scenario job succeeded (a skipped or cancelled one fails it).
   admin-msi:
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true) && github.event_name != 'schedule' }}
     name: Validate machine MSI lifecycle and installed updater
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -366,7 +511,7 @@ jobs:
           fi
 
   go-race:
-    if: github.event_name == 'schedule' || inputs.run_race
+    if: ${{ github.event_name == 'schedule' || (inputs.run_race && !(github.event_name == 'workflow_dispatch' && inputs.run_authenticode_diagnostic == true)) }}
     name: Go test -race (windows-latest)
     runs-on: windows-latest
     env:

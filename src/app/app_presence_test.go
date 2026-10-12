@@ -17,6 +17,19 @@ func TestAppPresenceStartRefreshesAndCleansUp(t *testing.T) {
 
 	presence := newAppPresence(root)
 	presence.interval = time.Millisecond
+	// Observe the production cleanup without replacing it, so a failure names
+	// whether the remove ran and what it returned instead of only a stale path.
+	type cleanup struct {
+		err error
+		at  time.Time
+	}
+	cleaned := make(chan cleanup, 1)
+	productionRemove := presence.remove
+	presence.remove = func(path string) error {
+		err := productionRemove(path)
+		cleaned <- cleanup{err: err, at: time.Now()}
+		return err
+	}
 	if err := presence.start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -53,13 +66,19 @@ func TestAppPresenceStartRefreshesAndCleansUp(t *testing.T) {
 	}
 
 	cancel()
-	deadline := time.Now().Add(time.Second)
+	cancelled := time.Now()
+	deadline := cancelled.Add(time.Second)
 	for {
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("marker %s was not removed after cancellation", path)
+			select {
+			case got := <-cleaned:
+				t.Fatalf("marker %s was not removed after cancellation: production remove ran %s after cancel and returned %v", path, got.at.Sub(cancelled), got.err)
+			default:
+				t.Fatalf("marker %s was not removed after cancellation: production remove had not run within %s", path, time.Since(cancelled))
+			}
 		}
 		time.Sleep(time.Millisecond)
 	}
