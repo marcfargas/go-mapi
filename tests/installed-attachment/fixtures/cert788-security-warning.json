@@ -1,0 +1,133 @@
+{
+ "_source": "certificate787-20261011/probe-2-interactive/cua/cua-0010-get_window_state.json response (debug 788); screenshot bytes replaced by a PNG signature stub",
+ "window": {
+  "pid": 912,
+  "window_id": 590226,
+  "title": "Security Warning",
+  "app_name": "powershell.exe"
+ },
+ "commonName": "Ticket 569 synthetic CA cert787-interactive-2f76cac21e2b548d",
+ "sha1": "B19E69DFA2A866A649D7E07BE7FAC2EEE4767714",
+ "response": {
+  "id": 12,
+  "jsonrpc": "2.0",
+  "result": {
+   "content": [
+    {
+     "text": "window_id=590226 pid=912 elements=3\n\n- Window \"Security Warning\"\n  - [0] Button \"Yes\" [id=6 actions=[invoke]]\n  - [1] Button \"No\" [id=7 actions=[invoke]]\n  - Text \"You are about to install a certificate from a certification authority (CA) claiming to represent:\r\n\r\nTicket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\r\n\r\nWindows cannot validate that the certificate is actually from \"Ticket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\". You should confirm its origin by contacting \"Ticket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\". The following number will assist you in this process:\r\n\r\nThumbprint (sha1): B19E69DF A2A866A6 49D7E07B E7FAC2EE E4767714\r\n\r\nWarning:\r\nIf you install this root certificate, Windows will automatically trust any certificate issued by this CA. Installing a certificate with an unconfirmed thumbprint is a security risk. If you click \"Yes\" you acknowledge this risk.\r\n\r\nDo you want to install this certificate?\r\n\"\n  - [2] TitleBar [value=\"Security Warning\" actions=[set_value]]\n    - Button \"Close\"\n",
+     "type": "text"
+    },
+    {
+     "mimeType": "image/png",
+     "type": "image",
+     "data": "iVBORw0KGgo="
+    }
+   ],
+   "structuredContent": {
+    "_note": "Prefer `elements` \u2014 `tree_markdown` will continue to work but new fields will only be added to the structured side. Issue #22865: use `max_elements` / `max_depth` to bound the UIA walk on apps with very large trees.",
+    "app_name": "powershell.exe",
+    "capture_id": "capture_954b241d8d554fc1b29ffd778f1b6b40_0000000000000000",
+    "element_count": 3,
+    "elements": [
+     {
+      "actions": [
+       "invoke"
+      ],
+      "depth": 1,
+      "element_index": 0,
+      "element_token": "s00000001:0",
+      "enabled": true,
+      "frame": {
+       "h": 23,
+       "w": 75,
+       "x": 1002,
+       "y": 717
+      },
+      "label": "Yes",
+      "role": "Button",
+      "screenshot_frame": {
+       "h": 23,
+       "w": 75,
+       "x": 239,
+       "y": 371
+      }
+     },
+     {
+      "actions": [
+       "invoke"
+      ],
+      "depth": 1,
+      "element_index": 1,
+      "element_token": "s00000001:1",
+      "enabled": true,
+      "frame": {
+       "h": 23,
+       "w": 75,
+       "x": 1084,
+       "y": 717
+      },
+      "label": "No",
+      "role": "Button",
+      "screenshot_frame": {
+       "h": 23,
+       "w": 75,
+       "x": 321,
+       "y": 371
+      }
+     },
+     {
+      "actions": [
+       "set_value"
+      ],
+      "depth": 1,
+      "element_index": 2,
+      "element_token": "s00000001:2",
+      "enabled": true,
+      "frame": {
+       "h": 28,
+       "w": 411,
+       "x": 763,
+       "y": 348
+      },
+      "label": "Security Warning",
+      "role": "TitleBar",
+      "screenshot_frame": {
+       "h": 28,
+       "w": 411,
+       "x": 0,
+       "y": 2
+      },
+      "value": "Security Warning"
+     }
+    ],
+    "elements_complete": false,
+    "nodes_pending": 0,
+    "nodes_visited": 7,
+    "pid": 912,
+    "returned_element_count": 3,
+    "screenshot_height": 404,
+    "screenshot_mime_type": "image/png",
+    "screenshot_width": 411,
+    "snapshot_id": "s00000001",
+    "timeout_ms": 10000,
+    "total_element_count": 3,
+    "tree_markdown": "- Window \"Security Warning\"\n  - [0] Button \"Yes\" [id=6 actions=[invoke]]\n  - [1] Button \"No\" [id=7 actions=[invoke]]\n  - Text \"You are about to install a certificate from a certification authority (CA) claiming to represent:\r\n\r\nTicket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\r\n\r\nWindows cannot validate that the certificate is actually from \"Ticket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\". You should confirm its origin by contacting \"Ticket 569 synthetic CA cert787-interactive-2f76cac21e2b548d\". The following number will assist you in this process:\r\n\r\nThumbprint (sha1): B19E69DF A2A866A6 49D7E07B E7FAC2EE E4767714\r\n\r\nWarning:\r\nIf you install this root certificate, Windows will automatically trust any certificate issued by this CA. Installing a certificate with an unconfirmed thumbprint is a security risk. If you click \"Yes\" you acknowledge this risk.\r\n\r\nDo you want to install this certificate?\r\n\"\n  - [2] TitleBar [value=\"Security Warning\" actions=[set_value]]\n    - Button \"Close\"\n",
+    "truncated": false,
+    "walk_elapsed_ms": 1,
+    "window_bounds": {
+     "height": 406,
+     "width": 413,
+     "x": 762,
+     "y": 345
+    },
+    "window_id": 590226,
+    "window_title": "Security Warning"
+   }
+  }
+ },
+ "publication": {
+  "_source": "certificate787 probe-2-interactive/guest test-ca.pem (public certificate only) and fake-ready.json",
+  "pem": "-----BEGIN CERTIFICATE-----\nMIIDWjCCAkKgAwIBAgIQALZxAu0FbQlf9wLTeAJIdDANBgkqhkiG9w0BAQsFADBH\nMUUwQwYDVQQDEzxUaWNrZXQgNTY5IHN5bnRoZXRpYyBDQSBjZXJ0Nzg3LWludGVy\nYWN0aXZlLTJmNzZjYWMyMWUyYjU0OGQwHhcNMjYxMDExMjEwNDAwWhcNMjYxMDEx\nMjMwNTAwWjBHMUUwQwYDVQQDEzxUaWNrZXQgNTY5IHN5bnRoZXRpYyBDQSBjZXJ0\nNzg3LWludGVyYWN0aXZlLTJmNzZjYWMyMWUyYjU0OGQwggEiMA0GCSqGSIb3DQEB\nAQUAA4IBDwAwggEKAoIBAQDzSKBfChvdIMP0rNcJDSqTA/uKC7jXXc7Ua1qwhPnx\nWgORbQhPBd7rIDNN7eVSsvu34eeVuqLtqkXBzk1qqZLjZse2koN67MBStxPp8aYs\nlM8E5d2zojK5zG7kCtfpOnu4m3sRm9aKwLtws2Cde+z1mL3nCrTWaYqTKnPTroo4\ntu4mD7vIsGpR/UGG1hoIcgeMPc4uqVt9H9rq3UreXrp8UWGAYLAMr0D7/5N69x5F\nx/MWgJDzPZf56cm+3j8Nkj8svCcEfdoGavj85rzsGtl+9BVPxxZBSMc/pWROuZzi\n+ZKR27wN9InzRumAVYwZrdKgts+CRyG+LFOVxPWlc7u1AgMBAAGjQjBAMA4GA1Ud\nDwEB/wQEAwIChDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBQxbB/oyPBRGsba\nZWaGepXXWE86FTANBgkqhkiG9w0BAQsFAAOCAQEAEmgye/t1xDIC3eCtMrZ2ZSin\nC5LTv/6OPICpX0JQALEXBkVC8jtx1agZo4o+yOmzl7vSumrm/yCRjddp+rLraW9h\nKvfx2Q2C3ih15VqcU2dnNY++vwGBFfeIMRp5wRKpXMp+ABXo2iVUEVoV7phz13bs\nTpat2Bzl7viCzJlnHLK+5uTO7fbDb3YmuKVHYMPJ+0DJXy7HcBZLrGpuMNe/IT75\nU2MR3KO+3C2aNl5VBmW/9woIEMVz5lvB3ITlRlFHBZ5RJg49eH8A237zGPslXh48\nuAcUxTndH0GxrXUxLzKuSRbaMRANAKee+fMmcj72QMn4SKexBzyozAIeC1V0XQ==\n-----END CERTIFICATE-----\n",
+  "ready": "{\n  \"address\": \"127.0.0.1:50239\",\n  \"caThumbprintSHA256\": \"624c0a4310aad58b466283a94ce58c326184bc42abb174bf82333ea13162f2c7\",\n  \"pid\": 1780,\n  \"readyAt\": \"2026-10-11T21:05:00.8182516Z\",\n  \"runId\": \"cert787-interactive-2f76cac21e2b548d\",\n  \"schemaVersion\": 1\n}\n"
+ }
+}
