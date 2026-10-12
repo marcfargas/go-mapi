@@ -1,0 +1,135 @@
+{
+ "_source": "799-observer-20261011/native-run/cert/cua/cua-0146-get_window_state.json response; actual DELETE dialog, no original click; screenshot replaced by PNG signature stub",
+ "window": {
+  "pid": 3448,
+  "window_id": 458850,
+  "title": "Root Certificate Store",
+  "app_name": "powershell.exe"
+ },
+ "commonName": "Ticket 569 synthetic CA debug799-810ffd4f30c8",
+ "sha1": "D3E8167F52D009FB328426EE81184B2B2D456603",
+ "response": {
+  "id": 148,
+  "jsonrpc": "2.0",
+  "result": {
+   "content": [
+    {
+     "text": "window_id=458850 pid=3448 elements=3\n\n- Window \"Root Certificate Store\"\n  - [0] Button \"Yes\" [id=6 actions=[invoke]]\n  - [1] Button \"No\" [id=7 actions=[invoke]]\n  - Text \"Do you want to DELETE the following certificate from the Root Store?\r\n\r\nSubject : Ticket 569 synthetic CA debug799-810ffd4f30c8\r\nIssuer : Self Issued\r\nTime Validity : Sunday, October 11, 2026 through Monday, October 12, 2026\r\nSerial Number : 00E93F4B D9AE4361 696027F0 885C8926\r\nThumbprint (sha1) : D3E8167F 52D009FB 328426EE 81184B2B 2D456603\r\nThumbprint (md5) : 360D98E8 B4A49C36 4EF684C2 7EA60F15\r\n\"\n  - [2] TitleBar [value=\"Root Certificate Store\" actions=[set_value]]\n    - Button \"Close\"\n",
+     "type": "text"
+    },
+    {
+     "text": "Invalidated snapshots s00000043: their element_tokens are stale.",
+     "type": "text"
+    },
+    {
+     "mimeType": "image/png",
+     "type": "image",
+     "data": "iVBORw0KGgo="
+    }
+   ],
+   "structuredContent": {
+    "_note": "Prefer `elements` \u2014 `tree_markdown` will continue to work but new fields will only be added to the structured side. Issue #22865: use `max_elements` / `max_depth` to bound the UIA walk on apps with very large trees.",
+    "app_name": "powershell.exe",
+    "capture_id": "capture_975785b62d5b4921bd6e0ac291f2386e_0000000000000043",
+    "element_count": 3,
+    "elements": [
+     {
+      "actions": [
+       "invoke"
+      ],
+      "depth": 1,
+      "element_index": 0,
+      "element_token": "s00000044:0",
+      "enabled": true,
+      "frame": {
+       "h": 23,
+       "w": 75,
+       "x": 996,
+       "y": 645
+      },
+      "label": "Yes",
+      "role": "Button",
+      "screenshot_frame": {
+       "h": 23,
+       "w": 75,
+       "x": 230,
+       "y": 228
+      }
+     },
+     {
+      "actions": [
+       "invoke"
+      ],
+      "depth": 1,
+      "element_index": 1,
+      "element_token": "s00000044:1",
+      "enabled": true,
+      "frame": {
+       "h": 23,
+       "w": 75,
+       "x": 1080,
+       "y": 645
+      },
+      "label": "No",
+      "role": "Button",
+      "screenshot_frame": {
+       "h": 23,
+       "w": 75,
+       "x": 314,
+       "y": 228
+      }
+     },
+     {
+      "actions": [
+       "set_value"
+      ],
+      "depth": 1,
+      "element_index": 2,
+      "element_token": "s00000044:2",
+      "enabled": true,
+      "frame": {
+       "h": 28,
+       "w": 404,
+       "x": 766,
+       "y": 419
+      },
+      "label": "Root Certificate Store",
+      "role": "TitleBar",
+      "screenshot_frame": {
+       "h": 28,
+       "w": 404,
+       "x": 0,
+       "y": 2
+      },
+      "value": "Root Certificate Store"
+     }
+    ],
+    "elements_complete": false,
+    "invalidated_snapshot_ids": [
+     "s00000043"
+    ],
+    "nodes_pending": 0,
+    "nodes_visited": 7,
+    "pid": 3448,
+    "returned_element_count": 3,
+    "screenshot_height": 261,
+    "screenshot_mime_type": "image/png",
+    "screenshot_width": 404,
+    "snapshot_id": "s00000044",
+    "timeout_ms": 10000,
+    "total_element_count": 3,
+    "tree_markdown": "- Window \"Root Certificate Store\"\n  - [0] Button \"Yes\" [id=6 actions=[invoke]]\n  - [1] Button \"No\" [id=7 actions=[invoke]]\n  - Text \"Do you want to DELETE the following certificate from the Root Store?\r\n\r\nSubject : Ticket 569 synthetic CA debug799-810ffd4f30c8\r\nIssuer : Self Issued\r\nTime Validity : Sunday, October 11, 2026 through Monday, October 12, 2026\r\nSerial Number : 00E93F4B D9AE4361 696027F0 885C8926\r\nThumbprint (sha1) : D3E8167F 52D009FB 328426EE 81184B2B 2D456603\r\nThumbprint (md5) : 360D98E8 B4A49C36 4EF684C2 7EA60F15\r\n\"\n  - [2] TitleBar [value=\"Root Certificate Store\" actions=[set_value]]\n    - Button \"Close\"\n",
+    "truncated": false,
+    "walk_elapsed_ms": 0,
+    "window_bounds": {
+     "height": 263,
+     "width": 406,
+     "x": 765,
+     "y": 416
+    },
+    "window_id": 458850,
+    "window_title": "Root Certificate Store"
+   }
+  }
+ }
+}

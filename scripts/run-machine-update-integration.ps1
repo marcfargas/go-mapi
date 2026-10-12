@@ -328,8 +328,43 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         $record.systemBMsiSha256 -ne (Hash $manifest.packages.$caseB.msi) -or
         $record.installedProductCode -ne $manifest.packages.$caseB.identity.productCode -or
         $record.installedRelease -ne $manifest.packages.$caseB.release) { throw 'Deferred cleanup evidence does not match current package inputs' }
-    $products = @(InstalledTestProducts)
-    $snapshot = Snapshot
+    $guardObservation = [ordered]@{
+        schema='go-mapi-deferred-cleanup-guard-observation-v1'; phase=$Phase; expected=$record
+        products=$null; snapshot=$null; processes=[ordered]@{}; readError=$null
+    }
+    $processLookups = @{}
+    try {
+        $products = @(InstalledTestProducts)
+        $guardObservation.products = @($products | ForEach-Object {
+            [ordered]@{ sku=$_.sku; release=$_.release; productCode=$_.identity.productCode; msi=$_.msi; sha256=$_.sha256 }
+        })
+        $snapshot = Snapshot
+        $guardObservation.snapshot = $snapshot
+        foreach ($role in @('runner','installer')) {
+            $lookupErrors = @()
+            # Capture each native lookup once; the guard below consumes these same objects.
+            $process = Get-Process -Id $record.$role.pid -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
+            $processLookups[$role] = $process
+            $observed = [ordered]@{
+                expected=$record.$role; present=[bool]$process
+                identity=[ordered]@{}; readErrors=@($lookupErrors | ForEach-Object { $_.Exception.Message })
+            }
+            if ($process) {
+                foreach ($property in @('Id','ProcessName','SessionId','StartTime','Path')) {
+                    try {
+                        $value = $process.$property
+                        $observed.identity[$property] = if ($property -eq 'StartTime') { $value.ToUniversalTime().ToString('o') } else { $value }
+                    } catch { $observed.readErrors += "$property`: $($_.Exception.Message)" }
+                }
+            }
+            $guardObservation.processes[$role] = $observed
+        }
+    } catch {
+        $guardObservation.readError = $_.Exception.Message
+        throw
+    } finally {
+        Record 'cleanup-deferred-guard-observation' $guardObservation
+    }
     if ($products.Count -ne 1 -or $products[0].identity.productCode -ne $record.installedProductCode -or
         -not $snapshot.marker -or $snapshot.marker.packageRelease -ne $record.installedRelease -or
         $snapshot.service.state -ne 'Running' -or -not $snapshot.pending -or
@@ -339,8 +374,8 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         $snapshot.pending.runner.createdAtUnixNano -ne $record.runner.createdAtUnixNano -or
         $snapshot.pending.installer.pid -ne $record.installer.pid -or
         $snapshot.pending.installer.createdAtUnixNano -ne $record.installer.createdAtUnixNano -or
-        (Get-Process -Id $record.runner.pid -ErrorAction SilentlyContinue) -or
-        (Get-Process -Id $record.installer.pid -ErrorAction SilentlyContinue) -or
+        $processLookups.runner -or
+        $processLookups.installer -or
         ($snapshot.replay -and $snapshot.replay.sequence -eq $manifest.packages.$caseB.identity.sequence)) {
         throw 'Deferred cleanup no longer matches exact conservative interruption state'
     }
