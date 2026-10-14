@@ -5,19 +5,11 @@ param(
     [Parameter(Mandatory)] [string] $ProfilePath,
     [Parameter(Mandatory)] [string] $VhdPath,
     [Parameter(Mandatory)] [string] $BackupPath,
-    [Parameter(Mandatory)] [string] $EvidenceDirectory,
-    [scriptblock] $MutationHook,
-    [ValidateSet('Lease','Hosted')][string] $MutationMode = 'Lease',
-    [long] $DeadlineCounter,
-    [long] $CounterFrequency
+    [Parameter(Mandatory)] [string] $EvidenceDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-if($MutationMode -ceq 'Hosted' -and !$MutationHook){throw 'Hosted profile mutations require the sole-writer supervisor hook'}
-if($MutationMode -ceq 'Hosted' -and ($DeadlineCounter -le 0 -or $CounterFrequency -ne [Diagnostics.Stopwatch]::Frequency)){throw 'Hosted profile mutations require the actual absolute deadline and QPC frequency'}
-Import-Module (Join-Path $PSScriptRoot 'hosted-capability-clock.psm1') -Force
-Import-Module (Join-Path $PSScriptRoot 'hosted-capability-native.psm1') -Force
 New-Item -ItemType Directory -Path $EvidenceDirectory -Force | Out-Null
 
 function Write-Atomic([string] $Path, $Value) {
@@ -34,44 +26,16 @@ function Assert-Unloaded([string] $ExpectedSID, [string] $ExpectedPath) {
     return $profile
 }
 
+# Each guarded mutation keeps its operation name, resource identity and
+# precondition at the call site for review; execution is direct.
 function Invoke-ProfileMutation([string] $Operation,[object] $ResourceIdentity,[object] $Precondition,[scriptblock] $Action) {
-    if($MutationHook){& $MutationHook $Operation $ResourceIdentity $Precondition $Action}
-    elseif($MutationMode -ceq 'Lease'){[pscustomobject]@{result=(& $Action)}}
-    else{throw 'Missing acknowledged hosted profile mutation hook'}
+    [pscustomobject]@{result=(& $Action)}
 }
 
 function Invoke-ProfileNative([string]$Name,[string[]]$Arguments) {
-    if($MutationMode -ceq 'Lease'){
-        $output=& $Name @Arguments 2>&1 | Out-String
-        $script:profileNativeExit=$LASTEXITCODE
-        return $output
-    }
-    $budget=Get-HostedCapabilityWaitBudget $DeadlineCounter $CounterFrequency 120000
-    if($budget -le 0){throw 'Hosted profile native operation reached its absolute deadline'}
-    $executable=[IO.Path]::GetFullPath((Join-Path $env:WINDIR ('System32\'+$Name)))
-    $token=[guid]::NewGuid().ToString('N')
-    $stdout=Join-Path $EvidenceDirectory ("native-$token.stdout.log")
-    $stderr=Join-Path $EvidenceDirectory ("native-$token.stderr.log")
-    # These utilities are leaf Windows processes. Retain the actual handle and
-    # creation identity; a timeout remains a failed acknowledged mutation.
-    $quoted=@($Arguments|ForEach-Object {'"'+([regex]::Replace([regex]::Replace($_,'(\\*)"','$1$1\"'),'(\\+)$','$1$1'))+'"'})
-    $process=Start-Process -FilePath $executable -ArgumentList $quoted -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    $created=$process.StartTime.ToUniversalTime().ToFileTimeUtc()
-    try{
-        $null=$process.Handle
-        # Windows paths are case-insensitive and the image keeps on-disk case (System32\Robocopy.exe); compare ordinally ignoring case.
-        if(![string]::Equals([IO.Path]::GetFullPath((Get-HostedCapabilityProcessImageByHandle -ProcessHandle $process.Handle -CreationFileTimeUtc $created)),$executable,[StringComparison]::OrdinalIgnoreCase)){throw 'Hosted profile native executable identity differs'}
-        if(!$process.WaitForExit((Get-HostedCapabilityWaitBudget $DeadlineCounter $CounterFrequency $budget))){throw 'Hosted profile native operation exceeded its absolute bounded wait'}
-        $script:profileNativeExit=$process.ExitCode
-        ([IO.File]::ReadAllText($stdout)+[IO.File]::ReadAllText($stderr))
-    }finally{
-        if(!$process.HasExited){
-            $stop=Stop-HostedCapabilityProcessIdentity -ProcessId ([uint32]$process.Id) -CreationFileTimeUtc $created -WaitMilliseconds (Get-HostedCapabilityWaitBudget $DeadlineCounter $CounterFrequency 5000)
-            if(!$stop.terminated){throw 'Hosted profile native process exit remains unproved'}
-        }
-        Write-Atomic (Join-Path $EvidenceDirectory ("native-$token-process.json")) @{pid=$process.Id;creationFileTimeUtc=$created;executable=$executable;exitProven=$process.HasExited;exitCode=if($process.HasExited){$process.ExitCode}else{$null};deadlineCounter=$DeadlineCounter}
-        $process.Dispose()
-    }
+    $output=& $Name @Arguments 2>&1 | Out-String
+    $script:profileNativeExit=$LASTEXITCODE
+    return $output
 }
 
 function Invoke-Diskpart([string] $Name,[string] $Commands,[object] $ResourceIdentity,[object] $Precondition) {

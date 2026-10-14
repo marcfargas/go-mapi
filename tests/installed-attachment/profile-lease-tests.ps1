@@ -37,8 +37,7 @@ function mountvol.exe {
 function fsutil.exe {param($Operation,$Query,$Path)if($Operation -cne 'reparsepoint' -or $Query -cne 'query' -or $Path -cne $profilePath -or !$global:t569LeaseMounted){throw 'Lease mount identity readback differs'};$global:LASTEXITCODE=0;'Reparse Tag Value : 0xa0000003'}
 try{
  $global:t569LeasePaths[$profilePath]=$true;$global:t569LeasePaths["$profilePath\NTUSER.DAT"]=$true
- # The unchanged run.py remote_script path supplies only these string values:
- # no MutationHook, mode or Hosted clock arguments are smuggled into the call.
+ # run.py remote_script supplies exactly these string parameters.
  & (Join-Path $PSScriptRoot 'profile.ps1') -Action prepare-vhd -SID $SID -ProfilePath $profilePath -VhdPath $vhdPath -BackupPath $backupPath -EvidenceDirectory $temp | Out-Null
  if($LASTEXITCODE -ne 0){throw 'Unchanged Lease caller failed'}
  $identity=Get-Content (Join-Path $temp 'profile-vhd-identity.json') -Raw|ConvertFrom-Json
