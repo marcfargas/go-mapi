@@ -142,15 +142,44 @@ function AwaitHealthy([string]$Key) {
 }
 function Msi([string]$Verb, [string]$Path, [string]$Label, [string[]]$Properties = @()) {
     $log = Join-Path $evidence "$Label-msi.log"
-    $args = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart') + $(if ($SKU -eq 'suite') { @('MSIRESTARTMANAGERCONTROL=Disable') } else { @('MSIRMSHUTDOWN=0') }) + $Properties + @('/l*v', ('"' + $log + '"'))
-    $process = Start-Process msiexec.exe -ArgumentList $args -PassThru
-    if (-not $process.WaitForExit(600000)) {
-        Record 'administrator-msi-timeout' ([ordered]@{ label=$Label; pid=$process.Id; log=$log })
-        throw "$Label exceeded the ten-minute MSI deadline; inspect the live installer and log before cleanup"
+    $args = @($Verb, ('"' + $Path + '"'), '/qn', '/norestart') + $(if ($SKU -eq 'suite') { @('MSIRESTARTMANAGERCONTROL=Disable') } else { @('MSIRMSHUTDOWN=0') }) + $Properties + @('/l*v!', ('"' + $log + '"'))
+    $startedUtc = [DateTime]::UtcNow
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $process = $null
+    Record 'administrator-msi-attempt' ([ordered]@{ label=$Label; verb=$Verb; msiSha256=Hash $Path; startedUtc=$startedUtc.ToString('o'); log=$log })
+    try {
+        $process = Start-Process msiexec.exe -ArgumentList $args -PassThru
+        $null = $process.Handle
+        Record 'administrator-msi-started' ([ordered]@{ label=$Label; pid=$process.Id; processStartedUtc=$process.StartTime.ToUniversalTime().ToString('o') })
+        if (-not $process.WaitForExit(600000)) {
+            Record 'administrator-msi-timeout' ([ordered]@{ label=$Label; pid=$process.Id; elapsedMilliseconds=$watch.Elapsed.TotalMilliseconds; log=$log })
+            throw "$Label exceeded the ten-minute MSI deadline; inspect the live installer and log before cleanup"
+        }
+        $script:lastAdministratorMsiUtc = [DateTime]::UtcNow
+        $watch.Stop()
+        Record 'administrator-msi' ([ordered]@{ label=$Label; exitCode=$process.ExitCode; log=$log; endedUtc=$script:lastAdministratorMsiUtc.ToString('o'); elapsedMilliseconds=$watch.Elapsed.TotalMilliseconds })
+        if ($null -eq $process.ExitCode) { throw "$Label exit code unavailable" }
+        if ($process.ExitCode -ne 0) { throw "$Label returned $($process.ExitCode); postboot proof is required for 3010/1641" }
+    } catch {
+        Record 'administrator-msi-error' ([ordered]@{ label=$Label; elapsedMilliseconds=$watch.Elapsed.TotalMilliseconds; error=$_.Exception.Message; log=$log })
+        throw
+    } finally {
+        $watch.Stop()
+        if ($null -ne $process) { $process.Dispose() }
     }
-    $script:lastAdministratorMsiUtc = [DateTime]::UtcNow
-    Record 'administrator-msi' ([ordered]@{ label=$Label; exitCode=$process.ExitCode; log=$log })
-    if ($process.ExitCode -ne 0) { throw "$Label returned $($process.ExitCode); postboot proof is required for 3010/1641" }
+}
+function RecordRunnerContext {
+    # Observation only: preserve security settings and scenario acceptance rules.
+    $context = [ordered]@{ source=$env:GITHUB_SHA; runId=$env:GITHUB_RUN_ID; runAttempt=$env:GITHUB_RUN_ATTEMPT; imageOS=$env:ImageOS; imageVersion=$env:ImageVersion; errors=@() }
+    try {
+        $context.services = @(Get-CimInstance Win32_Service -Filter "Name='WinDefend' OR Name='WdNisSvc' OR Name='msiserver'" -ErrorAction Stop |
+            Select-Object Name,State,StartMode,ProcessId,ExitCode)
+    } catch { $context.errors += "services: $($_.Exception.Message)" }
+    try {
+        $context.defender = Get-MpComputerStatus -ErrorAction Stop |
+            Select-Object AMServiceEnabled,AntivirusEnabled,RealTimeProtectionEnabled,AMRunningMode,AMEngineVersion,AMProductVersion,AntivirusSignatureVersion
+    } catch { $context.errors += "Defender status: $($_.Exception.Message)" }
+    Record 'runner-context' $context
 }
 # The resident service is the only writer of O. After an administrator MSI
 # transaction it reopens suite admission as soon as Windows Installer is idle;
@@ -638,6 +667,7 @@ function RunReadinessRecovery($Baseline) {
     Record 'readiness-recovery-passed' ([ordered]@{ sku=$SKU; transientTransactions=@($failure.reservation.transactionId,$b.recovery.reservation.transactionId); persistentTransactions=@($seen.Keys); exhausted=$exhausted; windowSeconds=$window })
 }
 
+RecordRunnerContext
 Record 'service-timers' ([ordered]@{ validationTimers=[bool]$timers; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; checkIntervalSeconds=$checkIntervalSeconds; failureDelayBaseSeconds=$failureBaseSeconds; phase=$Phase; sku=$SKU })
 $passed = $false
 $cleanupOnExit = $Phase -eq 'ReadinessRecovery' -or $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
