@@ -48,7 +48,10 @@ function Require-Scoop {
         $bootstrap = Join-Path $env:TEMP ('go-mapi-install-scoop-' + [guid]::NewGuid().ToString('N') + '.ps1')
         try {
             Invoke-WebRequest -UseBasicParsing https://get.scoop.sh -OutFile $bootstrap
-            Run-Native $bootstrap @('-RunAsAdmin')
+            # A string array splat binds script arguments positionally, not as named switches.
+            $global:LASTEXITCODE = 0
+            & $bootstrap -RunAsAdmin
+            if ($LASTEXITCODE -ne 0) { throw "$bootstrap failed with exit code $LASTEXITCODE" }
         } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
         Add-ToolPath (Join-Path $scoopRoot 'shims')
     }

@@ -9,7 +9,7 @@ $preparer = Join-Path $PSScriptRoot '../prepare-windows-build.ps1'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('go-mapi-prepare-' + [guid]::NewGuid().ToString('N'))
 $state = @{}
 $saved = @{}
-foreach ($name in @('PATH','USERPROFILE','SCOOP','GITHUB_PATH','ProgramFiles(x86)')) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+foreach ($name in @('PATH','USERPROFILE','SCOOP','GITHUB_PATH','ProgramFiles(x86)','TEMP')) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 $oldExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
 function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 function Reject([scriptblock]$Action, [string]$Pattern) {
@@ -31,11 +31,17 @@ function Reset-Tools {
     $state.nodeVersion = 'v20.20.2'
     $state.cmakeVersion = 'cmake version 3.31.0'
     $state.dotnetVersion = '8.0.413'
+    $state.bootstrapEnabled = $false
+    $state.bootstrapMode = 'return'
+    $state.bootstrapBinding = $null
+    $state.bootstrapPath = $null
+    $state.bootstrapEffects = [Collections.Generic.List[string]]::new()
     $env:USERPROFILE = Join-Path $fixture ([guid]::NewGuid().ToString('N'))
     $env:SCOOP = Join-Path $env:USERPROFILE 'scoop'
     ${env:ProgramFiles(x86)} = Join-Path $env:USERPROFILE 'programs'
     $env:GITHUB_PATH = Join-Path $env:USERPROFILE 'github-path'
     $env:PATH = $saved.PATH
+    $env:TEMP = $env:USERPROFILE
     New-Item -ItemType Directory -Force $env:USERPROFILE | Out-Null
 }
 function Add-Drivers {
@@ -98,9 +104,34 @@ function choco {
     $global:LASTEXITCODE = $state.installExit
     if ($state.installExit -eq 0) { $state.available['makensis.exe'] = $true; $state.nsisVersion = 'v3.11' }
 }
-# Fail closed if a regression attempts a real bootstrap or host policy change.
-function Invoke-WebRequest { throw 'Host bootstrap forbidden in preparer tests' }
-function Set-ExecutionPolicy { throw 'Host policy mutation forbidden in preparer tests' }
+# All bootstrap effects stay in the fixture; unexpected attempts still fail closed.
+function Invoke-WebRequest {
+    param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
+    if (-not $state.bootstrapEnabled) { throw 'Host bootstrap forbidden in preparer tests' }
+    Assert ($UseBasicParsing -and $Uri -eq 'https://get.scoop.sh') 'Unexpected bootstrap download'
+    Assert ((Split-Path -Parent $OutFile) -eq $env:TEMP) 'Bootstrap escaped the fixture'
+    $state.bootstrapEffects.Add('download')
+    $state.bootstrapPath = $OutFile
+    @'
+param([switch]$RunAsAdmin, [string]$ScoopDir)
+$state.bootstrapBinding = @{ RunAsAdmin = $RunAsAdmin.IsPresent; ScoopDir = $ScoopDir }
+switch ($state.bootstrapMode) {
+    'throw' { throw 'Bootstrap fixture exception' }
+    'nonzero' { exit 23 }
+    'zero' { $state.available.scoop = $true; exit 0 }
+    'return' { $state.available.scoop = $true; return }
+    default { throw 'Unexpected bootstrap fixture mode' }
+}
+'@ | Set-Content -LiteralPath $OutFile
+    # A normally returning script leaves LASTEXITCODE untouched: require a reset.
+    $global:LASTEXITCODE = 31
+}
+function Set-ExecutionPolicy {
+    param([string]$Scope, [string]$ExecutionPolicy, [switch]$Force)
+    if (-not $state.bootstrapEnabled) { throw 'Host policy mutation forbidden in preparer tests' }
+    Assert ($Scope -eq 'CurrentUser' -and $ExecutionPolicy -eq 'RemoteSigned' -and $Force) 'Unexpected bootstrap policy request'
+    $state.bootstrapEffects.Add('policy')
+}
 try {
     Reset-Tools
     Reject { & $preparer -Native } 'Missing native tool: x86_64'
@@ -110,6 +141,27 @@ try {
     Add-Drivers
     Reject { & $preparer -Native } 'Missing required Windows build tool: cmake'
     Assert ($state.calls.Count -eq 0) 'Missing CMake caused installation without -Install'
+
+    foreach ($mode in @('return','zero','nonzero','throw')) {
+        Reset-Tools
+        $state.bootstrapEnabled = $true; $state.bootstrapMode = $mode
+        if ($mode -eq 'nonzero') {
+            Reject { & $preparer -Native -Install } 'failed with exit code 23'
+        } elseif ($mode -eq 'throw') {
+            Reject { & $preparer -Native -Install } '^Bootstrap fixture exception$'
+        } else {
+            & $preparer -Native -Install
+        }
+        Assert ($null -ne $state.bootstrapBinding) "Bootstrap did not execute ($mode)"
+        Assert ($state.bootstrapBinding.RunAsAdmin -and [string]::IsNullOrEmpty($state.bootstrapBinding.ScoopDir)) "Bootstrap did not bind RunAsAdmin as a named switch ($mode)"
+        Assert (($state.bootstrapEffects -join '|') -eq 'policy|download') "Unexpected bootstrap effects ($mode)"
+        Assert (-not (Test-Path -LiteralPath $state.bootstrapPath)) "Bootstrap file was not cleaned up ($mode)"
+        if ($mode -in @('nonzero','throw')) {
+            Assert ($state.calls.Count -eq 0) "Preparation continued after bootstrap failure ($mode)"
+        } else {
+            Assert (($state.calls -join '|') -eq 'scoop install mingw-mstorsjo-llvm-ucrt|scoop install cmake|scoop install ninja') "Bootstrap success did not continue native preparation ($mode)"
+        }
+    }
 
     Reset-Tools
     $state.available.scoop = $true
