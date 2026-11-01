@@ -10,7 +10,7 @@ foreach ($name in @('Hash','AssertHealthy','Until','WaitLimit','AwaitHealthy','A
     if (-not $definition) { throw "Missing observer function $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
 }
-$SKU='system'; $DeadlineMinutes=1
+$SKU='system'; $DeadlineMinutes=1; $ExerciseSuiteShutdown=$false
 $timers=$true; $startupDelaySeconds=5; $heartbeatSeconds=2; $checkIntervalSeconds=5; $waitMarginSeconds=180
 $manifest = [pscustomobject]@{packages=[pscustomobject]@{systemB=[pscustomobject]@{release='B'; serviceVersion='B'; serviceSha256='expected'}}}
 function HealthySnapshot {

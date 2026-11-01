@@ -8,10 +8,42 @@ param(
     [ValidateSet('Hosted','PrepareNoUser','VerifyNoUser','InterruptSameBoot','PrepareReboot','VerifyReboot','ReadinessRecovery','Cleanup')][string]$Phase = 'Hosted',
     [int]$FixturePort = 18453,
     [int]$DeadlineMinutes = 35,
-    [string]$DeferredInterruptionEvidence
+    [string]$DeferredInterruptionEvidence,
+    [switch]$ExerciseSuiteShutdown,
+    [string]$SuiteShutdownLauncher,
+    [string]$SuiteShutdownDecoy,
+    [string]$SuiteInterceptionHarness,
+    [string]$MachineTargetsExecutable
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($SuiteInterceptionHarness) {
+    if (-not $ExerciseSuiteShutdown) { throw '-SuiteInterceptionHarness requires -ExerciseSuiteShutdown' }
+    if (-not (Test-Path -LiteralPath $SuiteInterceptionHarness -PathType Leaf)) { throw 'Missing suite interception harness' }
+    $SuiteInterceptionHarness = (Resolve-Path -LiteralPath $SuiteInterceptionHarness).Path
+}
+if ($MachineTargetsExecutable) {
+    if (-not (Test-Path -LiteralPath $MachineTargetsExecutable -PathType Leaf)) { throw 'Missing prebuilt machine-targets executable' }
+    $MachineTargetsExecutable = (Resolve-Path -LiteralPath $MachineTargetsExecutable).Path
+}
+if ($ExerciseSuiteShutdown -and ($SKU -ne 'suite' -or $Phase -ne 'Hosted')) {
+    throw '-ExerciseSuiteShutdown requires -SKU suite -Phase Hosted'
+}
+if ($ExerciseSuiteShutdown) {
+    foreach ($inputPath in @($SuiteShutdownLauncher, $SuiteShutdownDecoy)) {
+        if (-not $inputPath -or -not (Test-Path -LiteralPath $inputPath -PathType Leaf)) {
+            throw 'Suite shutdown requires an existing-login launcher script and a separately staged same-name decoy executable'
+        }
+    }
+    $SuiteShutdownLauncher = (Resolve-Path -LiteralPath $SuiteShutdownLauncher).Path
+    $SuiteShutdownDecoy = (Resolve-Path -LiteralPath $SuiteShutdownDecoy).Path
+    if ([IO.Path]::GetExtension($SuiteShutdownLauncher) -ine '.ps1' -or
+        [IO.Path]::GetFileName($SuiteShutdownDecoy) -ine 'go-mapi.exe' -or
+        $SuiteShutdownDecoy -ieq (Join-Path $env:ProgramFiles 'go-mapi\user\go-mapi.exe')) {
+        throw 'Expected a .ps1 launcher and a separately located go-mapi.exe decoy'
+    }
+    . (Join-Path $PSScriptRoot 'machine-suite-shutdown-proof.ps1')
+}
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $evidence = [IO.Path]::GetFullPath($EvidenceDirectory)
 $PackageManifest = [IO.Path]::GetFullPath($PackageManifest)
@@ -120,6 +152,7 @@ function Until([string]$Label, [scriptblock]$Condition, [int]$Minutes = $Deadlin
     $end = if ($Seconds -gt 0) { [DateTime]::UtcNow.AddSeconds($Seconds) } else { [DateTime]::UtcNow.AddMinutes($Minutes) }
     if ($end -gt $script:overallDeadline) { $end = $script:overallDeadline }
     while ([DateTime]::UtcNow -lt $end) {
+        if ($ExerciseSuiteShutdown) { ObserveSuiteShutdown }
         try { $result = & $Condition; if ($result) { return $result } } catch { Record 'poll-error' "$Label`: $($_.Exception.Message)" }
         Start-Sleep -Milliseconds $PollMilliseconds
     }
@@ -227,7 +260,13 @@ function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU
     }
     WriteJson $specPath $spec
     Push-Location $repo
-    try { & go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $package.msi --out $targetPath --artifact-origin $manifest.fixture.artifactOrigin }
+    try {
+        if ($MachineTargetsExecutable) {
+            & $MachineTargetsExecutable --spec $specPath --msi $package.msi --out $targetPath --artifact-origin $manifest.fixture.artifactOrigin
+        } else {
+            & go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $package.msi --out $targetPath --artifact-origin $manifest.fixture.artifactOrigin
+        }
+    }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $targetPath)) { throw "Target generation failed: $Key" }
     Record 'target' ([ordered]@{ key=$Key; sha256=Hash $targetPath; msiSha256=$package.sha256 })
@@ -668,6 +707,7 @@ function RunReadinessRecovery($Baseline) {
 }
 
 RecordRunnerContext
+if ($MachineTargetsExecutable) { Record 'machine-targets-tool' @{ path=$MachineTargetsExecutable; sha256=Hash $MachineTargetsExecutable } }
 Record 'service-timers' ([ordered]@{ validationTimers=[bool]$timers; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; checkIntervalSeconds=$checkIntervalSeconds; failureDelayBaseSeconds=$failureBaseSeconds; phase=$Phase; sku=$SKU })
 $passed = $false
 $cleanupOnExit = $Phase -eq 'ReadinessRecovery' -or $Phase -eq 'Hosted' -or $Phase -eq 'InterruptSameBoot' -or $Phase -eq 'Cleanup'
@@ -711,6 +751,7 @@ try {
                         $s.marker.packageRelease -eq $manifest.packages.$caseA.release -and -not $s.pending) { $s }
                 } -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit) | ForEach-Object { Record 'wrong-sku-refused' $_ }
             }
+            if ($ExerciseSuiteShutdown) { StartSuiteShutdown $caseA $caseB }
             SelectTarget $caseB
         }
     }
@@ -720,8 +761,9 @@ try {
         # A first failure delay can still be owed: suite B follows the wrong-SKU rejection,
         # and under short start-up timers a check may reach the fixture before B is selected.
         $b = Until 'automatic B commit' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseB.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseB.identity.sequence) { $s } } `
-            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit $failureBaseSeconds -Install)
+            -PollMilliseconds $(if ($ExerciseSuiteShutdown) { 100 } else { $commitPollMilliseconds }) -Seconds (WaitLimit $failureBaseSeconds -Install)
         $b = AssertCommitted $caseB $a.service.processId
+        if ($ExerciseSuiteShutdown) { CompleteSuiteShutdown $caseB }
         $beforeFailures = (ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")).failures
         $beforeReplay = $b.replay.sequence
         if (-not $azureSigned) {
@@ -748,16 +790,29 @@ try {
         # lets the count grow during the untrusted window shows in the evidence.
         $atRestore = ReadJson (Join-Path $stateDir "discovery-$SKU-v1.json")
         Record 'failures-at-trust-restore' ([ordered]@{ failures=$atRestore.failures; lastAttemptAt=$atRestore.lastAttemptAt; nextAttemptAt=$atRestore.nextAttemptAt; failureBaseSeconds=$failureBaseSeconds })
+        # Keep the target on installed B while launching/suspending B, so an
+        # unrelated untrusted retry cannot drain it during setup.
+        if ($ExerciseSuiteShutdown) {
+            Stop-Service go-mapi
+            SelectTarget $caseB
+            if (ReadJson (Join-Path $stateDir 'pending-v2.json')) { throw 'C retry already in flight before shutdown setup; refusing unrelated drain' }
+        }
         RestoreSignerTrust
         if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'C MSI bytes changed across trust restoration' }
+        if ($ExerciseSuiteShutdown) {
+            StartSuiteShutdown $caseB $caseC -Suspend
+            SelectTarget $caseC
+        }
         Restart-Service go-mapi -Force
         } else {
             if ((Hash $manifest.packages.$caseC.msi) -ne $manifest.packages.$caseC.sha256) { throw 'Azure-signed C MSI bytes changed' }
+            if ($ExerciseSuiteShutdown) { StartSuiteShutdown $caseB $caseC -Suspend }
             SelectTarget $caseC
         }
         $c = Until 'automatic C commit after trust restoration' { $s=Snapshot; if ($s.marker.packageRelease -eq $manifest.packages.$caseC.release -and $s.status.health -eq 'healthy' -and -not $s.pending -and $s.replay.sequence -eq $manifest.packages.$caseC.identity.sequence) { $s } } 28 `
-            -PollMilliseconds $commitPollMilliseconds -Seconds (WaitLimit (2 * $failureBaseSeconds) -Install)
+            -PollMilliseconds $(if ($ExerciseSuiteShutdown) { 100 } else { $commitPollMilliseconds }) -Seconds (WaitLimit (2 * $failureBaseSeconds) -Install)
         $c = AssertCommitted $caseC $b.service.processId
+        if ($ExerciseSuiteShutdown) { CompleteSuiteShutdown $caseC }
         Msi '/i' $manifest.packages.$caseC.msi 'administrator-disable' @('REINSTALL=ALL','REINSTALLMODE=amus','GOMAPI_AUTO_UPDATE=0')
         $disabled = AssertHealthy $caseC
         if ($disabled.marker.autoUpdateEnabled -ne 0) { throw 'Administrator disable did not persist' }
@@ -775,6 +830,8 @@ try {
         $disabled = AssertHealthy $caseC
         if ($requestsBefore -cne $requestsAfter -or $disabled.pending -or $disabled.marker.autoUpdateEnabled -ne 0 -or $disabled.status.updates -ne 'disabled') { throw 'Disabled resident service issued a request or changed installed state' }
         Record 'disabled-window' ([ordered]@{ seconds=$disabledWindowSeconds; startupDelaySeconds=$startupDelaySeconds; heartbeatSeconds=$heartbeatSeconds; snapshot=$disabled })
+        if ($ExerciseSuiteShutdown) { ObserveSuiteShutdown }
+        if ($SuiteInterceptionHarness) { InvokeSuiteInterceptionProof $caseC }
     } elseif ($Phase -eq 'PrepareNoUser') {
         Record 'await-external-logoff' (Snapshot)
     } elseif ($Phase -eq 'VerifyNoUser') {
@@ -869,6 +926,10 @@ try {
     if ($Phase -in @('PrepareNoUser','PrepareReboot')) { $cleanupOnExit = $true }
     throw
 } finally {
+    if ($ExerciseSuiteShutdown) {
+        # Stop exact retained handles before MSI cleanup, including suspended B.
+        try { StopSuiteShutdownProof } catch { Record 'suite-shutdown-cleanup-failure' $_.Exception.Message; $cleanupError = $_.Exception.Message; $passed = $false }
+    }
     # Remove only the owned obstruction before any product cleanup. Preserve all
     # bounded private hits/journal/status before uninstalling the fixture products.
     if ($Phase -eq 'ReadinessRecovery' -or $Phase -eq 'Cleanup') {
@@ -881,7 +942,6 @@ try {
         Remove-Job -Job $subscription.job -Force -ErrorAction SilentlyContinue
     }
     if ($cleanupOnExit) {
-        $cleanupError = $null
         if ($Phase -in @('Cleanup','VerifyReboot') -or $cleanMachineConfirmed) {
             try {
                 if ($Phase -eq 'InterruptSameBoot' -and $passed) {

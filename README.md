@@ -33,9 +33,12 @@ shows up in your Gmail inbox.
 
 ## Before you install
 
-You'll need a Gmail or Google Workspace account. The first time you launch
-go-mapi it will open a Google sign-in page in your browser so it can create
-drafts on your behalf. That's the only sign-in step.
+Use a supported Windows 10/11 x64 machine with Microsoft Edge WebView2 Evergreen
+Runtime installed, plus a Gmail or Google Workspace account. The current split
+packages do not bundle the runtime; if it is missing, install it from Microsoft's
+[WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/).
+The first time you launch go-mapi it opens a Google sign-in page in your browser
+so it can create drafts on your behalf. That's the only sign-in step.
 
 ## Install
 
@@ -44,56 +47,31 @@ requires administrator consent for its initial installation. The **user
 component** is the tray app and Gmail client; each Windows user keeps their own
 settings, queue, and Gmail sign-in.
 
-The matrix below describes the v4 package and update design. Source builds
-currently identify as `0.0.0-dev`; there is no public v4 release candidate.
-See [DEVELOPMENT.md](DEVELOPMENT.md) for release-track rules. The resident
-service can check authenticated metadata and publish discovery status when a
-complete trusted root is embedded. Automatic machine installation and public
-first-party release endpoints remain separate delivery work.
+v4 is still being qualified. Choose one machine installation path below; use a
+selected test distribution until the release is approved. The current component
+version files are prereleases, not a public v4 release-readiness statement.
 
-| Install method | What it installs | Update behavior |
+| Install path | Scope and contents | Who updates it |
 | --- | --- | --- |
-| System-component MSI | System component and one resident service | The service checks only the installed system release track when enabled and trusted metadata is configured. Optional silent installation is planned separately. Use a separate user-level user component. |
-| Suite MSI | System component, all-users user component, and the same resident service | The service checks only the installed suite release track. Optional automatic installation will replace the bundle together, after that capability is delivered. |
-| User-level user-component package | User component for one Windows user; no updater service | The app automatically checks supported distribution channels and offers a user-initiated Store, package-manager, or installer action. It retains system compatibility and repair guidance and system availability advice until verified automatic service maintenance is operational. |
+| **Suite MSI** | Administrator installs the interceptor, resident service and app for all users. Each user signs in separately. | The service can silently update the suite together from its authenticated suite track when managed updates are enabled. |
+| **System MSI + separate user app** | Administrator installs interceptor/service once; each user installs their preferred app channel below. | The service maintains only the system MSI. Each user's app follows its own channel. |
+| **Direct user installer (NSIS)** | One user's app under `%LOCALAPPDATA%\Programs\go-mapi`, without elevation or machine registration. | The app checks for updates and offers a user-initiated installer action. |
+| **winget user package** | The same per-user standalone installer, package ID `MarcFargas.go-mapi`. | User-initiated package-manager action; catalog availability depends on publication and merge. |
+| **Microsoft Store app (MSIX)** | One user's app, without machine registration. | Store-managed distribution; app guidance opens the Store. Availability depends on certification and listing. |
 
-The two MSIs are alternative machine-wide installs, not packages to install
-side by side. A change between them requires an explicit administrator-approved
-migration. A suite install needs no separate user-level package; existing
-user-level installations are left alone.
+For the complete product, choose **suite**, or **system plus one user-app channel**.
+App-only installation can start without the system component but cannot provide
+Windows Send-To integration. A suite needs no separate per-user app installation.
+The system and suite MSIs are alternatives; changing between them requires an
+explicit administrator-approved migration. Existing per-user packages and user
+data are not removed by machine installation—avoid running duplicate app channels.
 
-For a machine MSI, an administrator can choose the managed-update setting at
-install or repair time. Use the MSI file you intend to install in an elevated
-terminal. For a new installation:
-
-```powershell
-$msi = 'C:\Install\go-mapi-system-x64.msi' # use the actual system or suite MSI filename
-msiexec /i $msi GOMAPI_AUTO_UPDATE=0 /qn /norestart
-msiexec /i $msi GOMAPI_AUTO_UPDATE=1 /qn /norestart
-```
-
-To change an existing installation, explicitly reinstall its registry values:
-
-```powershell
-msiexec /i $msi REINSTALL=ALL REINSTALLMODE=amus GOMAPI_AUTO_UPDATE=0 /qn /norestart
-msiexec /i $msi REINSTALL=ALL REINSTALLMODE=amus GOMAPI_AUTO_UPDATE=1 /qn /norestart
-```
-
-`0` disables unattended installs; `1` enables them once the signed managed-update path is available. A new
-machine install defaults to `1`. Repair and same-package upgrades preserve a
-valid existing choice unless an administrator uses the explicit reinstall command above. If
-the existing machine setting is missing or invalid, supply an explicit choice
-to repair it. A disabled setting does not stop service health and status. A
-full Windows **Restart** may be needed to verify an interrupted installation;
-signing and end-to-end update delivery remain under validation.
-
-During v4 development, use only a selected test distribution. Machine release
-checking waits two minutes after service startup, uses a six-hour successful
-cadence and bounded persistent retry delays. The per-user app checks on startup
-when its previous attempt is at least 24 hours old, then checks daily while
-enabled. System, suite and user packages have independent release cadences;
-one package's availability does not imply another is ready. The service can
-start and report local health even when metadata or the network is unavailable.
+For a selected test MSI, double-click it and accept administrator consent, or use
+the [administrator deployment commands](ENTERPRISE.md#install-repair-and-remove).
+That guide covers silent install, managed-update opt-out, repair and migration.
+A new machine install defaults managed updates on. Real unattended delivery
+requires trusted signed packages and configured release metadata; implementation
+and fixture tests alone do not qualify the public release.
 
 After installing the needed components, start go-mapi and sign in with your
 Gmail or Google Workspace account when prompted.
@@ -119,15 +97,19 @@ in your inbox. Switch between modes in the go-mapi window.
 
 ## Updates
 
-The v4 resident service checks the installed MSI's authenticated system or
-suite release track without a signed-in user. This discovery step identifies
-an immutable candidate but never runs an installer. Optional silent machine
-installation is a later capability. The separate user-level package checks
-automatically but only the user can start its Store, package-manager or
-installer action. Compatibility and repair guidance remains visible; system
-availability advice is hidden only when fresh trusted status proves automatic
-machine maintenance is actually working. Initial machine installation and
-explicit repair require administrator consent.
+The resident LocalSystem service checks the installed **system** or **suite**
+track and can download, verify and silently install an eligible same-SKU update.
+It does not switch between system and suite. Suite updates coordinate shutdown
+and launch admission for the machine app; users retain their settings and Gmail
+sign-in. This path is implemented and exercised by development fixtures; final
+signed-release, reboot and no-user qualification remain separate requirements.
+
+Administrators can disable unattended machine updates without removing service
+health/status reporting. See [managed updates](ENTERPRISE.md#managed-updates).
+Per-user direct/winget updates require user action; Store distribution is managed
+through the Store. Initial machine installation, explicit repair and SKU migration
+require administrator consent. Machine and per-user packages have independent
+release cadences; availability of one does not imply another is ready.
 
 Update checks contact `go-mapi.app` and report only
 the app version, distribution channel, operating system, and coarse

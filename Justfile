@@ -32,6 +32,25 @@ test-windows: build-frontend
 prepare-windows *args:
     pwsh -NoProfile -File scripts/prepare-windows-build.ps1 "$@"
 
+sandbox-smoke:
+    pwsh -NoProfile -File scripts/run-sandbox-test.ps1 -Smoke
+
+[positional-arguments]
+sandbox-test *args:
+    pwsh -NoProfile -File scripts/run-sandbox-test.ps1 "$@"
+
+[positional-arguments]
+prepare-native-inputs *args:
+    pwsh -NoProfile -File scripts/prepare-native-inputs.ps1 "$@"
+
+test-windows-tooling:
+    pwsh -NoProfile -File scripts/tests/BuildCi.Tests.ps1
+    pwsh -NoProfile -File scripts/tests/SandboxRunner.Tests.ps1
+
+[positional-arguments]
+test-native-inputs *args:
+    pwsh -NoProfile -File scripts/tests/NativeInputs.Tests.ps1 "$@"
+
 build-service:
     go build ./src/service/...
 

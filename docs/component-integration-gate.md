@@ -107,11 +107,12 @@ just machine-hosted-integration `
 ```
 
 The hosted command runs cross-SKU lifecycle, system Hosted, suite Hosted,
-suite Cleanup, then system InterruptSameBoot with a 22-minute deadline. It
-checks phase result files and attempts all applicable cleanup while retaining
+suite Cleanup, system and suite ReadinessRecovery, then system InterruptSameBoot
+with a 22-minute deadline. It checks phase result files and attempts all applicable cleanup while retaining
 both primary and cleanup failures. `-Scenario cross-sku|update|suite-update|
-update-interruption` runs one of those four scenarios (`suite-update` includes
-its Cleanup phase); the default `all` runs them in the order above. The same
+update-interruption|readiness-recovery|suite-readiness-recovery` runs one of those
+six scenarios (`suite-update` includes its Cleanup phase); the default `all`
+runs them in the order above. The same
 selector scopes `-CleanupOnly` to the scenario's own phases. When
 `cleanup-deferred.json` exists, cleanup targets only system update and
 interruption with the deferred evidence; the phase script still checks the
@@ -155,8 +156,58 @@ artifact GET and a failed install attempt while C's code-signing trust is
 removed, restores only that owned trust, and waits for C to commit. It then
 disables automatic update through the supported administrator repair and
 checks a complete startup and cadence window without metadata or artifact
-requests. A second CI invocation runs `InterruptSameBoot` with the same signed
-packages after the Hosted phase has cleaned its install. It imports only the
+requests. The default Hosted journey never starts the app and does not prove
+suite shutdown. For an explicit disposable-guest exercise, invoke
+`scripts/run-machine-update-integration.ps1 -SKU suite -Phase Hosted
+-ExerciseSuiteShutdown -SuiteShutdownLauncher <existing-login-launcher.ps1>
+-SuiteShutdownDecoy <separate-directory>\go-mapi.exe` with the normal manifest
+and evidence arguments. This requires an orchestrator-supplied launcher with
+parameters `ExecutablePath` and `EvidenceDirectory`, returning exactly one newly
+created live `System.Diagnostics.Process` with its handle already retained. It
+must launch in the existing guest Explorer login, own cleanup if launch fails,
+and create no logon; SYSTEM/session 0 launch is rejected. Stage a harmless,
+long-lived same-name decoy separately; do not use a per-user app or another real
+app copy sharing the session singleton. The opt-in starts installed A before B
+publication, requires a zero-code exit within the unchanged 30-second grace,
+then starts and suspends installed B only after the untrusted-C rejection and
+immediately before restored-trust C publication/restart. It requires B alive
+through grace and exited within the unchanged 5-second force bound. Missing
+closed-gate, durable deadline, exit or installer-ready evidence fails the
+exercise. Evidence binds image/launcher hashes, PID, creation time, session and
+owner SID; installer creation must follow exact app exit. The decoy must remain
+alive, and installed-image absence is sampled after exit without issuing another
+intercept (this does not prove the later on-demand relaunch). Update logs,
+MSI/SCM events and exact-handle cleanup results survive success or failure.
+The launcher/staged-decoy prerequisite and guest runtime proof are separate from
+this opt-in harness; ordinary Hosted success supplies none of this coverage.
+To additionally prove the next interception relaunch, append
+`-SuiteInterceptionHarness <retained-x64>\go-mapi-test-harness.exe` to that
+shutdown command. Use the retained AMD64 activation-probe harness (SHA256
+`2B089F9B9AEB7C71F25881874F6ED5A9C0F29503726E1F6E39AE0A49A5EC29CC`);
+the proof rejects different harness bytes. Run in the same Explorer owner/session
+as the earlier installed app; the probe launches directly in the runner login. This
+optional step runs after the complete disabled window and final absence check,
+with healthy committed C, no pending transaction, open admission and live decoy.
+It invokes the installed AMD64 DLL with `--activation-probe 'Simple Send'`,
+bounded to ten seconds, and retains command, hashes, process identities, times,
+exit code and stdout/stderr. It requires exactly one new queue descriptor matching
+the harness-reported filename and C version, and exactly one new installed C app
+owned by that harness in the same login, alive for one second. The raw descriptor
+and hash survive cleanup; only the verified new descriptor/stem and exact owned
+process handles are cleaned up. No OAuth or Gmail operation is issued. Omitting
+the option preserves the absence-only shutdown proof. This adds no coverage for
+the separate closed-admission publication scenario.
+When staging selected inputs without a Go SDK, build
+`go build -o machine-targets.exe ./internal/mapi/cmd/machine-targets` from the
+selected checkout and pass `-MachineTargetsExecutable <path>`. Retain its source
+identity and hash with the inputs. Omitting this option keeps the existing
+`go run` path.
+Separate system and suite `ReadinessRecovery` scenarios require a
+transient B handoff failure to recover with a fresh transaction, then exhaust
+C's durable three-launch budget across a service restart. They use shortened
+fixture timers; they do not establish production-duration waits.
+The separate `InterruptSameBoot` scenario uses the same signed packages on its
+own runner. It imports only the
 manifest-matching public fixture certificate to restore Windows trust,
 requires matching pending and ready records plus live runner/MSI identities,
 terminates that exact runner, and checks conservative same-boot state. A missed

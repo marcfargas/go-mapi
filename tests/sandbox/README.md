@@ -1,136 +1,115 @@
-# tests/sandbox — Windows Sandbox local repro harness (REL-02)
+# Windows Sandbox guest checks
 
-Local alternative to the `CI / Validate user app packages` job. Runs the full
-v2.0.0 installer install → verify registry → uninstall flow inside a fresh
-Windows Sandbox so you can reproduce CI failures (or verify changes)
-without touching your host's MAPI registration or `%ProgramFiles%`.
+Use the [Windows development guide](../../docs/windows-development.md) for host
+setup and compilation. The Justfile is the command entrypoint; host orchestration
+lives in `scripts/`, its contracts in `scripts/tests/`, and guest programs here.
+`phase11/` remains a separate human-observed installed-email journey.
 
-**This does not replace CI.** The `CI / Validate user app packages` job remains the
-authoritative ship gate. The sandbox harness is the fast local feedback
-loop (~5 min) and the fallback UAT environment for REL-06 when marcwin
-isn't available.
+## Execution boundary
 
-## Prerequisites
+Crabbox is the preferred lifecycle owner. The native `wsb` runner is a bounded
+workaround until Crabbox demonstrates selected-input isolation, SYSTEM execution,
+retained diagnostics, bounded waits and exact-owned cleanup. Remove the native
+runner and its provider-specific contracts together when that replacement passes.
 
-- **Windows 11 24H2 or newer** — earlier Windows versions don't ship the
-  `wsb` CLI. Verify with `wsb --version`.
-- **Windows Sandbox feature enabled.** Control Panel → Turn Windows features on or off → "Windows Sandbox". Requires a reboot on first enable.
-- **PowerShell 7+** (`pwsh`) — used by `run-sandbox-test.ps1`. Windows
-  PowerShell 5.1 will parse but the harness uses `-raw` JSON output from
-  `wsb` which is easier to handle in pwsh.
-- **Clone location:** the committed `sandbox.wsb` config assumes the repo
-  lives at `C:\dev\go-mapi` (marcwin convention). If your clone is
-  elsewhere, edit `<HostFolder>` in `sandbox.wsb` before running the
-  harness. The `run-sandbox-test.ps1` orchestrator does NOT use the
-  `.wsb` file directly — it dynamically shares `$PSScriptRoot | Split-Path | Split-Path`
-  — so only the "double-click the .wsb" workflow is affected.
-- **Inno Setup 6 on the host** (`iscc.exe`) — the sandbox reads the
-  compiled `go-mapi-setup.exe` through the read-only project share, it
-  does NOT compile it. Compile on the host first (see next section).
-
-## Entry points
-
-### Fast path: DLL registration only (~1 min)
+Run Sandbox commands from an interactive Windows desktop with PowerShell 7 and
+`wsb` on PATH. Session 0 is rejected before launch. The runner refuses existing
+sandboxes and stops only its returned ID; do not run other Sandbox tools concurrently.
 
 ```powershell
-pwsh tests\sandbox\run-sandbox-test.ps1 -RegistrationOnly
+just sandbox-smoke
+just sandbox-test -InputDirectory C:\selected-artifacts\check -ScriptPath Test.ps1 -RunAs System -TimeoutSeconds 600
 ```
 
-Runs `test-dll-registration.ps1` inside the sandbox. Asserts that the DLL
-exists, the `HKLM\SOFTWARE\Clients\Mail\go-mapi` key can be written, and
-the Simple MAPI provider is selected under Clients\\Mail. This is a registry
-check only; it does not prove Windows Default Apps listing or a working Send-To
-action. This is the pre-existing test that shipped before Phase 5. See
-[email integration verification](../../docs/email-integration-verification.md)
-for functional checks.
+Smoke checks sharing, identity, execution, retained output and cleanup, without
+product tests. Custom scripts receive `-InputDirectory C:\input -OutputDirectory
+C:\output` under Windows PowerShell 5.1. `ScriptPath` is relative to the selected
+input directory. Inputs are read-only; only the unique output share is writable.
+Select only required artifacts, fixtures and scripts. Repository/profile roots,
+`.git`, `.env*` and reparse points are refused; inspect other inputs for secrets.
+Copy artifacts locally in the guest before modifying them. Check every native
+exit code and save diagnostics as work proceeds. A reboot is outside this contract.
+The default identity is SYSTEM. `-RunAs ExistingLogin` (or `-RunAsExistingLogin`)
+waits up to 90 seconds within the overall run deadline for a harmless guest probe
+to exit zero and observe Explorer in its own session with its owner SID. Add
+`-Connect` to start a hidden, asynchronous `wsb connect` client for the exact owned
+guest after sharing inputs; connection alone does not prove readiness. The runner
+retains connection streams and every readiness attempt, retries only the probe,
+and executes the selected script once. It creates no users or logon credentials.
+Owned-guest stop keeps its separate 30-second allowance, and only the retained
+connection client is terminated/disposed during cleanup.
 
-### Full path: REL-02 install → verify → uninstall (~5 min)
+## Native and optional service feedback
 
-Compile the installer on the host FIRST:
+Build x86/x64 test artifacts using the host commands in the development guide.
+The current Ninja/static-runtime layout is supported; extra runtime DLLs and
+multi-configuration builds are outside this procedure. Native compilation needs
+a checkout path without spaces because of an existing linker argument limitation.
+Staging already-built artifacts from paths with spaces is supported.
+
+In a host PowerShell 7 shell, optionally compile service tests and stage inputs:
 
 ```powershell
-# From repo root
-cd src\interceptor; .\build.ps1 -Config Release -Clean; cd ..\..
-cd src\native-host; go build -ldflags "-s -w -X main.Version=2.0.0-local" -o build\go-mapi-host.exe .; cd ..\..
-& "C:\Program Files (x86)\Inno Setup 6\iscc.exe" /DGOMAPIVersion=2.0.0-local src\installer\go-mapi.iss
+go test -c -o .tmp/service.test.exe ./src/service
+if ($LASTEXITCODE -ne 0) { throw 'Service test compilation failed' }
+$selected = & ./scripts/prepare-native-inputs.ps1 `
+    -OutputDirectory (Join-Path $PWD ('test-results/native-' + [guid]::NewGuid().ToString('N'))) `
+    -ServiceTestBinary .tmp/service.test.exe
+just sandbox-test -InputDirectory $selected.InputDirectory -ScriptPath $selected.ScriptPath -RunAs System -TimeoutSeconds 900
 ```
 
-Then run the full sandbox flow:
+`just prepare-native-inputs` exposes the same preparer for command-line use.
+Omit `-ServiceTestBinary` for native-only proof. The preparer reads existing
+artifacts, refuses an existing output directory, and validates PE architectures,
+hashes and compiled fixture definitions. `-CheckoutRoot`, `-X64BuildDirectory`,
+`-X86BuildDirectory` and `-Configuration Debug` select alternate builds.
+`-FixtureSourceRoot` selects the directory containing `protocol-fixtures` and
+`component-compatibility` when fixtures have moved.
+
+Unit binaries contain absolute fixture paths. `native-inputs.json` records each
+build's compiled destinations, source/build metadata, checkout identity and selected
+file hashes. Relocation changes input locations, never compiled destinations.
+The v2 manifest requires optional service inputs to include the binary and the
+hashed `src/service/runner_windows.go` fixture from `-CheckoutRoot`; the guest
+copies both together and runs tests from that directory. Older manifests must be
+prepared again. Only this required service source file is staged.
+Retain source/build evidence separately: checkout HEAD alone cannot identify dirty
+inputs used to build an existing binary.
+
+The guest verifies hashes, restores fixtures at compiled paths (using guest-local
+`subst` for missing drives), and runs four unit executables plus the matching DLL
+harness for each architecture. Harnesses write the canonical queue. Optional
+service tests change process privilege and create a disabled service fixture;
+the guest requires its initial absence and checks removal afterward. These
+machine effects belong only in the disposable guest.
+
+Inspect `output/native-result.json`, the copied manifest and individual command
+stdout/stderr/results. A failure stops subsequent tests. Partial evidence remains
+useful if timeout prevents a final summary. This proves native/direct-DLL and
+optional service-test behavior; installed email and package lifecycle need their
+own journeys.
+
+## Evidence and host contracts
+
+The runner prints its unique evidence directory before launch. By default it is
+under `%LOCALAPPDATA%\agent-work\retained\go-mapi\sandbox`; `-EvidenceRoot`
+selects another parent outside inputs. It retains input hashes, command arguments,
+separate stdout/stderr, exit codes, owned ID, guest transcript and `result.json`.
+Success returns `Status = PASS`, `Cleanup = stopped` and `GuestExitCode = 0`.
+Failures throw, including malformed CLI JSON or unsuccessful cleanup.
+
+`TimeoutSeconds` bounds list/start/share/exec (default 300, range 1-3600), after
+input validation/hashing. Cleanup has a separate 30-second deadline and runs despite
+evidence-write failures. A start failure without a usable ID leaves ownership
+unknown: inspect `wsb list --raw` and retained diagnostics; never guess an ID or
+kill processes by name. A failed owned stop records its ID for manual inspection.
 
 ```powershell
-pwsh tests\sandbox\run-sandbox-test.ps1 -FullTest
+just test-windows-tooling
+just test-native-inputs -ServiceTestBinary .tmp/service.test.exe
 ```
 
-This:
-1. Stops any existing sandbox instance (`wsb list` + `wsb stop`).
-2. Launches a fresh sandbox (`wsb start --raw`).
-3. Shares the project folder read-only to `C:\go-mapi` inside.
-4. Shares `$env:TEMP\go-mapi-sandbox-output` as writable `C:\output` for log retrieval.
-5. Runs `test-dll-registration.ps1` (DLL sanity check).
-6. Runs `install-and-verify.ps1`:
-   - Silent install of `go-mapi-setup.exe` with `/VERYSILENT /SUPPRESSMSGBOXES`
-   - Asserts 6 HKLM registry keys (Clients\Mail\go-mapi + 5 browser native messaging hosts)
-   - Asserts installed files (`go-mapi.dll`, `go-mapi-host.exe`, `com.gomapi.host.json`, `previous-mail-client.json`)
-   - Silent uninstall via `unins000.exe /VERYSILENT`
-   - Asserts clean post-uninstall state (no files, no registry leftovers)
-7. Copies the `install-and-verify.log` back to the host.
-8. Stops the sandbox (pass `-KeepRunning` to skip cleanup).
-
-### Expected runtime
-
-| Operation | Typical time |
-|-----------|--------------|
-| Sandbox cold start | 30-60s |
-| DLL registration test | 5s |
-| Silent install | 15-30s |
-| Registry + file verification | 5s |
-| Silent uninstall | 10-20s |
-| Post-uninstall cleanup verify | 5s |
-| **Full `-FullTest` total** | **~3-5 min** |
-
-First run on a cold machine can take longer (up to 10 min) due to
-Windows Defender scanning the sandbox template.
-
-## Failure modes
-
-- **`wsb CLI not found`** — you're not on Windows 11 24H2+. The harness
-  exits with a clear message.
-- **"Existing sandbox found"** — the harness auto-stops any running
-  sandbox before launching a new one. If `wsb stop` hangs, restart
-  explorer.exe or reboot.
-- **Installer not compiled** — the `-FullTest` branch checks for
-  `src\installer\dist\go-mapi-setup.exe` on the host BEFORE starting
-  the sandbox and exits with a compile-command hint if missing.
-- **Silent install exit code non-zero** — check
-  `$env:TEMP\go-mapi-sandbox-output\inno-install.log` (copied from
-  `C:\output` inside the sandbox).
-- **Registry key missing** — `install-and-verify.log` lists the exact
-  missing key. Cross-reference against `src/installer/go-mapi.iss`
-  `[Registry]` section.
-- **Windows Defender scanning interferes** — sandbox-internal Defender
-  is enabled by default. If the install step times out, add
-  `<ProtectedClient>Disable</ProtectedClient>` to `sandbox.wsb` at the
-  cost of lower isolation (sandbox-internal only — host protection is
-  unaffected).
-
-## Relation to other test surfaces
-
-| Test | Environment | Runs |
-|------|-------------|------|
-| `test-dll-registration.ps1` | sandbox, `-RegistrationOnly` | DLL registration sanity |
-| `install-and-verify.ps1` | sandbox, `-FullTest` | Install → verify → uninstall round-trip |
-| `src/installer/tests/installer.Tests.ps1` | Legacy local combined-installer check | Pester 5 compatibility smoke test |
-| Playwright `tests/e2e/*.spec.ts` | CI (`e2e.yml`) | End-to-end browser → host → mock Gmail |
-
-The sandbox harness is INTENTIONALLY lighter than the Pester smoke test
-— it runs in ~5 min vs ~15 min and has no browser/Playwright dependency.
-Pester stays the CI authority; the sandbox is the local feedback loop.
-
-## Files in this directory
-
-- `run-sandbox-test.ps1` — orchestrator (host side, uses `wsb` CLI)
-- `setup.ps1` — in-sandbox WinAppDriver setup (legacy, used by `-SetupOnly`)
-- `test-dll-registration.ps1` — in-sandbox DLL registration sanity check
-- `install-and-verify.ps1` — in-sandbox install → verify → uninstall runner (REL-02)
-- `sandbox.wsb` — declarative Windows Sandbox config (for `wsb start --config` or double-click)
-- `README.md` — this file
+The first runs host script contracts without a guest. The second separately
+requires existing Release artifacts and Windows PowerShell 5.1; it checks staging,
+relocation, hashes, rejection and harmless native exit/stream handling. Neither
+command executes product native/service tests or establishes a real guest pass.

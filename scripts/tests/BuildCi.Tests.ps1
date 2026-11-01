@@ -14,14 +14,7 @@ $oldMetadata = $env:GOMAPI_ADMIN_RELEASE_METADATA_URL
 $oldCC = $env:CC
 $oldCXX = $env:CXX
 try {
-    $preparer = Join-Path $repo 'scripts/prepare-windows-build.ps1'
-    $originalProfile = $env:USERPROFILE
-    try {
-        if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-            $env:USERPROFILE = Join-Path $temp 'missing-native-tools'
-        }
-        Reject { & $preparer -Native } 'missing native prerequisite'
-    } finally { $env:USERPROFILE = $originalProfile }
+    & (Join-Path $PSScriptRoot 'PrepareWindowsBuild.Tests.ps1')
     $appRoot = Join-Path $temp 'appcase'
     New-Item -ItemType Directory -Force (Join-Path $appRoot 'scripts'),(Join-Path $appRoot 'src/app/build/windows') | Out-Null
     Copy-Item (Join-Path $repo 'scripts/build-wails.ps1') (Join-Path $appRoot 'scripts/build-wails.ps1')

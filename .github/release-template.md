@@ -2,7 +2,7 @@
 
 ### Channel
 
-- Component: user / system
+- Component/package: user / system / suite
 - Release line: development / stable
 - Distribution: GitHub / Microsoft Store flight / WinGet target
 - Promotion source (stable releases): `X.Y.Z-beta.N`
@@ -27,7 +27,7 @@ major without a prerelease identifier.
 ### System requirements
 
 - Windows 10 (22H2) or Windows 11
-- Microsoft Edge WebView2 Evergreen Runtime — auto-bootstrapped by the installer if missing
+- Microsoft Edge WebView2 Evergreen Runtime installed for the user app; current split packages do not bundle it
 - Gmail or Google Workspace account
 
 ### License
