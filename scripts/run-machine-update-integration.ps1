@@ -400,7 +400,6 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         schema='go-mapi-deferred-cleanup-guard-observation-v1'; phase=$Phase; expected=$record
         products=$null; snapshot=$null; processes=[ordered]@{}; readError=$null
     }
-    $processLookups = @{}
     try {
         $products = @(InstalledTestProducts)
         $guardObservation.products = @($products | ForEach-Object {
@@ -410,19 +409,42 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         $guardObservation.snapshot = $snapshot
         foreach ($role in @('runner','installer')) {
             $lookupErrors = @()
-            # Capture each native lookup once; the guard below consumes these same objects.
-            $process = Get-Process -Id $record.$role.pid -ErrorAction SilentlyContinue -ErrorVariable lookupErrors
-            $processLookups[$role] = $process
+            # Observe once; only proven absence or a different creation identity permits cleanup.
+            $process = $null
+            try { $process = Get-Process -Id $record.$role.pid -ErrorAction SilentlyContinue -ErrorVariable lookupErrors }
+            catch { $lookupErrors += $_ }
             $observed = [ordered]@{
                 expected=$record.$role; present=[bool]$process
                 identity=[ordered]@{}; readErrors=@($lookupErrors | ForEach-Object { $_.Exception.Message })
+                createdAtUnixNano=$null; classification='indeterminate'
             }
-            if ($process) {
+            $expectedIdentityValid = ($record.$role.pid -is [int] -or $record.$role.pid -is [long]) -and
+                $record.$role.pid -gt 0 -and $record.$role.pid -le [int]::MaxValue -and
+                $record.$role.createdAtUnixNano -is [long] -and $record.$role.createdAtUnixNano -gt 0
+            if (-not $process -and $expectedIdentityValid -and $lookupErrors.Count -eq 1 -and
+                $lookupErrors[0].FullyQualifiedErrorId -eq 'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand' -and
+                $lookupErrors[0].CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -and
+                $lookupErrors[0].TargetObject -eq $record.$role.pid) {
+                $observed.classification = 'absent'
+            }
+            if ($process -and @($process).Count -eq 1) {
                 foreach ($property in @('Id','ProcessName','SessionId','StartTime','Path')) {
                     try {
                         $value = $process.$property
-                        $observed.identity[$property] = if ($property -eq 'StartTime') { $value.ToUniversalTime().ToString('o') } else { $value }
+                        if ($property -eq 'StartTime') {
+                            if ($value -isnot [DateTime] -or $value.Kind -eq [DateTimeKind]::Unspecified) { throw 'Missing or ambiguous process StartTime' }
+                            $utc = $value.ToUniversalTime()
+                            $observed.identity[$property] = $utc.ToString('o')
+                            # Bound ticks before multiplying so overflow cannot promote arithmetic to Double.
+                            if ($utc.Ticks -le 621355968000000000L -or $utc.Ticks -gt 713589688368547758L) { throw 'Process StartTime is outside exact Unix nanosecond range' }
+                            $nanos = ([int64]$utc.Ticks - 621355968000000000L) * 100L
+                            $observed.createdAtUnixNano = $nanos
+                        } else { $observed.identity[$property] = $value }
                     } catch { $observed.readErrors += "$property`: $($_.Exception.Message)" }
+                }
+                if ($expectedIdentityValid -and $lookupErrors.Count -eq 0 -and
+                    $observed.identity['Id'] -eq $record.$role.pid -and $null -ne $observed.createdAtUnixNano) {
+                    $observed.classification = if ($observed.createdAtUnixNano -eq $record.$role.createdAtUnixNano) { 'matching' } else { 'reused' }
                 }
             }
             $guardObservation.processes[$role] = $observed
@@ -442,8 +464,8 @@ function ConfirmDeferredInterruption($record, [bool]$RequireFenceProof = $false)
         $snapshot.pending.runner.createdAtUnixNano -ne $record.runner.createdAtUnixNano -or
         $snapshot.pending.installer.pid -ne $record.installer.pid -or
         $snapshot.pending.installer.createdAtUnixNano -ne $record.installer.createdAtUnixNano -or
-        $processLookups.runner -or
-        $processLookups.installer -or
+        $guardObservation.processes.runner.classification -notin @('absent','reused') -or
+        $guardObservation.processes.installer.classification -notin @('absent','reused') -or
         ($snapshot.replay -and $snapshot.replay.sequence -eq $manifest.packages.$caseB.identity.sequence)) {
         throw 'Deferred cleanup no longer matches exact conservative interruption state'
     }
