@@ -27,8 +27,15 @@ harness logs, and app acknowledgements. Missing evidence fails the gate.
 
 ## Installed machine update gate
 
-Ordinary pushes and pull requests run `just check-portable` on Ubuntu and
-`just test-windows` on Windows. `check-portable` runs Go tests and vet for
+Pull requests and pushes to `develop` run the full integration gate. Feature
+branches use pull requests or manual dispatch rather than a second push run.
+New PR commits cancel the previous run for that PR; integration-branch push
+runs remain available for the exact-source release checks. Cut release tags
+from a `develop` commit with successful push CI. Manual, reusable and scheduled
+runs remain available; the nightly schedule runs only the race detector.
+
+The jobs run `just check-portable` on Ubuntu and `just test-service` on Windows.
+`check-portable` runs Go tests and vet for
 internal/app/service, frontend Vitest/Svelte checks, and fake-backend Playwright
 queue/auth tests. Playwright failure reports and traces are retained. The
 Windows service-package tests need an elevated process. Their package fixture
@@ -122,6 +129,8 @@ the machine-global service, MSI product, certificate stores and fixture port
 - `admin-msi-fixtures` builds and signs the packages once and uploads
   `go-mapi-machine-fixtures-<run id>` (the package manifest, MSIs, inputs and
   the signer's public certificate).
+  It starts as soon as native and app artifacts are available, in parallel
+  with the Windows shell integration checks.
 - `admin-msi-scenario` runs one matrix leg per scenario on its own runner. Each
   leg downloads the fixtures to the same workspace paths, imports the fixture
   signer's public certificate into the machine Root and TrustedPublisher stores
@@ -129,10 +138,12 @@ the machine-global service, MSI product, certificate stores and fixture port
   `just machine-hosted-integration -Scenario <scenario>`, and always uploads that
   scenario's evidence as
   `go-mapi-machine-native-validation-<scenario>-<run id>`. The legs do not
-  cancel each other.
+  cancel each other. These runners need Go, Just and PowerShell to execute the
+  prebuilt fixtures; .NET and native compilers are needed only when building them.
 - `admin-msi`, named "Validate machine MSI lifecycle and installed updater",
-  is the aggregate gate. It fails unless the fixture job and every scenario
-  leg succeeded, so a skipped, cancelled or failed leg fails the gate.
+  is the aggregate gate. It requires the Windows development checks, Windows
+  shell integration, fixture build and every scenario leg to succeed. A skipped,
+  cancelled or failed dependency fails the gate.
 
 The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
 (the service writes it under `ProgramData\go-mapi\updates\logs\<transaction id>`),

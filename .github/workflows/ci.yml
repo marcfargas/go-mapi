@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [develop]
   pull_request:
   workflow_call:
     inputs:
@@ -23,6 +23,12 @@ on:
 
 permissions:
   contents: read
+
+# Superseded PR runs have no release authority. Keep every integration push
+# available: release workflows require successful push CI for their exact SHA.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-check:
@@ -181,7 +187,7 @@ jobs:
     if: ${{ github.event_name != 'schedule' }}
     name: User component Windows shell
     runs-on: windows-latest
-    needs: [windows-check, build-interceptor, app-packages]
+    needs: [build-interceptor]
     env:
       CGO_ENABLED: '1'
       GOMAPI_OAUTH_CLIENT_ID: ci-client
@@ -281,7 +287,7 @@ jobs:
           path: src/interceptor/build-${{ matrix.arch }}/bin/go-mapi-test-harness.exe
           if-no-files-found: error
 
-  # The four machine scenarios share the machine-global service, MSI product,
+  # The machine scenarios share the machine-global service, MSI product,
   # certificate stores and fixture port 18453, so each runs alone on its own
   # runner. The fixtures are built and signed once here and reused by every
   # scenario job; admin-msi below is the aggregate gate.
@@ -290,7 +296,7 @@ jobs:
     name: Build machine MSI test fixtures
     runs-on: windows-latest
     timeout-minutes: 45
-    needs: [build-interceptor, user-windows-shell, app-packages]
+    needs: [build-interceptor, app-packages]
     env:
       CGO_ENABLED: '1'
     steps:
@@ -358,15 +364,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.25' }
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
       - uses: extractions/setup-just@v2
       - uses: actions/download-artifact@v4
         with:
           name: go-mapi-machine-fixtures-${{ github.run_id }}
           path: .
-      - uses: ./.github/actions/setup-windows
-        with: { groups: native }
       - name: Admit the exact downloaded fixture signer
         shell: pwsh
         run: |
@@ -393,24 +395,24 @@ jobs:
           retention-days: 7
 
   # Aggregate gate. It keeps the job name that branch protection and
-  # docs/component-integration-gate.md refer to, and fails unless the fixture
-  # build and every scenario job succeeded (a skipped or cancelled one fails it).
+  # docs/component-integration-gate.md refer to. Independent Windows checks
+  # still gate success without delaying fixture construction and scenarios.
   admin-msi:
     if: ${{ always() && github.event_name != 'schedule' }}
     name: Validate machine MSI lifecycle and installed updater
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [admin-msi-fixtures, admin-msi-scenario]
+    needs: [windows-check, user-windows-shell, admin-msi-fixtures, admin-msi-scenario]
     steps:
-      - name: Require the fixture build and every machine scenario to pass
+      - name: Require Windows checks, integration, fixtures and every scenario to pass
         shell: bash
         run: |
-          echo "fixtures: ${{ needs.admin-msi-fixtures.result }}"
-          echo "scenarios: ${{ needs.admin-msi-scenario.result }}"
-          if [ "${{ needs.admin-msi-fixtures.result }}" != "success" ] || [ "${{ needs.admin-msi-scenario.result }}" != "success" ]; then
-            echo "Machine MSI lifecycle and installed updater validation did not pass" >&2
-            exit 1
-          fi
+          for result in '${{ needs.windows-check.result }}' '${{ needs.user-windows-shell.result }}' '${{ needs.admin-msi-fixtures.result }}' '${{ needs.admin-msi-scenario.result }}'; do
+            if [ "$result" != "success" ]; then
+              echo "Windows checks, integration or machine MSI validation did not pass: $result" >&2
+              exit 1
+            fi
+          done
 
   go-race:
     if: ${{ github.event_name == 'schedule' || inputs.run_race }}

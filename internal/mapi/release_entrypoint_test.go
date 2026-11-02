@@ -256,11 +256,12 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		}
 	}
 	// The aggregate is the gate: it keeps the original job name and fails unless
-	// the fixture build and every scenario passed.
+	// independent Windows checks, fixture build and every scenario passed.
 	for _, want := range []string{
 		"name: Validate machine MSI lifecycle and installed updater",
-		"needs: [admin-msi-fixtures, admin-msi-scenario]",
-		"always()", "needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
+		"needs: [windows-check, user-windows-shell, admin-msi-fixtures, admin-msi-scenario]",
+		"always()", "needs.windows-check.result", "needs.user-windows-shell.result",
+		"needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
 	} {
 		if !strings.Contains(aggregate, want) {
 			t.Errorf("machine MSI aggregate job is missing %q", want)
