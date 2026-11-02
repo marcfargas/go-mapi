@@ -1,0 +1,15 @@
+{
+  "schema": "go-mapi-machine-fixture-spec-v1",
+  "versions": {
+    "baseline": "5.0.1-alpha.4",
+    "serviceUpgrade": "5.0.1-alpha.5",
+    "packageNext": "5.0.1-alpha.6",
+    "appUpgrade": "5.0.2-alpha.1"
+  },
+  "timers": {
+    "startupDelaySeconds": 5,
+    "heartbeatSeconds": 2,
+    "checkIntervalSeconds": 5,
+    "failureDelayBaseSeconds": 30
+  }
+}

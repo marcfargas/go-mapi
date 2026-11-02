@@ -71,8 +71,10 @@ preserves those paths and saved credentials; only the standalone uninstall
 checkbox (or a separately confirmed in-app action for Store users) invokes
 `--purge-user-data`.
 
-Use `just package-user-msix`, `just package-user-standalone`, and
-`just verify-user-distribution` after the guarded Wails release build.
+Use `just package-user` for unsigned MSIX/NSIS validation through the CI packaging
+job. CI and releases share the GitHub `package-user` action; it consumes an explicit
+EXE, build manifest, version and package identity. The release workflow packages
+the signed EXE and verifies the signed containers with `just verify-user-distribution`.
 Public GitHub Actions releases fail closed unless the app EXE and both packages
 complete the configured signing route. No app package contains or registers
 the interceptor.

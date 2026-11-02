@@ -44,19 +44,18 @@ service-logon authorization.
 The Windows native matrix runs `just test-system <x64|x86> <Debug|Release>` for
 all four combinations; that command builds and runs the matching harness and CTest
 suite, and CTest fails if no tests are registered. The Release DLL and harness
-artifacts feed the separate queue integration command above. `just
-prepare-windows -Native -Wails -Packages -Install` prepares pinned Windows
-prerequisites as needed; omit `-Install` to validate an existing environment.
+artifacts feed the separate queue integration command above.
+The shared GitHub setup action provisions runners; the Windows development guide
+covers developer installation. `just doctor-windows` checks Go and Node without installing.
 
-The user Windows job builds a release standalone app at 5.0.1-alpha.4 with
-`just build-user-release -OutputDirectory ci-input/app-standalone` and verifies
-its EXE and manifest. It makes the MSIX and NSIS package from that exact EXE
-while `src/app/VERSION` still names A. It then builds the machine app A and
-suite app-only C separately with `just build-user-machine -OutputDirectory
-ci-input/appA` and `ci-input/appC`; C uses 5.0.2-alpha.1. Each EXE and manifest
-pair is verified before upload. The job repeats these three builds and checks
-on the same checkout to exercise owned-output replacement, without rebuilding
-the user packages. The first verified pairs are the uploaded handoff artifacts.
+The `app-packages` matrix builds standalone, machine A and machine C in separate
+checkouts. `src/installer/msi/tests/fixtures/machine.json` supplies synthetic versions and
+shortened timers only for the machine upgrade fixtures. The standalone leg uses
+the source `src/app/VERSION` unchanged and the shared packaging action to make
+MSIX and NSIS from its exact EXE; each leg verifies its EXE/manifest pair before upload. Local
+`just package-user` runs the same unsigned standalone leg through act and retains
+its uploaded artifacts. Packaging consumes the resolved artifact version instead
+of rewriting source to match a downloaded EXE.
 
 The `admin-msi-fixtures` job reuses the Release DLLs and distinct A/C machine
 apps. It prepares disposable signed system A/B/C and suite A/B/C packages with `just
@@ -93,8 +92,8 @@ and the A/C machine app EXE and manifest pairs:
 
 ```powershell
 $root = 'test-results/245-ci/local-run'
-just prepare-windows -Native -Install
 just build-machine-test-packages `
+  -FixtureSpecification src/installer/msi/tests/fixtures/machine.json `
   -X64Dll <x64-dll> -X86Dll <x86-dll> `
   -MachineApp <app-A.exe> -AppBuildManifest <app-A-artifacts.json> `
   -SuiteCApp <app-C.exe> -SuiteCAppBuildManifest <app-C-artifacts.json> `
@@ -103,21 +102,18 @@ just build-machine-test-packages `
   -ArtifactOrigin https://localhost:18453/releases/download/
 just machine-hosted-integration `
   -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory $root -FixturePort 18453
+  -EvidenceDirectory $root -FixturePort 18453 -Scenario update
 ```
 
-The hosted command runs cross-SKU lifecycle, system Hosted, suite Hosted,
-suite Cleanup, system and suite ReadinessRecovery, then system InterruptSameBoot
-with a 22-minute deadline. It checks phase result files and attempts all applicable cleanup while retaining
-both primary and cleanup failures. `-Scenario cross-sku|update|suite-update|
-update-interruption|readiness-recovery|suite-readiness-recovery` runs one of those
-six scenarios (`suite-update` includes its Cleanup phase); the default `all`
-runs them in the order above. The same
-selector scopes `-CleanupOnly` to the scenario's own phases. When
-`cleanup-deferred.json` exists, cleanup targets only system update and
-interruption with the deferred evidence; the phase script still checks the
-observed uninstall fence and exact interrupted identity. A deferred product
-is reported separately from a clean machine.
+The hosted command requires one `-Scenario cross-sku|update|suite-update|
+update-interruption|readiness-recovery|suite-readiness-recovery` per disposable
+machine. The phase finalizer owns product and fixture cleanup and records cleanup
+failures in the result; the wrapper checks both exit status and result evidence.
+`update-interruption` uses a 22-minute phase deadline and then a separate Cleanup
+observation to verify the uninstall fence and exact interrupted identity again.
+Its deferred product remains until machine disposal and is reported separately
+from a clean machine. Export evidence before disposing the machine, including on
+failure or timeout.
 
 The workflow splits the validation across runners because the scenarios share
 the machine-global service, MSI product, certificate stores and fixture port
@@ -130,8 +126,7 @@ the machine-global service, MSI product, certificate stores and fixture port
   leg downloads the fixtures to the same workspace paths, imports the fixture
   signer's public certificate into the machine Root and TrustedPublisher stores
   (the build runner trusted it only on itself), runs
-  `just machine-hosted-integration -Scenario <scenario>`, then runs the same
-  command with `-CleanupOnly` in an `always()` step, and always uploads that
+  `just machine-hosted-integration -Scenario <scenario>`, and always uploads that
   scenario's evidence as
   `go-mapi-machine-native-validation-<scenario>-<run id>`. The legs do not
   cancel each other.
@@ -143,12 +138,12 @@ The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
 (the service writes it under `ProgramData\go-mapi\updates\logs\<transaction id>`),
 the Service Control Manager and MsiInstaller events since the runner was killed,
 and every change of the Windows Installer service and `msiexec` process state in
-`interrupted-install/` and `events.ndjson`. This is evidence only; no assertion
+`interruption-diagnostics/` and `events.ndjson`. This is evidence only; no assertion
 depends on it.
 
-The small `pwsh -File scripts/tests/BuildCi.Tests.ps1` command checks build
-state and failure contracts with stand-ins. It does not prove that a PE builds
-or installs. Hosted Windows jobs provide that proof for the disposable inputs.
+`just test-windows-tooling` and `just test-msi-tooling` check build state and
+failure contracts with stand-ins. They do not prove that a PE builds or installs.
+Hosted Windows jobs provide that proof for the disposable inputs.
 
 `Hosted` bootstraps A explicitly through the administrator, then requires the
 installed LocalSystem service to commit B and C itself. It observes the real
@@ -158,7 +153,7 @@ disables automatic update through the supported administrator repair and
 checks a complete startup and cadence window without metadata or artifact
 requests. The default Hosted journey never starts the app and does not prove
 suite shutdown. For an explicit disposable-guest exercise, invoke
-`scripts/run-machine-update-integration.ps1 -SKU suite -Phase Hosted
+`just machine-update-integration -SKU suite -Phase Hosted
 -ExerciseSuiteShutdown -SuiteShutdownLauncher <existing-login-launcher.ps1>
 -SuiteShutdownDecoy <separate-directory>\go-mapi.exe` with the normal manifest
 and evidence arguments. This requires an orchestrator-supplied launcher with

@@ -11,7 +11,7 @@ import (
 	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
-func TestReadinessFixtureIsExplicitTargetBoundAndPreInstaller(t *testing.T) {
+func TestReadinessFixtureIsExplicitAndTargetBound(t *testing.T) {
 	oldFlag := MachineValidationReadinessFault
 	oldStart, oldHeartbeat, oldBase := MachineValidationStartupDelaySeconds, MachineValidationHeartbeatSeconds, MachineValidationFailureBaseSeconds
 	defer func() {
@@ -51,15 +51,5 @@ func TestReadinessFixtureIsExplicitTargetBoundAndPreInstaller(t *testing.T) {
 	_, _ = h.storage.WriteAtomic(context.Background(), []string{readinessObstructionName}, strings.NewReader("{}"), maxStatusBytes, 2, "")
 	if _, err := validationReadinessObstruction(context.Background(), h.storage, *p, self, coordinatorNow); err == nil {
 		t.Fatal("malformed marker silently ignored")
-	}
-	// Source ordering complements the Windows tagged executable test: the seam
-	// must stay before Run, which owns suite drain and StartInstaller.
-	source, err := os.ReadFile("runner_windows.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := string(source[strings.Index(string(source), "func RunProductionUpdateRunner"):])
-	if strings.Index(body, "validationReadinessObstruction(") > strings.Index(body, "}).Run(") {
-		t.Fatal("fixture moved after MSI entrypoint")
 	}
 }

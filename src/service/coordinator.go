@@ -780,20 +780,7 @@ func (coordinator *Coordinator) retryInstaller(ctx context.Context, pending Pend
 	if len(products) != 1 || !sameProduct(products[0].Snapshot, pending.Old) {
 		return coordinator.requireRepair(ctx, &pending)
 	}
-	healthy, err := coordinator.deps.Health.Healthy(ctx, pending.Old)
-	if err != nil || !healthy {
-		return OutcomeBackoff, err
-	}
-	allowed, err := coordinator.deps.RetryGate.AllowRetry(ctx, pending)
-	if err != nil || !allowed {
-		return OutcomeBackoff, err
-	}
-	idle, err = coordinator.deps.InstallerServer.Idle(ctx, true)
-	if err != nil || !idle {
-		return OutcomeBackoff, err
-	}
-	confirmed, err := coordinator.deps.Inventory.Products(ctx)
-	if err != nil || len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, pending.Old) {
+	if ready, err := coordinator.retryReady(ctx, pending); err != nil || !ready {
 		return OutcomeBackoff, err
 	}
 	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
@@ -852,20 +839,7 @@ func (coordinator *Coordinator) resumePreparedRetry(ctx context.Context, pending
 	if err != nil || len(products) != 1 || !sameProduct(products[0].Snapshot, pending.Old) {
 		return OutcomeBackoff, err
 	}
-	healthy, err := coordinator.deps.Health.Healthy(ctx, pending.Old)
-	if err != nil || !healthy {
-		return OutcomeBackoff, err
-	}
-	allowed, err := coordinator.deps.RetryGate.AllowRetry(ctx, pending)
-	if err != nil || !allowed {
-		return OutcomeBackoff, err
-	}
-	idle, err = coordinator.deps.InstallerServer.Idle(ctx, true)
-	if err != nil || !idle {
-		return OutcomeBackoff, err
-	}
-	confirmed, err := coordinator.deps.Inventory.Products(ctx)
-	if err != nil || len(confirmed) != 1 || !sameProduct(confirmed[0].Snapshot, pending.Old) {
+	if ready, err := coordinator.retryReady(ctx, pending); err != nil || !ready {
 		return OutcomeBackoff, err
 	}
 	identity, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(pending.SKU), pending.Candidate.PackageVersion)
@@ -874,6 +848,25 @@ func (coordinator *Coordinator) resumePreparedRetry(ctx context.Context, pending
 	}
 	artifact := StagedArtifact{Handle: fmt.Sprintf("%s/%d/%s", pending.SKU, pending.Replay.Sequence, identity.AssetName), SHA256: pending.ArtifactSHA256}
 	return coordinator.launchPreparedRetry(ctx, pending, artifact)
+}
+
+// Reprobe installer activity and product identity after health and authorization;
+// neither earlier observation authorizes a retry across a concurrent change.
+func (coordinator *Coordinator) retryReady(ctx context.Context, pending PendingV1) (bool, error) {
+	healthy, err := coordinator.deps.Health.Healthy(ctx, pending.Old)
+	if err != nil || !healthy {
+		return false, err
+	}
+	allowed, err := coordinator.deps.RetryGate.AllowRetry(ctx, pending)
+	if err != nil || !allowed {
+		return false, err
+	}
+	idle, err := coordinator.deps.InstallerServer.Idle(ctx, true)
+	if err != nil || !idle {
+		return false, err
+	}
+	confirmed, err := coordinator.deps.Inventory.Products(ctx)
+	return err == nil && len(confirmed) == 1 && sameProduct(confirmed[0].Snapshot, pending.Old), err
 }
 
 func (coordinator *Coordinator) launchPreparedRetry(ctx context.Context, pending PendingV1, artifact StagedArtifact) (Outcome, error) {

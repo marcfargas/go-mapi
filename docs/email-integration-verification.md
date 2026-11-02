@@ -17,7 +17,7 @@ shared reports. A development fixture, direct-DLL test, registry check or
 successful MAPI return alone does not establish installed Send-To behavior.
 
 Build the actual system, suite, direct/winget installer and MSIX test artifacts
-with the existing `Justfile` and `scripts/build-wails.ps1`/package builders;
+with the existing `Justfile` and `src/app/build.ps1`/package builders;
 verify each with its existing artifact verifier. Do not modify published bytes.
 The winget package uses the direct installer bytes, but record a separate
 winget installation result. A sideloaded MSIX does not prove Store delivery.
@@ -71,6 +71,6 @@ channel as a substitute.
 
 The old Phase 11 smoke runner covers a legacy package only. Its Send-To,
 queue, UI and Gmail observations must be explicit; `-NoHumanPrompts` yields
-incomplete evidence. `scripts/run-component-integration.ps1` loads a supplied
+incomplete evidence. `tests/sandbox/component-integration.ps1` loads a supplied
 DLL directly and is supplemental producer/consumer evidence, not installed
 Windows dispatch proof.

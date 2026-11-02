@@ -25,7 +25,7 @@ func testOracle(t *testing.T) *oracle {
 	for name, data := range testFiles {
 		want.Attachments[name] = hashBytes(data)
 	}
-	return newOracle(t.TempDir(), want)
+	return newOracle(want)
 }
 
 func hashBytes(data []byte) string {
@@ -98,6 +98,13 @@ func TestDraftOracleRequiresExactAttachmentMultisetAndBytes(t *testing.T) {
 			t.Fatal("unexpected draft envelope was accepted")
 		}
 	})
+	t.Run("recipient substring is insufficient", func(t *testing.T) {
+		o := testOracle(t)
+		o.expected.Recipient = "example.invalid"
+		if _, err := o.checkDraft(bytes.NewReader(rawDraft(t, "report.txt", "image.bin"))); err == nil {
+			t.Fatal("recipient substring was accepted instead of the exact address")
+		}
+	})
 }
 
 func TestOracleLatchesUnexpectedRequestAndLateDuplicate(t *testing.T) {
@@ -119,42 +126,22 @@ func TestOracleLatchesUnexpectedRequestAndLateDuplicate(t *testing.T) {
 		o.attemptDraft()
 		o.acceptDraft(entry)
 		state := o.current()
-		if !state.Failed || state.DraftAttempts != 2 || state.AcceptedDraft != 1 {
+		if !state.Failed || state.DraftAttempts != 2 || len(state.Drafts) != 1 {
 			t.Fatalf("late duplicate did not fail closed: %#v", state)
 		}
 	})
 }
 
-func TestSnapshotWriteFailureLatchesAndFailsClosed(t *testing.T) {
+func TestFinalSnapshotWriteFailureLatchesAndFailsClosed(t *testing.T) {
 	o := testOracle(t)
 	path := filepath.Join(t.TempDir(), "directory")
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := o.writeAtomic(path, map[string]string{"value": "cannot replace directory"}); err == nil {
+	if err := o.finalize(path); err == nil {
 		t.Fatal("snapshot write unexpectedly succeeded")
 	}
-	if !o.current().Failed {
+	if !o.current().Failed || !o.current().Final {
 		t.Fatal("snapshot write failure did not latch")
-	}
-}
-
-func TestFinalSnapshotRejectsMissingTruncatedAndWrongRun(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "final.json")
-	if _, err := readFinalSnapshot(path, "run-1"); err == nil {
-		t.Fatal("missing snapshot passed")
-	}
-	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readFinalSnapshot(path, "run-1"); err == nil {
-		t.Fatal("truncated snapshot passed")
-	}
-	if err := os.WriteFile(path, []byte(`{"schemaVersion":1,"runId":"wrong","final":true}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readFinalSnapshot(path, "run-1"); err == nil {
-		t.Fatal("wrong-run snapshot passed")
 	}
 }

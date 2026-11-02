@@ -197,8 +197,8 @@ Section "Install" SecInstall
   ; Installed to $INSTDIR\diagnostics\ so the Wails app can invoke them at a
   ; known relative path when the user triggers a bug report.
   SetOutPath "$INSTDIR\diagnostics"
-  File "${__FILEDIR__}\..\..\scripts\diagnostics\collect-registration.ps1"
-  File "${__FILEDIR__}\..\..\scripts\diagnostics\collect-runtime.ps1"
+  File "${__FILEDIR__}\..\app\diagnostics\collect-registration.ps1"
+  File "${__FILEDIR__}\..\app\diagnostics\collect-runtime.ps1"
   SetOutPath "$INSTDIR"
 
   ; D-10 + T-10-01-01 — MUST run BEFORE the HKLM Mail (Default) overwrite below

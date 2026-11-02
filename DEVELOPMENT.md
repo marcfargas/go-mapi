@@ -18,7 +18,7 @@ it does not process mail or own users' Gmail credentials.
 | User app | `src/app/`, `src/app/frontend/` | OAuth, tray/window, queue consumer, settings and update guidance |
 | Machine updater | `src/service/`, `src/service/cmd/go-mapi-service/` | Health, authenticated targets, protected staging and MSI update recovery |
 | Machine installers | `src/installer/msi/` | Mutually exclusive system/suite products, service and machine registration |
-| Host tooling | `scripts/`, `scripts/tests/` | Builds, packages, verification orchestration and tooling contracts |
+| Development commands | `Justfile`, `.github/actions/`, component build/test files | Shared development commands, packaging and hosted orchestration |
 | Test journeys | `tests/e2e/`, `tests/sandbox/` | Browser UI checks and disposable Windows guest programs |
 
 Wails supplies the native shell and WebView2 UI; Go owns application behavior.

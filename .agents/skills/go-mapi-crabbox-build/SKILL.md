@@ -5,83 +5,52 @@ description: Prepare and build go-mapi's Windows user app, x86/x64 interceptor a
 
 # Build go-mapi on Windows
 
-Use [local Windows development](../../../docs/windows-development.md) for
-Scoop installation, qualified versions and desktop-session constraints. Read the
-Justfile and actual script parameter blocks before supplying package arguments.
-Use [verification](../go-mapi-verification/SKILL.md) for observable acceptance,
-isolation, evidence and cleanup; a successful build establishes compilation only.
-
-When changing the build or setup contract, use
-[docs](../go-mapi-docs/SKILL.md) before implementation to put the smallest useful
-proposed command/example in the existing guide. After verification, reconcile
-that proposal and affected setup/package claims through docs before completion.
-Ordinary builds with unchanged contracts need no documentation edit.
-
-## Prepare the current shell
+Follow [Windows development](../../../docs/windows-development.md) for tool setup,
+qualified versions, commands and desktop-session constraints. Read the current
+Justfile and component parameter blocks for arguments. Use
+[verification](../go-mapi-verification/SKILL.md) for acceptance: compilation alone
+does not prove installer or installed behavior. For contract changes, use
+[docs](../go-mapi-docs/SKILL.md) to propose the smallest guide/example before
+implementation and reconcile it after verification; unchanged builds need no edit.
 
 ```powershell
 $env:GOTOOLCHAIN = 'go1.25.14'
-. ./scripts/prepare-windows-build.ps1 -Native -Wails -Packages -Msi
-npm ci
-```
-
-Go 1.25.x, Wails 2.12.0 and NSIS 3.11 are qualified. Machine MSI projects use
-.NET 8 and restore their pinned WiX SDK. The preparer is a bounded check/install
-helper; it does not install every prerequisite. Dot-source to retain PATH
-changes, or resolve tools in a fresh shell. A Just child cannot change its
-parent's PATH. A new host has no implicit Azure lease or credentials requirement.
-
-## Compile independent components
-
-```powershell
+just doctor-windows
+just install
 just build-frontend
 just build-system
 just build-service-windows
 just build-user
 ```
 
-The native DLLs are `src/interceptor/build-x64/bin/go-mapi.dll` and
-`src/interceptor/build-x86/bin/go-mapi.dll`. The app build retains an executable
-and `app-artifacts.json`; use that pair for subsequent verification and packaging.
-The version authorities are in `components.json`, including independent app,
-interceptor and service version files.
+Developer tool installation and qualified versions are in the guide; GitHub runner
+provisioning belongs to its setup action. Local act packaging checks installed tools
+without installing them. Open a fresh shell
+after installation: Just cannot change its parent's PATH. No Azure lease is
+implicit. Native outputs are `src/interceptor/build-{x64,x86}/bin/go-mapi.dll`;
+keep app EXE and `app-artifacts.json` together for packaging and verification.
+`components.json` identifies independent component version authorities.
 
-`just build-user` consumes the OAuth environment selected by the existing build
-script and Just dotenv support. Alternatively invoke `scripts/build-wails.ps1`
-with its `.env.local` path. Keep values private. Explicit fake fixture values
-can prove compilation only; a build without real OAuth cannot prove sign-in or
-be treated as shippable. Do not ask for credentials in chat.
+App builds consume private OAuth environment/dotenv inputs or the build script's
+explicit `.env.local` path. Never expose values or request credentials in chat.
+Fake fixture values prove compilation only, not sign-in or a shippable artifact.
+Release validation uses `build-user-release`, `build-user-machine` and
+`build-system-release` with valid component versions. Keep temporary version
+fixtures in an isolated source copy; preserve canonical version/track guards.
 
-For release-mode validation, use `just build-user-release`,
-`just build-user-machine` and `just build-system-release` with explicit valid
-component versions. Use an isolated source copy for temporary version fixtures;
-do not silently change canonical versions or dirty source to satisfy guards.
-Development and stable release-track rules remain enforced by project scripts.
+Use `just package-user` for CI's unsigned user-package validation; real user
+releases use the app release workflow and shared packaging action. Build machine
+packages with `just package-system` or `just package-suite` and explicit manifests. Verify with
+`verify-user-artifact`, `verify-user-distribution`, `verify-system-package` and
+`verify-suite-package`; component READMEs define their contracts. Suite needs a
+machine-distributed app. The combined NSIS installer, Inno/native-host flow and
+`npm run build:interceptor` are obsolete, not fallback paths.
 
-## Package and inspect
-
-Use the maintained split commands, supplying their required version, artifact and
-manifest parameters:
-
-- `just package-user-standalone` builds the per-user NSIS installer.
-- `just package-user-msix` builds the per-user MSIX.
-- `just package-system` and `just package-suite` build WiX machine MSIs from
-  explicit input manifests. Suite consumes a machine-distributed app executable.
-- `just verify-user-artifact`, `just verify-user-distribution`,
-  `just verify-system-package` and `just verify-suite-package` check their
-  corresponding artifacts. Read component package READMEs for exact contracts.
-
-The old `npm run build:interceptor`, combined `src/installer/go-mapi.nsi` and
-Inno/native-host installer are obsolete. Do not use them as fallbacks.
-
-Keep ordinary unsigned compilation and package inspection on the host. Run
-`build-machine-test-packages.ps1`, which creates machine signing trust, inside
-the disposable guest along with service tests and install/update/uninstall.
-Crabbox uses `.crabbox.yaml` to select local Windows Sandbox. The guest needs its
-own prepared inputs/tools; normal sync excludes ignored build artifacts and does
-not provision a guest toolchain. The host worktree's external `.git` pointer is
-not a self-contained guest repository.
-
-Return source identity, dirty input qualifications, exact artifacts and hashes,
-commands and results. Keep local buildability separate from installer behavior,
-release signing, reboot/no-user proof, Gmail authentication and publication.
+Keep unsigned compilation and inspection on the host. Machine fixture building
+(`just build-machine-test-packages`), service tests and install/update/uninstall
+belong in a disposable guest because they create machine trust or service state.
+`.crabbox.yaml` selects local Windows Sandbox; ignored host artifacts/tools are not
+automatically provisioned, and a linked worktree's external `.git` is not a
+self-contained guest repository. Follow the guide for selected inputs and source
+identity. Return source/dirty qualifications, artifacts/hashes, commands and
+results; keep signing, reboot/no-user, live Gmail and publication acceptance distinct.

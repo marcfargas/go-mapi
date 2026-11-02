@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
+
 	"strings"
 	"testing"
 )
@@ -96,10 +96,10 @@ func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 	content := string(justfile)
 	for _, want := range []string{
 		"build-frontend:", "build-user *args:", "build-user-release *args:", "test-user:", "check-user:", "e2e-user:",
-		"scripts/build-wails.ps1 -UseEnvironmentCredentials",
-		"scripts/build-wails.ps1 -Release -UseEnvironmentCredentials",
-		"verify-user-artifact *args:", "scripts/verify-app-artifact.ps1",
-		"verify-user-distribution *args:", "scripts/verify-app-distribution.ps1",
+		"src/app/build.ps1 -UseEnvironmentCredentials",
+		"src/app/build.ps1 -Release -UseEnvironmentCredentials",
+		"verify-user-artifact *args:", "src/app/verify-artifact.ps1",
+		"verify-user-distribution *args:", "src/app/packaging/verify.ps1",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("Just command contract missing %q", want)
@@ -116,7 +116,7 @@ func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 			t.Errorf("app command must be component-independent: %s", line)
 		}
 	}
-	buildScript, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "build-wails.ps1"))
+	buildScript, err := os.ReadFile(filepath.Join(repoRoot, "src", "app", "build.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 
 func TestAppArtifactVerifierUsesPEMetadataForGuiArtifact(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	verifier, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "verify-app-artifact.ps1"))
+	verifier, err := os.ReadFile(filepath.Join(repoRoot, "src", "app", "verify-artifact.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,11 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := strings.ReplaceAll(string(workflow), "\r\n", "\n")
-	producer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)/`).FindStringSubmatch(content)
+	recipes, err := os.ReadFile(filepath.Join(repoRoot, "Justfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := string(recipes)
 	// The machine lifecycle validation is split into a fixture job that builds
 	// and signs the packages once, one scenario job per scenario (each on its own
 	// runner: the scenarios share machine-global state), and the aggregate gate
@@ -206,14 +210,31 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	fixtures := jobText("admin-msi-fixtures", "admin-msi-scenario")
 	scenarios := jobText("admin-msi-scenario", "admin-msi")
 	aggregate := jobText("admin-msi", "go-race")
-	consumer := regexp.MustCompile(`(?m)name: go-mapi-machine-app\s+path: (ci-input/[^/\s]+)`).FindStringSubmatch(fixtures)
-	if len(producer) != 2 || len(consumer) != 2 || producer[1] != consumer[1] ||
-		!strings.Contains(fixtures, "-MachineApp "+consumer[1]+"/go-mapi-machine.exe") ||
-		!strings.Contains(fixtures, "-AppBuildManifest "+consumer[1]+"/app-artifacts.json") {
-		t.Errorf("machine A upload, download, and fixture input paths disagree: producer=%v consumer=%v", producer, consumer)
+	apps := jobText("app-packages", "user-windows-shell")
+	for _, role := range []struct{ name, artifact, appArg, manifestArg string }{
+		{"appA", "go-mapi-machine-app", "-MachineApp", "-AppBuildManifest"},
+		{"appC", "go-mapi-machine-app-suiteC", "-SuiteCApp", "-SuiteCAppBuildManifest"},
+	} {
+		producer := regexp.MustCompile(`(?s)- role: ` + role.name + `\s+.*?output: (ci-input/[^\s]+)\s+artifact: ` + role.artifact + `(?:\s|$)`).FindStringSubmatch(apps)
+		consumer := regexp.MustCompile(`name: ` + role.artifact + `\s+path: (ci-input/[^\s]+)`).FindStringSubmatch(fixtures)
+		if len(producer) != 2 || len(consumer) != 2 || producer[1] != consumer[1] ||
+			!strings.Contains(fixtures, role.appArg+" "+consumer[1]+"/go-mapi-machine.exe") ||
+			!strings.Contains(fixtures, role.manifestArg+" "+consumer[1]+"/app-artifacts.json") {
+			t.Errorf("%s upload, download, and fixture input paths disagree: producer=%v consumer=%v", role.name, producer, consumer)
+		}
 	}
-	if strings.Count(content, "just build-machine-test-packages") != 1 || strings.Contains(scenarios, "build-machine-test-packages") {
+	if strings.Count(fixtures, "just build-machine-test-packages") != 1 || strings.Contains(scenarios, "build-machine-test-packages") {
 		t.Error("machine MSI fixtures must be built once, in the fixture job, and reused by the scenario jobs")
+	}
+	for _, removed := range []string{"build-ci-apps", "build-ci-fixtures", "trust-ci-fixtures"} {
+		if strings.Contains(commands, removed) || strings.Contains(content, removed) {
+			t.Errorf("CI orchestration still routes through removed Just recipe %q", removed)
+		}
+	}
+	for _, required := range []string{"role: standalone", "version: baseline", "version: appUpgrade", "uses: ./.github/actions/package-user", "name: ${{ matrix.artifact }}", "path: ${{ matrix.output }}/"} {
+		if !strings.Contains(apps, required) {
+			t.Errorf("app matrix is missing %q", required)
+		}
 	}
 	if !strings.Contains(fixtures, "name: go-mapi-machine-fixtures-${{ github.run_id }}") ||
 		!strings.Contains(scenarios, "name: go-mapi-machine-fixtures-${{ github.run_id }}") {
@@ -225,9 +246,10 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		"fail-fast: false",
 		"needs: [admin-msi-fixtures]",
 		"-Scenario ${{ matrix.scenario }}\n",
-		"-Scenario ${{ matrix.scenario }} -CleanupOnly",
 		"name: go-mapi-machine-native-validation-${{ matrix.scenario }}-${{ github.run_id }}",
-		"signerPublicCertificate", "Import-Certificate",
+		"$certificate.Thumbprint -cne [string]$manifest.fixture.signerThumbprint",
+		"$certificate.NotAfter.ToUniversalTime() -le [DateTime]::UtcNow",
+		"Import-Certificate", "if ($env:ACT) { throw",
 	} {
 		if !strings.Contains(scenarios, want) {
 			t.Errorf("machine scenario job is missing %q", want)
@@ -246,23 +268,11 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	}
 	for _, want := range []string{
 		"workflow_call:", "workflow_dispatch:", "cron: '0 3 * * *'", "contents: read",
-		"Build interceptor", "Package and verify the same odd-major standalone bytes", "Validate machine MSI lifecycle and installed updater",
-		"just machine-hosted-integration", "just check-portable", "just test-windows", "just build-frontend", "go test -race -v ./internal/mapi/... ./src/app/...",
+		"Build interceptor", "app-packages:", "Validate machine MSI lifecycle and installed updater",
+		"just machine-hosted-integration", "just check-portable", "just test-service", "just test-windows-race",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("CI workflow is missing %q", want)
-		}
-	}
-	sequence, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "run-hosted-machine-integration.ps1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"CrossSkuLifecycle.Tests.ps1", "Invoke-Phase 'update' 'system' 'Hosted'", "Invoke-Phase 'suite-update' 'suite' 'Hosted'", "Invoke-Phase 'update-interruption' 'system' 'InterruptSameBoot' 22",
-		"[ValidateSet('all','cross-sku','update','suite-update','update-interruption','readiness-recovery','suite-readiness-recovery')][string]$Scenario = 'all'",
-		"if (InScenario 'cross-sku')", "if (InScenario 'update')", "if (InScenario 'suite-update')", "if (InScenario 'update-interruption')",
-		"Invoke-Phase 'suite-update' 'suite' 'Cleanup'", "Invoke-Phase 'readiness-recovery' 'system' 'ReadinessRecovery'", "Invoke-Phase 'suite-readiness-recovery' 'suite' 'ReadinessRecovery'", "InScenario $_"} {
-		if !strings.Contains(string(sequence), want) {
-			t.Errorf("hosted machine sequence is missing %q", want)
 		}
 	}
 	for _, forbidden := range []string{"softprops/action-gh-release", "azure/artifact-signing-action", "environment: artifact-signing", "environment: user-component-release", "environment: system-component-release"} {
@@ -303,112 +313,9 @@ func TestReleasePathsCarryNoValidationTimers(t *testing.T) {
 	if !strings.Contains(build, "if ($RequireMachineReleaseTrust -and $validationSet.Count -gt 0) { throw 'Release service must not carry validation timers' }") {
 		t.Error("service build must reject validation timers under -RequireMachineReleaseTrust")
 	}
-	if !strings.Contains(read(".github", "workflows", "ci.yml"), "-ValidationTimers") {
-		t.Error("the CI fixture build must pass the validation timers")
-	}
-}
-
-// Every per-wait limit of the machine update driver must tolerate a slow hosted
-// runner (three times the worst wait measured on hosted runners under the CI
-// timers) and still fail in minutes, not inside the phase deadline. Run
-// 36940474780 failed the liveness wait at 142.65 s, 1 s over its 142 s limit, on a
-// wait that normally ends within 5 s; the margin was 60 s.
-func TestMachineUpdateWaitLimitsTolerateSlowRunners(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	read := func(parts ...string) string {
-		t.Helper()
-		raw, err := os.ReadFile(filepath.Join(append([]string{repoRoot}, parts...)...))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return strings.ReplaceAll(string(raw), "\r\n", "\n")
-	}
-	script := read("scripts", "run-machine-update-integration.ps1")
 	ci := read(".github", "workflows", "ci.yml")
-	number := func(text, pattern string) int {
-		t.Helper()
-		match := regexp.MustCompile(pattern).FindStringSubmatch(text)
-		if len(match) != 2 {
-			t.Fatalf("pattern %q not found", pattern)
-		}
-		value, err := strconv.Atoi(match[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		return value
-	}
-	startup := number(ci, `-ValidationStartupDelaySeconds (\d+)`)
-	heartbeat := number(ci, `-ValidationHeartbeatSeconds (\d+)`)
-	check := number(ci, `-ValidationCheckIntervalSeconds (\d+)`)
-	failureBase := number(ci, `-ValidationFailureBaseSeconds (\d+)`)
-	install := number(script, `(?m)^\$installWorkSeconds = (\d+)`)
-	margin := number(script, `(?m)^\$waitMarginSeconds = (\d+)`)
-
-	// Health publication after private recovery retirement is a new observer
-	// boundary (debug702), not another historically measured install/refusal.
-	// It reuses the base wait without installer work or failure backoff, and
-	// Until clamps it to the phase deadline. The PowerShell evidence test drives
-	// absent-health -> healthy and permanent failure through the actual helper.
-	// Do not invent a historical measurement or shift the five measurements below.
-	healthWait := `Until "published healthy $Key" { AssertHealthy $Key } -PollMilliseconds 500 -Seconds (WaitLimit)`
-	if strings.Count(script, healthWait) != 1 || strings.Count(script, "AwaitHealthy $caseB | Out-Null") != 2 {
-		t.Fatal("both recovery health observations must use the single bounded strict-health helper")
-	}
-	if limit := startup + heartbeat + check + margin; limit >= 360 {
-		t.Errorf("health publication wait %d s reaches six minutes", limit)
-	}
-	measuredScript := strings.Replace(script, healthWait, "", 1)
-
-	// Worst wait measured per site, in script order: wrong-SKU refusal, automatic
-	// B commit, untrusted-C refusal, automatic C commit (from the trust restore),
-	// runner/installer liveness (CI runs 36931761969, 36938262552, 36940474780).
-	measured := []float64{5.6, 41.3, 7.3, 99.7, 4.9}
-	sites := regexp.MustCompile(`-Seconds \(WaitLimit((?:[^()\n]|\([^()\n]*\))*)\)`).FindAllStringSubmatch(measuredScript, -1)
-	if len(sites) != len(measured) {
-		t.Fatalf("WaitLimit sites = %d, want %d: a new or removed wait needs a measured worst case here", len(sites), len(measured))
-	}
-	for i, site := range sites {
-		args := site[1]
-		owed := 0
-		switch {
-		case strings.Contains(args, "(2 * $failureBaseSeconds)"):
-			owed = 2 * failureBase
-		case strings.Contains(args, "$failureBaseSeconds"):
-			owed = failureBase
-		}
-		limit := startup + heartbeat + check + owed + margin
-		if strings.Contains(args, "-Install") {
-			limit += install
-		}
-		if float64(limit) < 3*measured[i] {
-			t.Errorf("wait %d limit %d s is under three times its worst measured wait %.1f s", i+1, limit, measured[i])
-		}
-		if limit >= 360 {
-			t.Errorf("wait %d limit %d s reaches six minutes; a stall must fail in minutes", i+1, limit)
-		}
-	}
-	if margin < 180 {
-		t.Errorf("slow-runner margin %d s is below 180 s", margin)
-	}
-	// Readiness cases include real Installer idle shutdown and up to three
-	// missing-ready observations. They have a separate declared bounded budget.
-	for _, required := range []string{"function ReadinessWaitLimit", "-Seconds (ReadinessWaitLimit)", "-Seconds (ReadinessWaitLimit -Install)", "-Seconds (ReadinessWaitLimit -Persistent)", "AssertRecoveryProcessHistory", "Expected five physical runners (B2+C3)"} {
-		if !strings.Contains(script, required) {
-			t.Errorf("readiness proof lacks %q", required)
-		}
-	}
-	// No wait carries a literal limit, so none escapes the formula above.
-	if regexp.MustCompile(`-Seconds \d`).MatchString(script) {
-		t.Error("a wait passes a literal -Seconds limit instead of WaitLimit")
-	}
-	// Evidence for a liveness wait that expires without any runner record.
-	for _, want := range []string{
-		"} catch { CollectHandoffStallEvidence $livenessWaitStartedUtc; throw }",
-		"Record 'handoff-stall-evidence'",
-	} {
-		if !strings.Contains(script, want) {
-			t.Errorf("machine update driver lacks %q", want)
-		}
+	if !strings.Contains(ci, "just build-machine-test-packages -FixtureSpecification src/installer/msi/tests/fixtures/machine.json") || !strings.Contains(ci, "-ValidationTimers") {
+		t.Error("the CI fixture build must select the single fixture specification and validation timers")
 	}
 }
 

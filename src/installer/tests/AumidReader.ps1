@@ -6,7 +6,7 @@
 #   Freshly-installed shortcuts have an indexing delay before Get-StartApps
 #   lists them. Tests would flake. Inline C# + IShellLink + IPropertyStore
 #   is the stable primitive (verified RESEARCH 2026; matches
-#   scripts/register-dev-aumid.ps1 on the stamp side).
+#   src/app/register-dev-aumid.ps1 on the stamp side).
 #
 # Why the type definition lives in a dot-sourced file:
 #   Add-Type with the same Namespace/Name is idempotent in the same PS session

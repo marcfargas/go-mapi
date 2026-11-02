@@ -25,7 +25,7 @@ Per-session Private Working Set of go-mapi.exe (Wails + WebView2 Evergreen) unde
 
 The original direct-Azure provisioner was retired when Windows validation moved
 to brokered CrabBox leases. The guest-side sampler remains at
-`scripts/measure-ram.ps1`; recreate the multi-user scheduled tasks on a
+`tests/performance/measure-ram.ps1`; recreate the multi-user scheduled tasks on a
 task-owned Windows lease before using its `-Orchestrate` mode. The checked-in
 CSV is the durable evidence for the original gate.
 
@@ -44,6 +44,6 @@ None of these invalidate the iter-1 gate reading, which is tight (<1% stddev acr
 
 | Path | Role |
 |---|---|
-| `scripts/measure-ram.ps1` | On-VM worker + orchestrator + aggregate mode. |
+| `tests/performance/measure-ram.ps1` | On-VM worker + orchestrator + aggregate mode. |
 | `docs/measurements/phase-07-ram-gate.csv` | Raw sample rows (8 columns, 39 rows). |
 | `.planning/phases/07-wails-shell-ram-gate/07-VERIFICATION.md` | Full gate verification + caveats + per-requirement verification. |

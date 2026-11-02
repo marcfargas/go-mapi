@@ -461,7 +461,8 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 	}
 	// A Windows checkout can convert the script to CRLF; the check below
 	// spans lines.
-	machineUpdate := strings.ReplaceAll(readAdminContractFile(t, repoRoot, "scripts", "run-machine-update-integration.ps1"), "\r\n", "\n")
+	machineUpdate := strings.ReplaceAll(readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "update.ps1"), "\r\n", "\n")
+	machineUpdate += strings.ReplaceAll(readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "UpdateSupport.ps1"), "\r\n", "\n")
 	for _, want := range []string{
 		// The administrator repair keeps its unchanged health assertion and
 		// must also reopen admission promptly.
@@ -473,7 +474,7 @@ func TestMachineMsiStopsInstalledSuiteAppsBeforeRemoval(t *testing.T) {
 		}
 	}
 	// Hosted CI must run an upgrade that replaces the running app file.
-	hosted := readAdminContractFile(t, repoRoot, "scripts", "run-hosted-machine-integration.ps1")
+	hosted := readAdminContractFile(t, repoRoot, "src", "installer", "msi", "tests", "hosted.ps1")
 	if !strings.Contains(hosted, "-NewerAppSuiteMsi $fixture.packages.suiteC.msi") {
 		t.Error("hosted machine integration must pass the app-changing suite fixture to the lifecycle test")
 	}

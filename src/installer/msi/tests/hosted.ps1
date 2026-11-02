@@ -1,0 +1,79 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$PackageManifest,
+    [Parameter(Mandatory)][string]$EvidenceDirectory,
+    [int]$FixturePort = 18453,
+    # Scenarios share machine-global state. Select one per disposable machine.
+    [Parameter(Mandatory)][ValidateSet('cross-sku','update','suite-update','update-interruption','readiness-recovery','suite-readiness-recovery')][string]$Scenario
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$root = [IO.Path]::GetFullPath($EvidenceDirectory)
+$packagePath = [IO.Path]::GetFullPath($PackageManifest)
+if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) { throw "Missing machine fixture manifest: $packagePath" }
+$fixture = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
+if ($fixture.schema -cne 'go-mapi-machine-test-packages-v1' -or
+    $fixture.fixture.metadataOrigin -cne "https://localhost:$FixturePort" -or
+    $fixture.fixture.artifactOrigin -cne "https://localhost:$FixturePort/releases/download/") {
+    throw 'Machine fixture manifest and HTTPS port disagree'
+}
+foreach ($name in @('systemA','systemB','systemC','suiteA','suiteB','suiteC')) {
+    $package = $fixture.packages.$name
+    if (-not $package -or -not (Test-Path -LiteralPath $package.msi -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $package.msi -Algorithm SHA256).Hash.ToLowerInvariant() -cne $package.sha256) {
+        throw "Missing or changed machine fixture package: $name"
+    }
+}
+$phaseScript = Join-Path $PSScriptRoot 'update.ps1'
+$powerShell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$deferred = Join-Path $root 'update-interruption'
+# Phase deadlines in minutes under the fixture's validation timers (production
+# timers keep the long deadlines). Each automatic commit has its own per-wait
+# limit in the phase script; these only bound the phase as a whole, so a
+# regression to a multi-minute stall cannot hide inside a long deadline.
+# update-interruption keeps its own literal: it waits for Windows Installer's
+# idle shutdown (about 6 minutes), which no validation timer shortens.
+$validationTimers = [bool]$fixture.fixture.PSObject.Properties['timers']
+$validationDeadlines = @{ 'update' = 15; 'suite-update' = 20; 'readiness-recovery' = 20; 'suite-readiness-recovery' = 25 }
+function Invoke-Phase([string]$Name, [string]$SKU, [string]$Phase, [int]$Deadline = 35) {
+    if ($validationTimers -and $Phase -ne 'Cleanup' -and $validationDeadlines.ContainsKey($Name)) { $Deadline = $validationDeadlines[$Name] }
+    $path = Join-Path $root $Name
+    $resultPath = Join-Path $path "machine-update-$($Phase.ToLowerInvariant()).json"
+    Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
+    $phaseArgs = @('-NoProfile','-File',$phaseScript,'-PackageManifest',$packagePath,
+        '-EvidenceDirectory',$path,'-SKU',$SKU,'-Phase',$Phase,
+        '-FixturePort',[string]$FixturePort,'-DeadlineMinutes',[string]$Deadline)
+    if ($Phase -eq 'Cleanup' -and $SKU -eq 'system') { $phaseArgs += @('-DeferredInterruptionEvidence',$deferred) }
+    & $powerShell @phaseArgs
+    if ($LASTEXITCODE -ne 0) { throw "$Name $Phase failed with exit code $LASTEXITCODE" }
+    if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw "Missing phase result: $resultPath" }
+    $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    if ($result.schema -cne 'go-mapi-machine-update-integration-v1' -or $result.phase -cne $Phase -or
+        $result.passed -ne $true -or $result.cleanupError -or $result.packageManifest -ine $packagePath) {
+        throw "Invalid or failed phase evidence: $resultPath"
+    }
+}
+switch ($Scenario) {
+    'cross-sku' {
+        $cross = Join-Path $root 'cross-sku'
+        Get-ChildItem -LiteralPath $cross -Filter '*.log' -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force
+        & $powerShell -NoProfile -File (Join-Path $PSScriptRoot 'CrossSkuLifecycle.Tests.ps1') `
+            -SystemMsi $fixture.packages.systemA.msi -SuiteMsi $fixture.packages.suiteA.msi `
+            -NewerSuiteMsi $fixture.packages.suiteB.msi -NewerAppSuiteMsi $fixture.packages.suiteC.msi -LogDirectory $cross
+        if ($LASTEXITCODE -ne 0) { throw "Cross-SKU lifecycle failed with exit code $LASTEXITCODE" }
+        if (@(Get-ChildItem -LiteralPath $cross -Filter '*.log' -File -ErrorAction SilentlyContinue).Count -eq 0) {
+            throw 'Cross-SKU lifecycle produced no MSI log evidence'
+        }
+    }
+    'update' { Invoke-Phase $Scenario 'system' 'Hosted' }
+    'suite-update' { Invoke-Phase $Scenario 'suite' 'Hosted' 45 }
+    'readiness-recovery' { Invoke-Phase $Scenario 'system' 'ReadinessRecovery' }
+    'suite-readiness-recovery' { Invoke-Phase $Scenario 'suite' 'ReadinessRecovery' }
+    'update-interruption' {
+        Invoke-Phase $Scenario 'system' 'InterruptSameBoot' 22
+        # A separate observation proves that deferral still names the original
+        # transaction and fence after the first phase has finished cleanup.
+        Invoke-Phase $Scenario 'system' 'Cleanup'
+    }
+}

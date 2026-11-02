@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <regex>
 #include <string>
@@ -16,7 +17,9 @@ using namespace go_mapi;
 namespace {
 
 std::string ReadFixture(const char* name) {
-    std::ifstream file(std::string(GO_MAPI_QUEUE_FIXTURE_DIR) + "/" + name,
+    const char* root = std::getenv("GO_MAPI_TEST_FIXTURE_ROOT");
+    if (!root || !*root) return "";
+    std::ifstream file(std::string(root) + "/protocol-fixtures/queue-v1/" + name,
                        std::ios::binary);
     if (!file.is_open()) return "";
     return std::string(std::istreambuf_iterator<char>(file), {});

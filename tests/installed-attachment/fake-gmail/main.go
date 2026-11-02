@@ -56,9 +56,7 @@ type snapshot struct {
 	Final         bool         `json:"final"`
 	Requests      int64        `json:"requests"`
 	UserInfo      int64        `json:"userInfoRequests"`
-	DraftRequests int64        `json:"draftRequests"`
 	DraftAttempts int64        `json:"draftAttempts"`
-	AcceptedDraft int64        `json:"acceptedDrafts"`
 	Rejected      int64        `json:"rejectedRequests"`
 	Failed        bool         `json:"failed"`
 	Errors        []string     `json:"errors"`
@@ -77,11 +75,10 @@ type oracle struct {
 	mu       sync.Mutex
 	state    snapshot
 	expected expected
-	root     string
 }
 
-func newOracle(root string, want expected) *oracle {
-	return &oracle{root: root, expected: want, state: snapshot{
+func newOracle(want expected) *oracle {
+	return &oracle{expected: want, state: snapshot{
 		SchemaVersion: 1,
 		RunID:         want.RunID,
 		Errors:        []string{},
@@ -164,11 +161,10 @@ func (o *oracle) recordRequest() {
 func (o *oracle) acceptDraft(entry draftEntry) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.state.AcceptedDraft > 0 {
+	if len(o.state.Drafts) > 0 {
 		o.failureLocked(errors.New("late duplicate draft request"))
 		return
 	}
-	o.state.AcceptedDraft++
 	o.state.Drafts = append(o.state.Drafts, entry)
 }
 
@@ -184,25 +180,7 @@ func (o *oracle) finalize(path string) error {
 	o.state.FinalizedAt = time.Now().UTC()
 	value := o.state
 	o.mu.Unlock()
-	if err := o.writeAtomic(path, value); err != nil {
-		return err
-	}
-	return nil
-}
-
-func readFinalSnapshot(path, runID string) (snapshot, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return snapshot{}, fmt.Errorf("read final fake snapshot: %w", err)
-	}
-	var result snapshot
-	if err := json.Unmarshal(data, &result); err != nil {
-		return snapshot{}, fmt.Errorf("decode final fake snapshot: %w", err)
-	}
-	if !result.Final || result.SchemaVersion != 1 || result.RunID != runID {
-		return snapshot{}, errors.New("fake snapshot is not a finalized result for this run")
-	}
-	return result, nil
+	return o.writeAtomic(path, value)
 }
 
 func (o *oracle) serve(ctx context.Context, listener net.Listener, cert tls.Certificate) error {
@@ -278,9 +256,6 @@ func (o *oracle) serveConn(raw net.Conn, cert tls.Certificate) error {
 		o.mu.Unlock()
 		body = `{"email":"test@example.invalid","name":"Synthetic 569"}`
 	case request.Method == http.MethodPost && request.URL.Path == "/gmail/v1/users/me/drafts":
-		o.mu.Lock()
-		o.state.DraftRequests++
-		o.mu.Unlock()
 		o.attemptDraft()
 		entry, err := o.checkDraft(request.Body)
 		if err != nil {
@@ -321,7 +296,8 @@ func (o *oracle) checkDraft(body io.Reader) (draftEntry, error) {
 		return draftEntry{}, fmt.Errorf("parse RFC822 message: %w", err)
 	}
 	entry := draftEntry{Subject: message.Header.Get("Subject"), Recipient: message.Header.Get("To"), Attachments: []attachment{}}
-	if entry.Subject != o.expected.Subject || !strings.Contains(strings.ToLower(entry.Recipient), strings.ToLower(o.expected.Recipient)) {
+	recipients, recipientErr := mail.ParseAddressList(entry.Recipient)
+	if entry.Subject != o.expected.Subject || recipientErr != nil || len(recipients) != 1 || recipients[0].Address != o.expected.Recipient {
 		return draftEntry{}, fmt.Errorf("draft envelope did not match run expectation")
 	}
 	mediaType, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
@@ -430,7 +406,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	o := newOracle(*root, want)
+	o := newOracle(want)
 	cert, thumbprint, err := generateCertificate(*root, want.RunID)
 	if err != nil {
 		o.fail(fmt.Errorf("generate synthetic certificate: %w", err))
@@ -523,12 +499,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	checked, err := readFinalSnapshot(filepath.Join(*root, "fake-final.json"), want.RunID)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if checked.Failed {
+	if o.current().Failed {
 		fmt.Fprintln(os.Stderr, "FAKE_FAILED")
 		return 1
 	}

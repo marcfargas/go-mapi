@@ -84,7 +84,6 @@ target_include_directories(queue_v1_tests PRIVATE
 )
 target_compile_definitions(queue_v1_tests PRIVATE
     GO_MAPI_VERSION="4.0.0"
-    GO_MAPI_QUEUE_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/protocol-fixtures/queue-v1"
 )
 set_target_properties(queue_v1_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -107,9 +106,6 @@ add_executable(component_compat_tests
     $<TARGET_OBJECTS:component_compat_obj>
 )
 target_include_directories(component_compat_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_compile_definitions(component_compat_tests PRIVATE
-    GO_MAPI_COMPAT_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/component-compatibility/compatibility-v1.json"
-)
 set_target_properties(component_compat_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 if(MSVC)
     target_compile_options(component_compat_tests PRIVATE /W4 /WX-)
@@ -118,3 +114,5 @@ elseif(MINGW)
     target_link_options(component_compat_tests PRIVATE -static)
 endif()
 add_test(NAME component_compat_tests COMMAND component_compat_tests)
+set_tests_properties(queue_v1_tests component_compat_tests PROPERTIES
+    ENVIRONMENT "GO_MAPI_TEST_FIXTURE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/../../../tests")

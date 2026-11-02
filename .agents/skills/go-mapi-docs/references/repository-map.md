@@ -1,14 +1,15 @@
 # Repository knowledge map
 
-Inspected at baseline `96665564724033447e9e5f0b55d684068b9d0540`. This map
-locates evidence; it does not replace the documents or establish their freshness.
+Initially inspected at baseline `96665564724033447e9e5f0b55d684068b9d0540`;
+command references follow the current Just entrypoint overhaul. This map locates
+evidence; it does not replace documents or establish runtime acceptance.
 Resolve links relative to this resource. Commands in the entrypoint run from the
 selected repository root, not from the skill directory.
 
 | Reader/topic | Existing home | Source checks when claims matter |
 | --- | --- | --- |
 | End-user install and use | [README.md](../../../../README.md) | Current user-app behavior, channels and packaging; do not present intended updates as shipped. |
-| Contributors: architecture, prerequisites, dev/build loop | [DEVELOPMENT.md](../../../../DEVELOPMENT.md) | [justfile](../../../../justfile), [package.json](../../../../package.json), [Windows preparation script](../../../../scripts/prepare-windows-build.ps1), invoked build scripts and relevant CI. |
+| Contributors: architecture, prerequisites, dev/build loop | [DEVELOPMENT.md](../../../../DEVELOPMENT.md) | [Justfile](../../../../Justfile), [package.json](../../../../package.json), [Windows setup commands](../../../../docs/windows-development.md#install-tools), invoked build scripts and relevant CI. |
 | Enterprise/admin deployment | [ENTERPRISE.md](../../../../ENTERPRISE.md), [MSI README](../../../../src/installer/msi/README.md) | Actual MSI/service scripts and component-specific contracts. |
 | User-component ownership/settings/distribution | [app README](../../../../src/app/README.md) | `src/app/`, current app packaging scripts, `components.json`. Frontend README contains template material; inspect actual frontend code/config for project behavior. |
 | Inter-component versions/installed state | [compatibility contract](../../../../docs/component-compatibility.md) | [components.json](../../../../components.json), `tests/component-compatibility/`, installed-state readers and producer. Repository tags or equal versions alone do not prove compatibility. |
@@ -28,9 +29,12 @@ runner, retained evidence and owned-guest cleanup. Use
 split and qualified toolchain. Compare current scripts and CI before using a
 particular claim. A discovered stale link does not authorize editing it during retrieval.
 
-The Windows preparation script supports `-Native`, `-Wails`, `-Packages` and
-`-Msi` and `-Install`; the install branch can install tooling/change execution policy. Neither listing the command nor a
-successful docs check establishes tool readiness or permission to run it.
+`just doctor-windows` checks the shell's toolchain. Developer installation is in
+the guide; runner provisioning belongs to `.github/actions/setup-windows`.
+`just package-user` selects unsigned CI packaging through act. Ordinary checks do not
+install tooling; source consistency does not establish tool readiness or authority
+to run installation. `just ci` selects host checks through act's self-host mapping,
+which supplies no isolation; machine-changing execution belongs in the guest.
 
 There is no established documentation publishing provider or dedicated Markdown
 checker in the inspected baseline. Repository edits are the supported local

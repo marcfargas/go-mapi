@@ -1,8 +1,8 @@
 # Windows Sandbox guest checks
 
 Use the [Windows development guide](../../docs/windows-development.md) for host
-setup and compilation. The Justfile is the command entrypoint; host orchestration
-lives in `scripts/`, its contracts in `scripts/tests/`, and guest programs here.
+setup and compilation. The Justfile is the command entrypoint; host orchestration,
+its behavioral contracts and guest programs live here.
 `phase11/` remains a separate human-observed installed-email journey.
 
 ## Execution boundary
@@ -32,12 +32,20 @@ exit code and save diagnostics as work proceeds. A reboot is outside this contra
 The default identity is SYSTEM. `-RunAs ExistingLogin` (or `-RunAsExistingLogin`)
 waits up to 90 seconds within the overall run deadline for a harmless guest probe
 to exit zero and observe Explorer in its own session with its owner SID. Add
-`-Connect` to start a hidden, asynchronous `wsb connect` client for the exact owned
-guest after sharing inputs; connection alone does not prove readiness. The runner
+`-Connect` to start the installed `WindowsSandboxRemoteSession.exe` viewer for
+the exact owned guest after sharing inputs. The runner retains the viewer itself:
+`wsb connect` returns after spawning it. Connection alone does not prove readiness. The runner
 retains connection streams and every readiness attempt, retries only the probe,
-and executes the selected script once. It creates no users or logon credentials.
+and executes the selected script once. Each probe allows up to 30 seconds for
+cold CLI completion within the unchanged 90-second readiness deadline. It creates no users or logon credentials.
 Owned-guest stop keeps its separate 30-second allowance, and only the retained
-connection client is terminated/disposed during cleanup.
+viewer is terminated/disposed during cleanup.
+
+`ExistingLogin` identifies the existing desktop session; it does not promise a
+non-elevated token. The Sandbox 0.8.107.0 installed-attachment run used the same
+account through `runas /trustlevel:0x20000` and verified its SID, profile, session
+and non-elevated token before releasing the test. Verify those properties for
+ordinary-user tests; do not provision another account to satisfy this prerequisite.
 
 ## Native and optional service feedback
 
@@ -50,9 +58,9 @@ Staging already-built artifacts from paths with spaces is supported.
 In a host PowerShell 7 shell, optionally compile service tests and stage inputs:
 
 ```powershell
-go test -c -o .tmp/service.test.exe ./src/service
+just build-service-tests
 if ($LASTEXITCODE -ne 0) { throw 'Service test compilation failed' }
-$selected = & ./scripts/prepare-native-inputs.ps1 `
+$selected = & ./tests/sandbox/native/prepare.ps1 `
     -OutputDirectory (Join-Path $PWD ('test-results/native-' + [guid]::NewGuid().ToString('N'))) `
     -ServiceTestBinary .tmp/service.test.exe
 just sandbox-test -InputDirectory $selected.InputDirectory -ScriptPath $selected.ScriptPath -RunAs System -TimeoutSeconds 900
@@ -60,24 +68,23 @@ just sandbox-test -InputDirectory $selected.InputDirectory -ScriptPath $selected
 
 `just prepare-native-inputs` exposes the same preparer for command-line use.
 Omit `-ServiceTestBinary` for native-only proof. The preparer reads existing
-artifacts, refuses an existing output directory, and validates PE architectures,
-hashes and compiled fixture definitions. `-CheckoutRoot`, `-X64BuildDirectory`,
+artifacts, refuses an existing output directory, and validates PE architectures
+and hashes. `-CheckoutRoot`, `-X64BuildDirectory`,
 `-X86BuildDirectory` and `-Configuration Debug` select alternate builds.
 `-FixtureSourceRoot` selects the directory containing `protocol-fixtures` and
 `component-compatibility` when fixtures have moved.
 
-Unit binaries contain absolute fixture paths. `native-inputs.json` records each
-build's compiled destinations, source/build metadata, checkout identity and selected
-file hashes. Relocation changes input locations, never compiled destinations.
-The v2 manifest requires optional service inputs to include the binary and the
-hashed `src/service/runner_windows.go` fixture from `-CheckoutRoot`; the guest
-copies both together and runs tests from that directory. Older manifests must be
-prepared again. Only this required service source file is staged.
+Native unit binaries resolve fixtures through `GO_MAPI_TEST_FIXTURE_ROOT`; CTest
+sets it for local tests and the guest sets it to its staged `fixtures` directory.
+`native-inputs.json` v3 records build locations, checkout identity and selected
+file hashes. Optional service inputs contain only the compiled test binary.
+Rebuild native tests and prepare inputs again after this change; older binaries
+and manifests are incompatible.
 Retain source/build evidence separately: checkout HEAD alone cannot identify dirty
 inputs used to build an existing binary.
 
-The guest verifies hashes, restores fixtures at compiled paths (using guest-local
-`subst` for missing drives), and runs four unit executables plus the matching DLL
+The guest verifies hashes, sets the runtime fixture directory, and runs four
+unit executables plus the matching DLL
 harness for each architecture. Harnesses write the canonical queue. Optional
 service tests change process privilege and create a disabled service fixture;
 the guest requires its initial absence and checks removal afterward. These

@@ -17,7 +17,7 @@ func TestVersionGateReleaseInputsRemainIndependent(t *testing.T) {
 		}
 		return string(data)
 	}
-	appBuild := read("scripts", "build-wails.ps1")
+	appBuild := read("src", "app", "build.ps1")
 	interceptorBuild := read("src", "interceptor", "build.ps1")
 	for _, want := range []string{"main.RequiredInterceptorMin", "main.RequiredInterceptorMax", "app-artifacts.json"} {
 		if !strings.Contains(appBuild, want) {

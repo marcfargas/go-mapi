@@ -40,6 +40,10 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       track: ${{ steps.version.outputs.track }}
     steps:
+      - name: Require hosted release infrastructure
+        shell: pwsh
+        run: |
+          if ($env:ACT) { throw 'Release signing and trust changes require hosted infrastructure.' }
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: { go-version: '1.25' }
@@ -104,10 +108,11 @@ jobs:
           STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
           STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
 
-      - run: npm ci
+      - run: just install
       - run: just test-user
       - run: just check-user
-      - run: just prepare-windows -Wails -Install
+      - uses: ./.github/actions/setup-windows
+        with: { groups: user packages }
       - name: Configure development-channel validation credentials
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         shell: pwsh
@@ -148,13 +153,11 @@ jobs:
         if: steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.sign || inputs.publish) && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
         shell: pwsh
         run: |
-          .\scripts\azure-test-signing-trust.ps1 -Mode Prepare -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -SignedFiles @('src/app/build/bin/go-mapi.exe')
+          just azure-test-trust Prepare (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') src/app/build/bin/go-mapi.exe
           New-Item -ItemType Directory -Force release/app | Out-Null
           Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -Destination release/app/test-trust.json
 
-      - run: just prepare-windows -Packages -Install
-
-      - name: Build app-only MSIX and standalone installer from the signed EXE
+      - name: Select package identity
         shell: pwsh
         env:
           STORE_IDENTITY_NAME: ${{ vars.STORE_IDENTITY_NAME }}
@@ -166,10 +169,21 @@ jobs:
           $identity = if ($production) { $env:STORE_IDENTITY_NAME } else { 'com.marcfargas.gomapi.validation' }
           $publisher = if ($production) { $env:STORE_PUBLISHER } elseif ($signed) { 'CN=La Chispa Sideral SLU(TEST ONLY), O=La Chispa Sideral SLU, L=Barcelona, S=Barcelona, C=ES' } else { 'CN=go-mapi validation' }
           $display = if ($production) { $env:STORE_PUBLISHER_DISPLAY_NAME } else { 'go-mapi development' }
-          just package-user-msix -Version '${{ steps.version.outputs.version }}' -IdentityName $identity -Publisher $publisher -PublisherDisplayName $display
-          if ($LASTEXITCODE -ne 0) { throw 'MSIX packaging failed' }
-          just package-user-standalone -Version '${{ steps.version.outputs.version }}'
-          if ($LASTEXITCODE -ne 0) { throw 'standalone packaging failed' }
+          "PACKAGE_IDENTITY_NAME=$identity" | Add-Content $env:GITHUB_ENV
+          "PACKAGE_PUBLISHER=$publisher" | Add-Content $env:GITHUB_ENV
+          "PACKAGE_PUBLISHER_DISPLAY_NAME=$display" | Add-Content $env:GITHUB_ENV
+
+      - name: Build app-only MSIX and standalone installer from the selected EXE
+        uses: ./.github/actions/package-user
+        with:
+          version: ${{ steps.version.outputs.version }}
+          app-exe: src/app/build/bin/go-mapi.exe
+          app-manifest: src/app/build/bin/app-artifacts.json
+          identity-name: ${{ env.PACKAGE_IDENTITY_NAME }}
+          publisher: ${{ env.PACKAGE_PUBLISHER }}
+          publisher-display-name: ${{ env.PACKAGE_PUBLISHER_DISPLAY_NAME }}
+          output-directory: release/app
+          require-signature: ${{ github.event_name == 'push' || inputs.publish || inputs.sign }}
 
       - name: Sign MSIX and standalone installer with Azure Artifact Signing
         if: github.event_name == 'push' || inputs.publish || inputs.sign
@@ -239,7 +253,7 @@ jobs:
       - name: Remove owned Azure TEST runner trust
         if: always() && steps.version.outputs.track == 'development' && (github.event_name == 'push' || inputs.sign || inputs.publish) && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
         shell: pwsh
-        run: .\scripts\azure-test-signing-trust.ps1 -Mode Cleanup -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
+        run: just azure-test-trust Cleanup (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
 
   publish-app-release:
     needs: build-sign-verify

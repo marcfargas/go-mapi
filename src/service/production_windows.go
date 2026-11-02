@@ -660,6 +660,24 @@ func (productionTransactionIDs) NewID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
+func productionProductInventory(inventory InstallerInventory) productInventoryFunc {
+	return func(ctx context.Context) ([]InstalledProduct, error) {
+		registration, err := inventory.Installed(ctx)
+		if err != nil {
+			return nil, err
+		}
+		marker, err := readMachineProductMarker()
+		if err != nil {
+			return nil, err
+		}
+		product, err := installedProductSnapshot(registration, marker)
+		if err != nil {
+			return nil, err
+		}
+		return []InstalledProduct{{Snapshot: product}}, nil
+	}
+}
+
 // Both machine SKUs use the same protected installation and recovery path.
 func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage *ProtectedStorage,
 	pending *FileStateStore, replay *FileReplayStore, lastResult *FileLastResultStore,
@@ -705,27 +723,12 @@ func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage
 		}
 		return PreparationObservation{Product: product, Marker: marker, Enabled: true}, nil
 	}
-	products := productInventoryFunc(func(ctx context.Context) ([]InstalledProduct, error) {
-		registration, err := inventory.Installed(ctx)
-		if err != nil {
-			return nil, err
-		}
-		marker, err := readMachineProductMarker()
-		if err != nil {
-			return nil, err
-		}
-		product, err := installedProductSnapshot(registration, marker)
-		if err != nil {
-			return nil, err
-		}
-		return []InstalledProduct{{Snapshot: product}}, nil
-	})
 	health := healthProbeFunc(func(ctx context.Context, product ProductSnapshot) (bool, error) {
 		observation, err := observe(ctx)
 		return err == nil && sameProduct(observation.Product, product), err
 	})
 	return NewCoordinator(Config{SKU: sku, MaxInstallerBusyRetries: 3}, Dependencies{
-		Inventory: products,
+		Inventory: productionProductInventory(inventory),
 		Launcher:  launcher, RetryGate: productionRetryGate{}, Health: health,
 		Processes: WindowsProcessProbe{}, InstallerServer: WindowsInstallerServerProbe{},
 		Pending: pending, Replay: replay, LastResult: lastResult,
@@ -738,21 +741,6 @@ func newProductionMachineCoordinator(sku update.SKU, stateStorage, updateStorage
 }
 
 func reconcileProductionPending(ctx context.Context, inventory InstallerInventory, pending PendingStore, replay ReplayStore, lastResult LastResultStore, stateStorage, updateStorage *ProtectedStorage, admission *SuiteAdmission, transaction PendingV1) (Outcome, error) {
-	products := productInventoryFunc(func(ctx context.Context) ([]InstalledProduct, error) {
-		reg, err := inventory.Installed(ctx)
-		if err != nil {
-			return nil, err
-		}
-		marker, err := readMachineProductMarker()
-		if err != nil {
-			return nil, err
-		}
-		product, err := installedProductSnapshot(reg, marker)
-		if err != nil {
-			return nil, err
-		}
-		return []InstalledProduct{{Snapshot: product}}, nil
-	})
 	health := healthProbeFunc(func(ctx context.Context, product ProductSnapshot) (bool, error) {
 		reg, err := inventory.Installed(ctx)
 		if err != nil {
@@ -772,7 +760,7 @@ func reconcileProductionPending(ctx context.Context, inventory InstallerInventor
 		return true, nil
 	})
 	deps := Dependencies{
-		Inventory: products, Health: health, Processes: WindowsProcessProbe{},
+		Inventory: productionProductInventory(inventory), Health: health, Processes: WindowsProcessProbe{},
 		InstallerServer: WindowsInstallerServerProbe{}, Pending: pending,
 		Replay: replay, LastResult: lastResult, Events: discardEvents{}, Clock: wallClock{},
 		Boot: WindowsBootIdentity{},
@@ -784,13 +772,6 @@ func reconcileProductionPending(ctx context.Context, inventory InstallerInventor
 		stateFile, ok := pending.(*FileStateStore)
 		resultFile, okResult := lastResult.(*FileLastResultStore)
 		if ok && okResult {
-			deps.RecoveryLock = func() (func(), error) {
-				lock, err := tryOwnRunnerLock(stateStorage)
-				if err != nil {
-					return nil, err
-				}
-				return func() { _ = lock.Close() }, nil
-			}
 			deps.RetireRepair = func(ctx context.Context, expected PendingV1, observed ProductSnapshot) error {
 				return retireProvedSuiteRepair(ctx, admission, stateFile, resultFile, expected, observed)
 			}
