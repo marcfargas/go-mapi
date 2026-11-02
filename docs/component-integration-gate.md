@@ -212,6 +212,12 @@ Separate system and suite `ReadinessRecovery` scenarios require a
 transient B handoff failure to recover with a fresh transaction, then exhaust
 C's durable three-launch budget across a service restart. They use shortened
 fixture timers; they do not establish production-duration waits.
+Readiness polling observes the runner's exact PID and creation time. A confirmed
+exit triggers a final read of durable readiness, then fails immediately if no
+record exists. Live or unobservable runners retain the 30-second system or
+75-second suite allowance. Recovery still requires the runner lock, dead process
+identities, a stopped Windows Installer service and the unchanged product/health
+checks before retiring a failed handoff; early failure does not authorize retry.
 The separate `InterruptSameBoot` scenario uses the same signed packages on its
 own runner. It imports only the
 manifest-matching public fixture certificate to restore Windows trust,

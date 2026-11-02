@@ -544,7 +544,7 @@ func NewProductionDetachedRunnerLauncher(sku update.SKU, stateStorage, updateSto
 	if sku == update.Suite {
 		timeout = 75 * time.Second
 	}
-	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: timeout}, executable)
+	launcher, err := NewDetachedRunnerLauncher(updateStorage, ready, WindowsDetachedProcessSpawner{}, PollReadyAwaiter{Interval: 100 * time.Millisecond, Timeout: timeout, Processes: WindowsProcessProbe{}}, executable)
 	if err != nil {
 		return nil, err
 	}

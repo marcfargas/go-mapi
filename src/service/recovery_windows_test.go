@@ -33,7 +33,11 @@ func TestProductionRecoveryWiringBothSKUs(t *testing.T) {
 			}
 			unlock()
 			launcher := c.deps.Launcher.(*DetachedRunnerLauncher)
-			timeout := launcher.awaiter.(PollReadyAwaiter).Timeout
+			awaiter := launcher.awaiter.(PollReadyAwaiter)
+			if _, ok := awaiter.Processes.(WindowsProcessProbe); !ok {
+				t.Fatal("readiness wait omitted exact runner observation")
+			}
+			timeout := awaiter.Timeout
 			expected := 30 * time.Second
 			if sku == update.Suite {
 				expected = 75 * time.Second
