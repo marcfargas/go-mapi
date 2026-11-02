@@ -3,6 +3,7 @@
 #include "component_compat.h"
 
 #include <fstream>
+#include <cstdlib>
 #include <regex>
 #include <sstream>
 
@@ -15,7 +16,9 @@ static std::string field(const std::string& object, const char* name) {
 }
 
 TEST_CASE("C++ compatibility decisions match the shared fixture matrix") {
-    std::ifstream input(GO_MAPI_COMPAT_FIXTURE);
+    const char* root = std::getenv("GO_MAPI_TEST_FIXTURE_ROOT");
+    REQUIRE(root != nullptr);
+    std::ifstream input(std::string(root) + "/component-compatibility/compatibility-v1.json");
     REQUIRE(input.good());
     std::stringstream buffer;
     buffer << input.rdbuf();

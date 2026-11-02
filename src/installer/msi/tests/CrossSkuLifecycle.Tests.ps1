@@ -404,7 +404,46 @@ public static class GoMapiLifecycleSender {
 $message = New-Object GoMapiLifecycleMessage
 $message.Subject = 'go-mapi lifecycle on-demand launch probe'
 $message.NoteText = 'Installed interceptor launch check.'
-[IO.File]::WriteAllText($Result, [string][GoMapiLifecycleSender]::MAPISendMail([IntPtr]::Zero, [IntPtr]::Zero, $message, 0, 0))
+$code = [GoMapiLifecycleSender]::MAPISendMail([IntPtr]::Zero, [IntPtr]::Zero, $message, 0, 0)
+# The native result is persisted first; diagnostics below never replace it.
+[IO.File]::WriteAllText($Result, [string]$code)
+if ($code -ne 0) {
+    # Best-effort failure operand, read as the sender: which interceptor
+    # boundary failed. Bounded, and never reads queued message bodies.
+    try {
+        function Get-Operand([string]$Path, [switch]$Content) {
+            try {
+                $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                if (-not $item) { return [ordered]@{ Path = $Path; Exists = $false } }
+                $value = [ordered]@{ Path = $Path; Exists = $true; Length = $item.Length; LastWriteUtc = $item.LastWriteTimeUtc.ToString('o') }
+                if ($Content) {
+                    $stream = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite, Delete')
+                    try {
+                        $reader = New-Object IO.StreamReader($stream)
+                        $buffer = New-Object char[] 1024
+                        $count = $reader.ReadBlock($buffer, 0, $buffer.Length)
+                        $value.Content = New-Object string($buffer, 0, $count)
+                    } finally { $stream.Dispose() }
+                }
+                $value
+            } catch { [ordered]@{ Path = $Path; Error = $_.Exception.Message } }
+        }
+        $go = Join-Path $env:APPDATA 'go-mapi'
+        $queue = Join-Path $env:LOCALAPPDATA 'go-mapi\queue'
+        $operand = [ordered]@{
+            MapiResult = $code; NowUtc = [DateTime]::UtcNow.ToString('o'); User = "$env:USERDOMAIN\$env:USERNAME"
+            LoadedInterceptor = @([Diagnostics.Process]::GetCurrentProcess().Modules | Where-Object { $_.ModuleName -eq 'go-mapi.dll' } | ForEach-Object FileName)
+            Presence = Get-Operand (Join-Path $go 'app-presence-v1')
+            ComponentState = Get-Operand (Join-Path $go 'app-component-state-v1.json') -Content
+            Warnings = @(Get-ChildItem -LiteralPath (Join-Path $queue 'warnings') -File -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Get-Operand $_.FullName -Content })
+            Errors = @(Get-ChildItem -LiteralPath (Join-Path $queue 'errors') -File -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Get-Operand $_.FullName -Content })
+            QueuedDescriptors = @(Get-ChildItem -LiteralPath $queue -Filter '*.json' -File -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { Get-Operand $_.FullName })
+        }
+        [IO.File]::WriteAllText($Result + '.operand.json', ($operand | ConvertTo-Json -Depth 5))
+    } catch {
+        try { [IO.File]::WriteAllText($Result + '.operand.json', (@{ DiagnosticError = $_.Exception.Message } | ConvertTo-Json)) } catch { }
+    }
+}
 '@
     $users = @(Get-SessionUsers)
     # A running single instance would absorb the launch; start from none.
@@ -448,7 +487,20 @@ $message.NoteText = 'Installed interceptor launch check.'
         SenderInClientSession = [bool]$senderProcess; SenderExited = $senderExited; SenderExitCode = $senderExitCode;
         ClientSession = $clientSession; ClientSessionExplorer = $clientExplorer } |
         ConvertTo-Json -Compress -Depth 4
-    if ($code -ne '0') { throw "$Step`: MAPISendMail through the installed interceptor returned '$code'" }
+    if ($code -ne '0') {
+        # Best effort: a capture failure never replaces the native result below.
+        $operandNote = ''
+        try {
+            $operandPath = $result + '.operand.json'
+            $operandName = ($Step -replace '[^A-Za-z0-9]+', '-') + '-launch-operand'
+            $senderOperand = if (Test-Path -LiteralPath $operandPath) { Get-Content -LiteralPath $operandPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{ Missing = $operandPath } }
+            $gateState = try { Get-GateState } catch { "error: $($_.Exception.Message)" }
+            $service = try { [string](Get-Service go-mapi -ErrorAction Stop).Status } catch { "error: $($_.Exception.Message)" }
+            Write-Evidence $operandName ([ordered]@{ Sender = $senderOperand; GateState = $gateState; Service = $service })
+            $operandNote = "; operand $(Join-Path $LogDirectory ($operandName + '.json'))"
+        } catch { $operandNote = "; operand capture failed: $($_.Exception.Message)" }
+        throw "$Step`: MAPISendMail through the installed interceptor returned '$code'$operandNote"
+    }
     if (-not $launched.Count) { throw "$Step`: the interceptor did not launch the installed app on demand" }
     if ($senderProcess -and -not $senderExited) { throw "$Step`: the launch probe sender did not exit within 30 s after the probe" }
 }

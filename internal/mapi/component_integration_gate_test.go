@@ -12,7 +12,7 @@ import (
 // that proof into a combined-installer, MAPISendDocuments, or fixture-only job.
 func TestComponentIntegrationGateContract(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	script, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "run-component-integration.ps1"))
+	script, err := os.ReadFile(filepath.Join(repoRoot, "tests", "sandbox", "component-integration.ps1"))
 	if err != nil {
 		t.Fatal(err)
 	}

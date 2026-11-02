@@ -224,11 +224,11 @@ func reconcileResidentTerminal(
 	reconcile func(context.Context, PendingV1) (Outcome, error),
 ) (Outcome, bool, error) {
 	outcome, err := reconcile(ctx, current)
-	if err != nil || (outcome != OutcomeCommitted && outcome != OutcomeRolledBack && outcome != OutcomeRepairRetired) {
+	if err != nil || (outcome != OutcomeCommitted && outcome != OutcomeRolledBack && outcome != OutcomeRepairRetired && outcome != OutcomeNoUpdate) {
 		return outcome, false, err
 	}
 	next, err := load(ctx)
-	if outcome == OutcomeRepairRetired {
+	if outcome == OutcomeRepairRetired || outcome == OutcomeNoUpdate {
 		return outcome, next == nil && err == nil, err
 	}
 	if err != nil || next == nil {

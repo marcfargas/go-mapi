@@ -18,6 +18,7 @@ type Phase string
 
 const (
 	PhasePrepared           Phase = "prepared"
+	PhaseHandoffFenced      Phase = "handoff-fenced"
 	PhaseChildRecorded      Phase = "child-recorded"
 	PhaseResumeAuthorized   Phase = "resume-authorized"
 	PhaseRunning            Phase = "running"
@@ -166,6 +167,9 @@ func (pending PendingV1) Validate() error {
 	if (pending.Phase == PhaseInstallerRunning || pending.Phase == PhaseStillRunning) && (pending.Runner == nil || pending.Installer == nil) {
 		return errors.New("running transaction lacks process identities")
 	}
+	if pending.Phase == PhaseHandoffFenced && (pending.Installer != nil || pending.InstallerThread != nil || pending.Exit != nil || pending.Result != ResultNone) {
+		return errors.New("fenced handoff has installer evidence")
+	}
 	if pending.Exit != nil && pending.Exit.ObservedAt.IsZero() {
 		return errors.New("invalid installer exit evidence")
 	}
@@ -212,7 +216,7 @@ func validSHA256(value string) bool {
 
 func validPhase(phase Phase) bool {
 	switch phase {
-	case PhasePrepared, PhaseChildRecorded, PhaseResumeAuthorized, PhaseRunning, PhaseInstallerRunning, PhaseStillRunning, PhaseCommitted, PhaseRolledBack, PhaseRebootPending, PhaseRepairRequired, PhaseOutcomeUnconfirmed:
+	case PhasePrepared, PhaseHandoffFenced, PhaseChildRecorded, PhaseResumeAuthorized, PhaseRunning, PhaseInstallerRunning, PhaseStillRunning, PhaseCommitted, PhaseRolledBack, PhaseRebootPending, PhaseRepairRequired, PhaseOutcomeUnconfirmed:
 		return true
 	default:
 		return false

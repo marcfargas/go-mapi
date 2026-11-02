@@ -90,6 +90,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Require hosted release infrastructure
+        shell: pwsh
+        run: |
+          if ($env:ACT) { throw 'Release signing, service tests and trust changes require hosted infrastructure.' }
       - uses: actions/setup-go@v5
         with: { go-version: '1.25' }
       - uses: actions/setup-dotnet@v4
@@ -109,7 +113,7 @@ jobs:
           if ((git rev-parse HEAD).Trim().ToLowerInvariant() -ne '${{ github.sha }}') { throw 'Checkout does not match the triggering commit' }
           if ((git status --porcelain --untracked-files=no).Count -ne 0) { throw 'Machine release checkout is dirty before build' }
           if ('${{ inputs.publish }}' -eq 'true') {
-            $publicRelease = if ($sku -ceq 'suite') { '3.2.0-alpha.7' } else { '3.2.0-alpha.1' }
+            $publicRelease = if ($sku -ceq 'suite') { '3.2.0-alpha.10' } else { '3.2.0-alpha.1' }
             if ($release -cne $publicRelease -or '${{ github.ref_type }}' -cne 'tag' -or
                 '${{ github.ref_name }}' -cne $identity.tag -or '${{ inputs.sign }}' -ne 'true' -or
                 '${{ inputs.controlled_origin_fixture }}' -eq 'true' -or $env:REUSE_RUN_ID -ne '' -or
@@ -222,7 +226,8 @@ jobs:
           if ('${{ inputs.publish }}' -ne 'true' -and [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_DISPATCH_JSON) -and
               [string]::IsNullOrWhiteSpace($env:MACHINE_RELEASE_TARGET_SPEC_JSON)) { throw 'Signed machine target requires its plain target spec' }
 
-      - run: just prepare-windows -Native -Install
+      - uses: ./.github/actions/setup-windows
+        with: { groups: native }
       - name: Build and test contained interceptor and service
         if: inputs.reuse_run_id == ''
         shell: pwsh
@@ -240,6 +245,9 @@ jobs:
           Copy-Item release/interceptor/go-mapi-x86.dll release/machine-input/go-mapi-x86.dll
           Copy-Item release/interceptor/go-mapi-x64.dll release/machine-input/go-mapi-x64.dll
 
+      - uses: ./.github/actions/setup-windows
+        if: inputs.sku == 'suite'
+        with: { groups: user }
       - name: Build explicit machine-distributed user app for suite only
         if: inputs.sku == 'suite'
         shell: pwsh
@@ -249,8 +257,6 @@ jobs:
           }
           npm ci
           if ($LASTEXITCODE -ne 0) { throw 'npm install failed' }
-          just prepare-windows -Wails -Install
-          if ($LASTEXITCODE -ne 0) { throw 'Wails preparation failed' }
           just build-user-machine
           if ($LASTEXITCODE -ne 0) { throw 'machine app build failed' }
           just verify-user-artifact -Distribution machine -ArtifactPath src/app/build/bin/go-mapi-machine.exe
@@ -312,7 +318,7 @@ jobs:
         run: |
           $files = @('release/machine-input/go-mapi-service.exe','release/machine-input/go-mapi-x86.dll','release/machine-input/go-mapi-x64.dll')
           if ('${{ inputs.sku }}' -eq 'suite') { $files += 'release/machine-input/go-mapi-machine.exe' }
-          .\scripts\azure-test-signing-trust.ps1 -Mode Prepare -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -SignedFiles $files
+          just azure-test-trust Prepare (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') @files
           Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json') -Destination release/machine-input/test-trust.json
 
       - name: Bind signed PE input manifest to exact SKU and source versions
@@ -347,7 +353,7 @@ jobs:
               AppBuildManifest='release/machine-input/app-artifacts.json';
               UnsignedAppSha256=$unsigned['go-mapi-machine.exe'] }
           }
-          .\scripts\write-machine-signed-input.ps1 -SKU $sku -PackageRelease '${{ steps.machine.outputs.release }}' `
+          just write-machine-signed-input -SKU $sku -PackageRelease '${{ steps.machine.outputs.release }}' `
             -SourceCommit '${{ github.sha }}' -InputDirectory release/machine-input `
             -ServiceVersion $serviceVersion -InterceptorVersion $interceptorVersion @appArgs `
             -RequireSignature:$('${{ inputs.sign }}' -eq 'true') -OutputPath release/machine-input/signed-input.json
@@ -578,7 +584,7 @@ jobs:
       - name: Remove owned Azure TEST runner trust
         if: always() && inputs.sign && vars.AZURE_ARTIFACT_SIGNING_ENDPOINT == 'https://weu.codesigning.azure.net/' && vars.AZURE_ARTIFACT_SIGNING_ACCOUNT == 'lachispa' && vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE == 'lachispa-test'
         shell: pwsh
-        run: .\scripts\azure-test-signing-trust.ps1 -Mode Cleanup -StatePath (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
+        run: just azure-test-trust Cleanup (Join-Path $env:RUNNER_TEMP 'azure-test-root.json')
 
   publish-machine-release:
     needs: validate-machine-package
@@ -606,7 +612,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$SKU:$VERSION" in
-            system:3.2.0-alpha.1|suite:3.2.0-alpha.7) ;;
+            system:3.2.0-alpha.1|suite:3.2.0-alpha.10) ;;
             *) echo 'Unapproved public machine release identity' >&2; exit 1 ;;
           esac
           tag="$SKU-v$VERSION"
@@ -660,6 +666,7 @@ jobs:
           set -euo pipefail
           cat > "$RUNNER_TEMP/release-notes.txt" <<'EOF'
           Experimental 3.2 development machine package. Signed with Azure Artifact Signing TEST ONLY profile.
+          The installed-attachment oracle and host runner are repository/CI test assets outside the suite MSI payload.
           Default Windows trust, installation, and automatic update acceptance are not established.
           Metadata remains unpublished; automatic update checks are not live for these release targets.
           EOF

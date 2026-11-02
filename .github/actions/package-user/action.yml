@@ -1,0 +1,153 @@
+name: Package user component
+description: Build MSIX and NSIS containers from one selected app executable
+inputs:
+  version:
+    description: Resolved artifact version
+    required: true
+  app-exe:
+    description: Selected standalone executable
+    required: true
+  app-manifest:
+    description: Build provenance for the selected executable before signing
+    required: true
+  identity-name:
+    description: MSIX identity name
+    required: true
+  publisher:
+    description: MSIX publisher
+    required: true
+  publisher-display-name:
+    description: MSIX publisher display name
+    required: true
+  output-directory:
+    description: Directory for both package artifacts
+    default: release/app
+  require-signature:
+    description: Require the selected EXE to have a valid signature
+    default: 'false'
+  makeappx-path:
+    description: Prepared Windows SDK MakeAppx executable
+    default: makeappx.exe
+  makensis-path:
+    description: Prepared NSIS executable
+    default: makensis.exe
+outputs:
+  msix-path:
+    description: Absolute MSIX artifact path
+    value: ${{ steps.stage.outputs.msix }}
+  installer-path:
+    description: Absolute NSIS artifact path
+    value: ${{ steps.stage.outputs.installer }}
+runs:
+  using: composite
+  steps:
+    - name: Bind and stage the selected app artifact
+      id: stage
+      shell: pwsh
+      env:
+        PACKAGE_VERSION: ${{ inputs.version }}
+        PACKAGE_APP: ${{ inputs.app-exe }}
+        PACKAGE_MANIFEST: ${{ inputs.app-manifest }}
+        PACKAGE_OUTPUT: ${{ inputs.output-directory }}
+        PACKAGE_SIGNED: ${{ inputs.require-signature }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Set-StrictMode -Version Latest
+        & go run ./internal/mapi/cmd/release-track -- $env:PACKAGE_VERSION
+        if ($LASTEXITCODE -ne 0) { throw 'Invalid package version' }
+        $app = [IO.Path]::GetFullPath($env:PACKAGE_APP)
+        $build = Get-Content -LiteralPath $env:PACKAGE_MANIFEST -Raw | ConvertFrom-Json
+        if ($build.schema -cne 'go-mapi-app-artifacts-v2' -or $build.component -cne 'app' -or
+            $build.version -cne $env:PACKAGE_VERSION -or $build.artifact.peProductVersion -cne $env:PACKAGE_VERSION -or
+            $build.artifact.filename -cne 'go-mapi.exe' -or [IO.Path]::GetFileName($app) -cne 'go-mapi.exe' -or
+            ($build.PSObject.Properties['distribution'] -and $build.distribution -cne 'standalone') -or
+            $build.source.commit -cne $env:GITHUB_SHA) { throw 'App provenance does not bind the selected standalone version and source' }
+        if ((Get-Item -LiteralPath $app).VersionInfo.ProductVersion -cne $env:PACKAGE_VERSION) { throw 'Selected EXE version differs from its build manifest' }
+        $selectedHash = (Get-FileHash -LiteralPath $app -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($env:PACKAGE_SIGNED -eq 'true') {
+          if ((Get-AuthenticodeSignature -LiteralPath $app).Status -ne 'Valid') { throw 'Selected app signature is not valid' }
+        } elseif ($env:PACKAGE_SIGNED -eq 'false') {
+          if ($selectedHash -cne $build.artifact.sha256) { throw 'Selected unsigned app bytes differ from build provenance' }
+        } else { throw 'require-signature must be true or false' }
+        $stage = Join-Path $env:RUNNER_TEMP ('go-mapi-package-' + [guid]::NewGuid().ToString('N'))
+        "stage=$stage" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+        New-Item -ItemType Directory -Path $stage | Out-Null
+        Copy-Item -LiteralPath $app -Destination (Join-Path $stage 'go-mapi.exe')
+        if ((Get-FileHash -LiteralPath (Join-Path $stage 'go-mapi.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $selectedHash) { throw 'Selected EXE changed during package staging' }
+        Copy-Item -LiteralPath src/app/packaging/msix/Assets -Destination $stage -Recurse
+        $output = [IO.Path]::GetFullPath($env:PACKAGE_OUTPUT)
+        New-Item -ItemType Directory -Path $output -Force | Out-Null
+        "msix=$(Join-Path $output "go-mapi-$env:PACKAGE_VERSION-x64.msix")" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+        "installer=$(Join-Path $output "go-mapi-user-$env:PACKAGE_VERSION-x64.exe")" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+
+    - name: Render the MSIX identity manifest
+      shell: pwsh
+      env:
+        PACKAGE_STAGE: ${{ steps.stage.outputs.stage }}
+        PACKAGE_VERSION: ${{ inputs.version }}
+        PACKAGE_IDENTITY: ${{ inputs.identity-name }}
+        PACKAGE_PUBLISHER: ${{ inputs.publisher }}
+        PACKAGE_DISPLAY: ${{ inputs.publisher-display-name }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $manifest = Get-Content -LiteralPath src/app/packaging/msix/AppxManifest.xml.in -Raw
+        foreach ($entry in @{
+          '@@IDENTITY_NAME@@'=$env:PACKAGE_IDENTITY; '@@PUBLISHER@@'=$env:PACKAGE_PUBLISHER
+          '@@PUBLISHER_DISPLAY_NAME@@'=$env:PACKAGE_DISPLAY
+          '@@PACKAGE_VERSION@@'=($env:PACKAGE_VERSION.Split('-')[0].Split('+')[0] + '.0')
+        }.GetEnumerator()) {
+          $manifest = $manifest.Replace($entry.Key, [Security.SecurityElement]::Escape($entry.Value))
+        }
+        [IO.File]::WriteAllText((Join-Path $env:PACKAGE_STAGE 'AppxManifest.xml'), $manifest, [Text.UTF8Encoding]::new($false))
+
+    - name: Pack MSIX with the Windows SDK
+      shell: pwsh
+      env:
+        PACKAGE_STAGE: ${{ steps.stage.outputs.stage }}
+        PACKAGE_MSIX: ${{ steps.stage.outputs.msix }}
+        MAKEAPPX: ${{ inputs.makeappx-path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        & $env:MAKEAPPX pack /d $env:PACKAGE_STAGE /p $env:PACKAGE_MSIX /o
+        if ($LASTEXITCODE -ne 0) { throw "MakeAppx pack failed: $LASTEXITCODE" }
+
+    - name: Build the standalone NSIS installer
+      shell: pwsh
+      env:
+        PACKAGE_STAGE: ${{ steps.stage.outputs.stage }}
+        PACKAGE_INSTALLER: ${{ steps.stage.outputs.installer }}
+        PACKAGE_VERSION: ${{ inputs.version }}
+        MAKENSIS: ${{ inputs.makensis-path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        & $env:MAKENSIS "/DGOMAPI_VERSION=$env:PACKAGE_VERSION" "/DGOMAPI_EXE=$(Join-Path $env:PACKAGE_STAGE 'go-mapi.exe')" "/DGOMAPI_OUTPUT=$env:PACKAGE_INSTALLER" src/app/packaging/standalone/go-mapi-user.nsi
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:PACKAGE_INSTALLER -PathType Leaf)) { throw "NSIS packaging failed: $LASTEXITCODE" }
+
+    - name: Verify the exact packaged executable
+      shell: pwsh
+      env:
+        PACKAGE_STAGE: ${{ steps.stage.outputs.stage }}
+        PACKAGE_MSIX: ${{ steps.stage.outputs.msix }}
+        PACKAGE_INSTALLER: ${{ steps.stage.outputs.installer }}
+        PACKAGE_VERSION: ${{ inputs.version }}
+        PACKAGE_OUTPUT: ${{ inputs.output-directory }}
+        PACKAGE_IDENTITY: ${{ inputs.identity-name }}
+        PACKAGE_PUBLISHER: ${{ inputs.publisher }}
+        PACKAGE_DISPLAY: ${{ inputs.publisher-display-name }}
+        MAKEAPPX: ${{ inputs.makeappx-path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        & ./src/app/packaging/verify.ps1 -Version $env:PACKAGE_VERSION -MsixPath $env:PACKAGE_MSIX -InstallerPath $env:PACKAGE_INSTALLER -AppExePath (Join-Path $env:PACKAGE_STAGE 'go-mapi.exe') -MakeAppx $env:MAKEAPPX -IdentityName $env:PACKAGE_IDENTITY -Publisher $env:PACKAGE_PUBLISHER -PublisherDisplayName $env:PACKAGE_DISPLAY -OutputManifest (Join-Path $env:PACKAGE_OUTPUT 'app-distribution.json')
+
+    - name: Remove the owned package staging directory
+      if: ${{ always() && steps.stage.outputs.stage != '' }}
+      shell: pwsh
+      env:
+        PACKAGE_STAGE: ${{ steps.stage.outputs.stage }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $stage = [IO.Path]::GetFullPath($env:PACKAGE_STAGE)
+        $root = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+        if (-not $stage.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or
+            [IO.Path]::GetFileName($stage) -notmatch '^go-mapi-package-[a-f0-9]{32}$') { throw 'Invalid owned packaging directory' }
+        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }

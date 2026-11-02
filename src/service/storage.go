@@ -386,6 +386,8 @@ func copyContext(ctx context.Context, destination io.Writer, source io.Reader) (
 // strict JSON and has a fixed name; no public value can select a path.
 type FileStateStore struct {
 	storage *ProtectedStorage
+	// FinalGrant is a short registry/journal check made under the exact CAS lock.
+	FinalGrant func(context.Context, PendingV1) error
 }
 
 type FileRunnerReadyStore struct {
@@ -444,8 +446,8 @@ func NewFileStateStore(storage *ProtectedStorage) (*FileStateStore, error) {
 	return &FileStateStore{storage: storage}, nil
 }
 
-func (store *FileStateStore) Load(_ context.Context) (*PendingV1, error) {
-	unlock, err := lockStateStore(store.storage)
+func (store *FileStateStore) Load(ctx context.Context) (*PendingV1, error) {
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +498,7 @@ func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *Pendi
 	if err != nil {
 		return err
 	}
-	unlock, err := lockStateStore(store.storage)
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
 	if err != nil {
 		return err
 	}
@@ -523,6 +525,11 @@ func (store *FileStateStore) CompareAndSave(ctx context.Context, expected *Pendi
 		prior, err := MarshalPending(*expected)
 		if err != nil || !bytes.Equal(current, prior) {
 			return ErrStateConflict
+		}
+	}
+	if expected != nil && expected.Phase == PhaseChildRecorded && next.Phase == PhaseResumeAuthorized && store.FinalGrant != nil {
+		if err := store.FinalGrant(ctx, next); err != nil {
+			return err
 		}
 	}
 	_, err = store.storage.WriteAtomic(ctx, []string{"pending-v2.json"}, bytes.NewReader(encoded), maxStateBytes, int64(len(encoded)), "")
@@ -599,12 +606,12 @@ func (store *FileStateStore) RollbackFinalUninstall() error {
 // CompareAndClear retires only the exact terminal record observed by the
 // coordinator. A runner or another service instance can never be erased by a
 // stale retry decision.
-func (store *FileStateStore) CompareAndClear(_ context.Context, expected PendingV1) error {
+func (store *FileStateStore) CompareAndClear(ctx context.Context, expected PendingV1) error {
 	prior, err := MarshalPending(expected)
 	if err != nil {
 		return err
 	}
-	unlock, err := lockStateStore(store.storage)
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
 	if err != nil {
 		return err
 	}

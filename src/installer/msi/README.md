@@ -45,5 +45,6 @@ The lifecycle driver checks manual install, repair, same-SKU upgrade, both
 explicit migration directions, rejection and rollback paths, and final
 uninstall. Exit 3010 is a reboot checkpoint requiring the same guest's postboot
 inspection. Interactive standard-user app, MAPI, ACL, and per-user package
-preservation checks require separate native evidence. Silent service-driven
-suite updates belong to Ticket 247.
+preservation checks require separate native evidence. For implemented
+service-driven system/suite update scenarios and their evidence
+boundaries, follow the [installed update gate](../../../docs/component-integration-gate.md#installed-machine-update-gate).

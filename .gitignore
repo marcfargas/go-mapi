@@ -44,6 +44,8 @@ TODO.md
 # Test outputs
 test-results/
 playwright-report/
+__pycache__/
+*.py[cod]
 .claude/*
 !.claude/skills/
 
@@ -72,6 +74,9 @@ tests/e2e/.cache/
 
 # Local Crabbox failure bundles and run captures
 .crabbox/
+
+# Repo-local agent skills that are not committed (Ticket 581)
+/.agents/crabbox-live-test/
 
 # Per-worktree temporary build and validation artifacts
 .tmp/

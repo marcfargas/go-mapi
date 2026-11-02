@@ -124,7 +124,7 @@ func TestChannelHandoffRunsBeforeAnyQueueConsumer(t *testing.T) {
 }
 
 func TestStoreIdentityIsInjectedNotDuplicated(t *testing.T) {
-	build := readDistributionFile(t, "scripts/build-wails.ps1")
+	build := readDistributionFile(t, "src/app/build.ps1")
 	workflow := readDistributionFile(t, ".github/workflows/app-release.yml")
 	manifest := readDistributionFile(t, "src/app/packaging/msix/AppxManifest.xml.in")
 	for _, pair := range []struct{ content, want string }{

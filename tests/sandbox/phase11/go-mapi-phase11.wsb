@@ -2,8 +2,8 @@
     <!--
       Phase 11 (Autoupdate + Release) clean-machine smoke harness.
 
-      This .wsb is intentionally separate from tests/sandbox/sandbox.wsb
-      (which is the v1 DLL-only smoke). Phase 11 needs a disposable clean
+      This human-observed journey is separate from the automated native/service
+      checks described in ../README.md. Phase 11 needs a disposable clean
       Windows environment that can:
         1. Reach the internet (to download the release candidate installer
            and to complete Google OAuth consent).

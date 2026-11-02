@@ -86,7 +86,7 @@ if ($SKU -eq 'suite') {
         $appBuild.artifact.sha256 -ne $manifest.appBuild.unsignedSha256 -or
         $appBuild.version -ne $componentMap.app.Version -or $appBuild.artifact.peProductVersion -ne $componentMap.app.Version -or
         $appBuild.source.commit -ne $manifest.commit -or
-        $appBuild.build.command -ne 'scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials') {
+        $appBuild.build.command -notin @('just build-user-machine','scripts/build-wails.ps1 -Release -MachineDistribution -UseEnvironmentCredentials')) {
         Fail 'suite app source, distribution, version, or unsigned hash provenance differs from signed inputs'
     }
     foreach ($tool in @('go','wails','node','npm')) {

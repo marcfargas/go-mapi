@@ -122,7 +122,7 @@ func (store *FileDiscoveryStore) Save(ctx context.Context, state DiscoveryState)
 		return errors.New("invalid discovery state")
 	}
 	name, _ := discoveryName(state.SKU)
-	unlock, err := lockStateStore(store.storage)
+	unlock, err := lockStateStoreBounded(ctx, store.storage)
 	if err != nil {
 		return err
 	}

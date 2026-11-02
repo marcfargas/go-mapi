@@ -1,0 +1,85 @@
+name: Prepare Windows build tools
+description: Provision hosted tools or resolve already installed local tools
+inputs:
+  groups:
+    description: Space-separated native, user and packages tool groups
+    default: native user packages
+  install:
+    description: Permit missing-tool installation; local act packaging disables this
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Resolve selected tools
+      shell: pwsh
+      env:
+        BUILD_TOOL_GROUPS: ${{ inputs.groups }}
+        BUILD_TOOL_INSTALL: ${{ inputs.install }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $groups = @($env:BUILD_TOOL_GROUPS -split '\s+' | Where-Object { $_ })
+        if (@($groups | Where-Object { $_ -notin @('native','user','packages') }).Count) { throw 'Unknown Windows tool group' }
+        $llvm = Join-Path $env:USERPROFILE 'scoop/apps/mingw-mstorsjo-llvm-ucrt/current/bin'
+        $sdk = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Windows Kits/10/bin'
+        $requirements = @()
+        if ('native' -in $groups) {
+          $requirements += @{ name='x86_64-w64-mingw32-clang.exe'; package='mingw-mstorsjo-llvm-ucrt'; fallback=(Join-Path $llvm 'x86_64-w64-mingw32-clang.exe') }
+          foreach ($name in @('cmake','ninja')) { $requirements += @{ name=$name; package=$name; fallback=$null } }
+        }
+        if ('packages' -in $groups) {
+          $requirements += @{ name='makensis.exe'; package='https://raw.githubusercontent.com/ScoopInstaller/Extras/master/bucket/nsis.json@3.11'; fallback=(Join-Path $env:USERPROFILE 'scoop/apps/nsis/current/makensis.exe') }
+          foreach ($name in @('makeappx.exe','signtool.exe')) {
+            $requirements += @{ name=$name; package='windows-sdk-buildtools'; fallback=$null }
+          }
+        }
+        function FindTool($Tool) {
+          if ($Tool.name -eq 'x86_64-w64-mingw32-clang.exe') {
+            if (Test-Path -LiteralPath $Tool.fallback) { return $Tool.fallback }
+            return $null # Native/service builds require this qualified LLVM layout.
+          }
+          $command = Get-Command $Tool.name -ErrorAction SilentlyContinue
+          if ($command) { return $command.Source }
+          if ($Tool.fallback -and (Test-Path -LiteralPath $Tool.fallback)) { return $Tool.fallback }
+          if ($Tool.name -eq 'makensis.exe') {
+            $installed = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'NSIS/makensis.exe'
+            if (Test-Path -LiteralPath $installed) { return $installed }
+          }
+          if ($Tool.name -in @('makeappx.exe','signtool.exe')) {
+            return Get-ChildItem -Path "$sdk/*/x64/$($Tool.name)" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          }
+        }
+        $missing = @($requirements | Where-Object { -not (FindTool $_) } | ForEach-Object package | Select-Object -Unique)
+        if ($missing.Count) {
+          if ($env:BUILD_TOOL_INSTALL -ne 'true') { throw "Install Windows prerequisites before local packaging: $($missing -join ', ')" }
+          if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
+            $bootstrap = Join-Path $env:RUNNER_TEMP ('scoop-' + [guid]::NewGuid().ToString('N') + '.ps1')
+            try {
+              Invoke-WebRequest https://get.scoop.sh -OutFile $bootstrap
+              $global:LASTEXITCODE = 0
+              & $bootstrap -RunAsAdmin
+              if ($LASTEXITCODE -ne 0) { throw 'Scoop installation failed' }
+            } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+            $env:PATH = (Join-Path $env:USERPROFILE 'scoop/shims') + [IO.Path]::PathSeparator + $env:PATH
+          }
+          foreach ($package in $missing) {
+            & scoop install $package
+            if ($LASTEXITCODE -ne 0) { throw "Tool installation failed: $package" }
+          }
+        }
+        $paths = @($requirements | ForEach-Object {
+          $path = FindTool $_
+          if (-not $path) { throw "Missing required tool: $($_.name)" }
+          Split-Path -Parent $path
+        })
+        if ('user' -in $groups) {
+          $goBin = Join-Path ((& go env GOPATH).Trim()) 'bin'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve GOPATH' }
+          $env:PATH = $goBin + [IO.Path]::PathSeparator + $env:PATH
+          if (-not (Get-Command wails -ErrorAction SilentlyContinue) -or ((& wails version) -join ' ') -notmatch '2\.12\.0') {
+            if ($env:BUILD_TOOL_INSTALL -ne 'true') { throw 'Install Wails 2.12.0 before local packaging' }
+            & go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+            if ($LASTEXITCODE -ne 0) { throw 'Wails installation failed' }
+          }
+          $paths += $goBin
+        }
+        $paths | Select-Object -Unique | ForEach-Object { Add-Content -LiteralPath $env:GITHUB_PATH -Value $_ }

@@ -68,10 +68,11 @@ func (processes *suiteProcesses) sweep() error {
 				imageLen := uint32(len(image))
 				queryErr := windows.QueryFullProcessImageName(handle, 0, &image[0], &imageLen)
 				if queryErr != nil {
-					windows.CloseHandle(handle)
-					return fmt.Errorf("cannot identify same-name suite image %d: %w", pid, queryErr)
-				}
-				if equalWindowsPath(windows.UTF16ToString(image[:imageLen]), processes.path) {
+					if err := suiteImageQueryFailure(handle, pid, queryErr, windows.WaitForSingleObject); err != nil {
+						windows.CloseHandle(handle)
+						return err
+					}
+				} else if equalWindowsPath(windows.UTF16ToString(image[:imageLen]), processes.path) {
 					identity, idErr := processIdentity(handle, pid)
 					if idErr != nil {
 						windows.CloseHandle(handle)
@@ -116,6 +117,20 @@ func (processes *suiteProcesses) sweep() error {
 		if !seen[id] {
 			return fmt.Errorf("exact suite process %d disappeared without signalled exit", id.PID)
 		}
+	}
+	return nil
+}
+
+// A snapshot entry can outlive its process even when OpenProcess succeeds.
+// Only a successful exit wait on the queried handle excuses an image failure.
+// The caller retains ownership of the handle and advances the snapshot normally.
+func suiteImageQueryFailure(handle windows.Handle, pid uint32, queryErr error, wait func(windows.Handle, uint32) (uint32, error)) error {
+	state, waitErr := wait(handle, 0)
+	if waitErr != nil {
+		return fmt.Errorf("cannot identify same-name suite image %d: %w; exit confirmation: %w", pid, queryErr, waitErr)
+	}
+	if state != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("cannot identify same-name suite image %d: %w; exit confirmation wait status %#x", pid, queryErr, state)
 	}
 	return nil
 }

@@ -44,19 +44,18 @@ service-logon authorization.
 The Windows native matrix runs `just test-system <x64|x86> <Debug|Release>` for
 all four combinations; that command builds and runs the matching harness and CTest
 suite, and CTest fails if no tests are registered. The Release DLL and harness
-artifacts feed the separate queue integration command above. `just
-prepare-windows -Native -Wails -Packages -Install` prepares pinned Windows
-prerequisites as needed; omit `-Install` to validate an existing environment.
+artifacts feed the separate queue integration command above.
+The shared GitHub setup action provisions runners; the Windows development guide
+covers developer installation. `just doctor-windows` checks Go and Node without installing.
 
-The user Windows job builds a release standalone app at 5.0.1-alpha.4 with
-`just build-user-release -OutputDirectory ci-input/app-standalone` and verifies
-its EXE and manifest. It makes the MSIX and NSIS package from that exact EXE
-while `src/app/VERSION` still names A. It then builds the machine app A and
-suite app-only C separately with `just build-user-machine -OutputDirectory
-ci-input/appA` and `ci-input/appC`; C uses 5.0.2-alpha.1. Each EXE and manifest
-pair is verified before upload. The job repeats these three builds and checks
-on the same checkout to exercise owned-output replacement, without rebuilding
-the user packages. The first verified pairs are the uploaded handoff artifacts.
+The `app-packages` matrix builds standalone, machine A and machine C in separate
+checkouts. `src/installer/msi/tests/fixtures/machine.json` supplies synthetic versions and
+shortened timers only for the machine upgrade fixtures. The standalone leg uses
+the source `src/app/VERSION` unchanged and the shared packaging action to make
+MSIX and NSIS from its exact EXE; each leg verifies its EXE/manifest pair before upload. Local
+`just package-user` runs the same unsigned standalone leg through act and retains
+its uploaded artifacts. Packaging consumes the resolved artifact version instead
+of rewriting source to match a downloaded EXE.
 
 The `admin-msi-fixtures` job reuses the Release DLLs and distinct A/C machine
 apps. It prepares disposable signed system A/B/C and suite A/B/C packages with `just
@@ -93,8 +92,8 @@ and the A/C machine app EXE and manifest pairs:
 
 ```powershell
 $root = 'test-results/245-ci/local-run'
-just prepare-windows -Native -Install
 just build-machine-test-packages `
+  -FixtureSpecification src/installer/msi/tests/fixtures/machine.json `
   -X64Dll <x64-dll> -X86Dll <x86-dll> `
   -MachineApp <app-A.exe> -AppBuildManifest <app-A-artifacts.json> `
   -SuiteCApp <app-C.exe> -SuiteCAppBuildManifest <app-C-artifacts.json> `
@@ -103,20 +102,18 @@ just build-machine-test-packages `
   -ArtifactOrigin https://localhost:18453/releases/download/
 just machine-hosted-integration `
   -PackageManifest "$root/build/machine-test-packages.json" `
-  -EvidenceDirectory $root -FixturePort 18453
+  -EvidenceDirectory $root -FixturePort 18453 -Scenario update
 ```
 
-The hosted command runs cross-SKU lifecycle, system Hosted, suite Hosted,
-suite Cleanup, then system InterruptSameBoot with a 22-minute deadline. It
-checks phase result files and attempts all applicable cleanup while retaining
-both primary and cleanup failures. `-Scenario cross-sku|update|suite-update|
-update-interruption` runs one of those four scenarios (`suite-update` includes
-its Cleanup phase); the default `all` runs them in the order above. The same
-selector scopes `-CleanupOnly` to the scenario's own phases. When
-`cleanup-deferred.json` exists, cleanup targets only system update and
-interruption with the deferred evidence; the phase script still checks the
-observed uninstall fence and exact interrupted identity. A deferred product
-is reported separately from a clean machine.
+The hosted command requires one `-Scenario cross-sku|update|suite-update|
+update-interruption|readiness-recovery|suite-readiness-recovery` per disposable
+machine. The phase finalizer owns product and fixture cleanup and records cleanup
+failures in the result; the wrapper checks both exit status and result evidence.
+`update-interruption` uses a 22-minute phase deadline and then a separate Cleanup
+observation to verify the uninstall fence and exact interrupted identity again.
+Its deferred product remains until machine disposal and is reported separately
+from a clean machine. Export evidence before disposing the machine, including on
+failure or timeout.
 
 The workflow splits the validation across runners because the scenarios share
 the machine-global service, MSI product, certificate stores and fixture port
@@ -129,8 +126,7 @@ the machine-global service, MSI product, certificate stores and fixture port
   leg downloads the fixtures to the same workspace paths, imports the fixture
   signer's public certificate into the machine Root and TrustedPublisher stores
   (the build runner trusted it only on itself), runs
-  `just machine-hosted-integration -Scenario <scenario>`, then runs the same
-  command with `-CleanupOnly` in an `always()` step, and always uploads that
+  `just machine-hosted-integration -Scenario <scenario>`, and always uploads that
   scenario's evidence as
   `go-mapi-machine-native-validation-<scenario>-<run id>`. The legs do not
   cancel each other.
@@ -142,12 +138,12 @@ The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
 (the service writes it under `ProgramData\go-mapi\updates\logs\<transaction id>`),
 the Service Control Manager and MsiInstaller events since the runner was killed,
 and every change of the Windows Installer service and `msiexec` process state in
-`interrupted-install/` and `events.ndjson`. This is evidence only; no assertion
+`interruption-diagnostics/` and `events.ndjson`. This is evidence only; no assertion
 depends on it.
 
-The small `pwsh -File scripts/tests/BuildCi.Tests.ps1` command checks build
-state and failure contracts with stand-ins. It does not prove that a PE builds
-or installs. Hosted Windows jobs provide that proof for the disposable inputs.
+`just test-windows-tooling` and `just test-msi-tooling` check build state and
+failure contracts with stand-ins. They do not prove that a PE builds or installs.
+Hosted Windows jobs provide that proof for the disposable inputs.
 
 `Hosted` bootstraps A explicitly through the administrator, then requires the
 installed LocalSystem service to commit B and C itself. It observes the real
@@ -155,8 +151,58 @@ artifact GET and a failed install attempt while C's code-signing trust is
 removed, restores only that owned trust, and waits for C to commit. It then
 disables automatic update through the supported administrator repair and
 checks a complete startup and cadence window without metadata or artifact
-requests. A second CI invocation runs `InterruptSameBoot` with the same signed
-packages after the Hosted phase has cleaned its install. It imports only the
+requests. The default Hosted journey never starts the app and does not prove
+suite shutdown. For an explicit disposable-guest exercise, invoke
+`just machine-update-integration -SKU suite -Phase Hosted
+-ExerciseSuiteShutdown -SuiteShutdownLauncher <existing-login-launcher.ps1>
+-SuiteShutdownDecoy <separate-directory>\go-mapi.exe` with the normal manifest
+and evidence arguments. This requires an orchestrator-supplied launcher with
+parameters `ExecutablePath` and `EvidenceDirectory`, returning exactly one newly
+created live `System.Diagnostics.Process` with its handle already retained. It
+must launch in the existing guest Explorer login, own cleanup if launch fails,
+and create no logon; SYSTEM/session 0 launch is rejected. Stage a harmless,
+long-lived same-name decoy separately; do not use a per-user app or another real
+app copy sharing the session singleton. The opt-in starts installed A before B
+publication, requires a zero-code exit within the unchanged 30-second grace,
+then starts and suspends installed B only after the untrusted-C rejection and
+immediately before restored-trust C publication/restart. It requires B alive
+through grace and exited within the unchanged 5-second force bound. Missing
+closed-gate, durable deadline, exit or installer-ready evidence fails the
+exercise. Evidence binds image/launcher hashes, PID, creation time, session and
+owner SID; installer creation must follow exact app exit. The decoy must remain
+alive, and installed-image absence is sampled after exit without issuing another
+intercept (this does not prove the later on-demand relaunch). Update logs,
+MSI/SCM events and exact-handle cleanup results survive success or failure.
+The launcher/staged-decoy prerequisite and guest runtime proof are separate from
+this opt-in harness; ordinary Hosted success supplies none of this coverage.
+To additionally prove the next interception relaunch, append
+`-SuiteInterceptionHarness <retained-x64>\go-mapi-test-harness.exe` to that
+shutdown command. Use the retained AMD64 activation-probe harness (SHA256
+`2B089F9B9AEB7C71F25881874F6ED5A9C0F29503726E1F6E39AE0A49A5EC29CC`);
+the proof rejects different harness bytes. Run in the same Explorer owner/session
+as the earlier installed app; the probe launches directly in the runner login. This
+optional step runs after the complete disabled window and final absence check,
+with healthy committed C, no pending transaction, open admission and live decoy.
+It invokes the installed AMD64 DLL with `--activation-probe 'Simple Send'`,
+bounded to ten seconds, and retains command, hashes, process identities, times,
+exit code and stdout/stderr. It requires exactly one new queue descriptor matching
+the harness-reported filename and C version, and exactly one new installed C app
+owned by that harness in the same login, alive for one second. The raw descriptor
+and hash survive cleanup; only the verified new descriptor/stem and exact owned
+process handles are cleaned up. No OAuth or Gmail operation is issued. Omitting
+the option preserves the absence-only shutdown proof. This adds no coverage for
+the separate closed-admission publication scenario.
+When staging selected inputs without a Go SDK, build
+`go build -o machine-targets.exe ./internal/mapi/cmd/machine-targets` from the
+selected checkout and pass `-MachineTargetsExecutable <path>`. Retain its source
+identity and hash with the inputs. Omitting this option keeps the existing
+`go run` path.
+Separate system and suite `ReadinessRecovery` scenarios require a
+transient B handoff failure to recover with a fresh transaction, then exhaust
+C's durable three-launch budget across a service restart. They use shortened
+fixture timers; they do not establish production-duration waits.
+The separate `InterruptSameBoot` scenario uses the same signed packages on its
+own runner. It imports only the
 manifest-matching public fixture certificate to restore Windows trust,
 requires matching pending and ready records plus live runner/MSI identities,
 terminates that exact runner, and checks conservative same-boot state. A missed
