@@ -181,8 +181,8 @@ acceptance. Published assets remain immutable. Reused-System acceptance uses an
 unpublished draft from the same release workflow; it does not require another
 public release.
 
-Proposed reused-System acceptance commands (runtime qualification pending):
-after exact-source push CI passes, tag the App-only candidate and dispatch
+For reused-System acceptance, after exact-source push CI passes, tag the
+App-only candidate and dispatch
 `release.yml` with the published System tag and independently downloaded
 `release.json` SHA-256. Download the complete draft to `candidate`, the original
 published bundle to `prior`, and the run's `release-app` / `release-machine`
@@ -211,6 +211,12 @@ and final removal. The existing Sandbox runner exports evidence and disposes
 only its owned guest. Receipt checks alone do not prove Windows trust or an
 installed upgrade; contract tests use inert files. The standalone App's metadata
 and UAC consent paths need separate installed-consumer acceptance.
+
+The unpublished beta.3 draft from [run 41741182211](https://github.com/marcfargas/go-mapi/actions/runs/41741182211)
+qualified hosted reuse of beta.2 System. The offline beta.2-to-beta.3 Suite
+upgrade passed in disposable Windows Sandbox, including exact retained signed
+payloads, new App bytes, healthy status, ownership and final removal. This does
+not qualify native UAC consent or publish the draft.
 
 Standalone App's installation/repair action now selects System with administrator
 consent through the existing verified-download and UAC helper. It refuses Suite,
