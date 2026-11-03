@@ -60,7 +60,7 @@ func TestMachineHTTPForwardsOnlyCanonicalInstalledVersionHint(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		"https://github.com/marcfargas/go-mapi/releases/download/system-v4.0.1/go-mapi-system-4.0.1-x64.msi",
+		"https://github.com/marcfargas/go-mapi/releases/download/v4.0.1/go-mapi-system-4.0.1-x64.msi",
 		origin + "/machine/system/targets.json?track=stable",
 		origin + "/machine/system/targets.json/extra",
 		"https://other.example.test/machine/system/targets.json",
