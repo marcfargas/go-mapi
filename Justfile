@@ -243,6 +243,10 @@ test-installed-attachment *args: _require-disposable
     pwsh -NoProfile -File tests/installed-attachment/Test-Attachment.ps1 "$@"
 
 [positional-arguments]
+test-explorer-sendto *args:
+    pwsh -NoProfile -File tests/installed-attachment/Test-Explorer.ps1 "$@"
+
+[positional-arguments]
 [script('pwsh', '-NoProfile', '-File')]
 [extension('.ps1')]
 azure-test-trust mode state-path *signed-files: _require-disposable

@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$Manifest,
     [Parameter(Mandatory)][string]$FakeBinary,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [ValidateSet('suiteA','suiteB','suiteC')][string]$Package = 'suiteC'
+    [ValidateSet('suiteA','suiteB','suiteC')][string]$Package = 'suiteC',
+    [ValidateSet('InstalledDll','Explorer')][string]$EntryPoint = 'InstalledDll'
 )
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Attachment.psm1') -Force
@@ -16,7 +17,7 @@ $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $root = Join-Path $OutputDirectory ('smoke-' + $runId)
 $FakeBinary = (Resolve-Path -LiteralPath $FakeBinary).Path
 $errors = [Collections.Generic.List[string]]::new()
-$result = [ordered]@{runId=$runId;passed=$false;sourceCommit=$null;package=$Package;smoke=$null;error=$null;cleanupErrors=@()}
+$result = [ordered]@{runId=$runId;passed=$false;sourceCommit=$null;package=$Package;entryPoint=$EntryPoint;smoke=$null;error=$null;cleanupErrors=@()}
 $fake = $null; $worker = $null; $job = $null; $control = $null
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -35,7 +36,8 @@ try {
         $sha = [Security.Cryptography.SHA256]::Create()
         try { $hashes[$entry.Key] = ([BitConverter]::ToString($sha.ComputeHash($entry.Value))).Replace('-','').ToLowerInvariant() } finally { $sha.Dispose() }
     }
-    $expected = @{runId=$runId;subject=('Attachment ' + $runId);recipient='attachment@example.invalid';attachments=$hashes}
+    $expected = @{runId=$runId;subject=('Attachment ' + $runId);recipient='attachment@example.invalid';attachments=$hashes;entryPoint=$EntryPoint}
+    if ($EntryPoint -eq 'Explorer') { $expected.subject=''; $expected.recipient='' }
     Write-AttachmentJson (Join-Path $root 'expected.json') $expected
     $fake = Start-Process $FakeBinary -ArgumentList @('--root',('"'+$root+'"'),'--expected',('"'+(Join-Path $root 'expected.json')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $root 'fake.stdout') -RedirectStandardError (Join-Path $root 'fake.stderr')
     $null = $fake.Handle
@@ -59,7 +61,7 @@ try {
         Start-Sleep -Milliseconds 200
     }
     if ([Convert]::ToBase64String((Get-Item -LiteralPath $trustPath).RawData) -cne [Convert]::ToBase64String($ca.RawData)) { throw 'Admitted fake CA bytes differ from the owned server certificate' }
-    $case = @{runId=$runId;root=$root;sid=$identity.User.Value;profilePath=$env:USERPROFILE;session=$session;appPath=$appPath;dllPath=$dllPath;appSha256=$fixture.appSha256;dllSha256=$fixture.x64DllSha256;expected=$expected;proxyAddress=$ready.address;control=$control}
+    $case = @{runId=$runId;root=$root;sid=$identity.User.Value;profilePath=$env:USERPROFILE;session=$session;appPath=$appPath;dllPath=$dllPath;appSha256=$fixture.appSha256;dllSha256=$fixture.x64DllSha256;expected=$expected;entryPoint=$EntryPoint;proxyAddress=$ready.address;control=$control}
     $casePath = Join-Path $root 'case.json'
     Write-AttachmentJson $casePath $case
     $job = [AttachmentJob]::new()

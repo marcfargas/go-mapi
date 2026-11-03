@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'Attachment.psm1') -Force
 Add-Type -Path (Join-Path $PSScriptRoot 'AttachmentNative.cs')
 $case = Get-Content -LiteralPath $CaseFile -Raw | ConvertFrom-Json
-$result = [ordered]@{ runId=$case.runId; passed=$false; profile=$null; app=$null; mapiReturn=$null; queue=$null; appStopped=$false; credentialRemoved=$false; error=$null; cleanupErrors=@() }
+$result = [ordered]@{ runId=$case.runId; entryPoint=$case.entryPoint; passed=$false; profile=$null; app=$null; mapiReturn=$null; explorer=$null; queue=$null; appStopped=$false; credentialRemoved=$false; error=$null; cleanupErrors=@() }
 $app = $null; $watcher = $null; $subscriptions = @(); $credentialOwned = $false; $settingsOwned = $false; $appLogOwned = $false
 $cleanup = [Collections.Generic.List[string]]::new()
 $queue = $null; $settings = $null; $appLog = $null; $fixtureRoot = $null
@@ -37,7 +37,7 @@ try {
     [AttachmentNative]::WriteCredential($token)
     if (![AttachmentNative]::CredentialExists()) { throw 'Synthetic credential readback failed' }
     $fixtures = Get-AttachmentFixtures
-    $fixturePath = Join-Path $env:USERPROFILE ('attachment-' + $case.runId)
+    $fixturePath = Join-Path $env:USERPROFILE ('attachment files ' + $case.runId)
     New-Item -ItemType Directory -Path $fixturePath -ErrorAction Stop | Out-Null
     $fixtureRoot = $fixturePath
     foreach ($name in $fixtures.Keys) { [IO.File]::WriteAllBytes((Join-Path $fixtureRoot $name), $fixtures[$name]) }
@@ -68,8 +68,13 @@ try {
         if ([DateTime]::UtcNow -ge $deadline) { throw 'Installed app did not authenticate against the isolated fake' }
         Start-Sleep -Milliseconds 200
     } while ($true)
-    $result.mapiReturn = [AttachmentNative]::Send($case.dllPath, $fixtureRoot, $case.expected.subject, $case.expected.recipient)
-    if ($result.mapiReturn -ne 0) { throw ('Installed MAPI returned ' + $result.mapiReturn) }
+    if ($case.entryPoint -eq 'Explorer') {
+        . (Join-Path $PSScriptRoot 'ExplorerSendTo.ps1')
+        $result.explorer = Invoke-ExplorerSendTo -Folder $fixtureRoot -ExpectedNames @($fixtures.Keys) -EvidenceDirectory $case.root
+    } else {
+        $result.mapiReturn = [AttachmentNative]::Send($case.dllPath, $fixtureRoot, $case.expected.subject, $case.expected.recipient)
+        if ($result.mapiReturn -ne 0) { throw ('Installed MAPI returned ' + $result.mapiReturn) }
+    }
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     $events = @(); $descriptor = $null
     do {

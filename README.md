@@ -20,6 +20,11 @@ installing only the user app does not install the system component. go-mapi
 does not currently handle mailto links or register a MAILTO handler in
 Windows Default Apps.
 
+Use Explorer's **Send to > Mail recipient** (under **Show more options** on
+Windows 11). Explorer's **Share** button uses a different Windows integration
+and is currently unsupported. The system installer registers the Simple MAPI
+provider; Windows keeps its existing `.MAPIMail` shell association.
+
 **Nothing about how you work changes.** You keep using your apps the way
 you always have. go-mapi sits quietly in the background and the draft just
 shows up in your Gmail inbox.

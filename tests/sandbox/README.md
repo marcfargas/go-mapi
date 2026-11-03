@@ -4,6 +4,9 @@ Use the [Windows development guide](../../docs/windows-development.md) for host
 setup and compilation. The Justfile is the command entrypoint; host orchestration,
 its behavioral contracts and guest programs live here.
 `phase11/` remains a separate human-observed installed-email journey.
+The maintained [Explorer SendTo regression](../installed-attachment/README.md)
+uses this runner through `just test-explorer-sendto`; it installs a selected
+Suite and drives the real menu as the guest's ordinary desktop user.
 
 ## Execution boundary
 
