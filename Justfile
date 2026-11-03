@@ -53,6 +53,7 @@ prepare-native-inputs *args:
 test-windows-tooling:
     pwsh -NoProfile -File tests/Entrypoints.Tests.ps1
     pwsh -NoProfile -File tests/release/Prepare.Tests.ps1
+    pwsh -NoProfile -File tests/release/ConsumerMetadataFixture.Tests.ps1 -FixtureShell powershell.exe
     pwsh -NoProfile -File src/app/tests/Build.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/Runner.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/native/Build.Tests.ps1
