@@ -106,7 +106,27 @@ exit ([int]$env:FAKE_ACT_EXIT)
         Pop-Location
         $env:APP_VERSION_ROLE=$oldRole; $env:GITHUB_OUTPUT=$oldOutput
     }
-    'Just argument and failure contracts passed'
+    # Exercise the real MSIX render step: adjacent prereleases must upgrade,
+    # and the Store-reserved fourth version component remains zero.
+    $action=Get-Content (Join-Path $repo '.github/actions/package-user/action.yml') -Raw
+    $render=[regex]::Match($action,'(?ms)^    - name: Render the MSIX identity manifest\r?\n.*?^      run: \|\r?\n(?<script>(?:        [^\r\n]*\r?\n)+)')
+    if (-not $render.Success) { throw 'Missing MSIX render step' }
+    $renderManifest=[scriptblock]::Create([regex]::Replace($render.Groups['script'].Value,'(?m)^        ',''))
+    $savedPackageEnvironment=@{}
+    foreach ($name in @('PACKAGE_STAGE','PACKAGE_VERSION','PACKAGE_IDENTITY','PACKAGE_PUBLISHER','PACKAGE_DISPLAY')) { $savedPackageEnvironment[$name]=[Environment]::GetEnvironmentVariable($name) }
+    try {
+        $env:PACKAGE_STAGE=Join-Path $fixture 'msix-stage'; New-Item -ItemType Directory $env:PACKAGE_STAGE | Out-Null
+        $env:PACKAGE_IDENTITY='test.identity'; $env:PACKAGE_PUBLISHER='CN=Test & Example'; $env:PACKAGE_DISPLAY='Test'
+        foreach ($case in @(@('3.2.0-alpha.11','3.2.111.0'),@('3.2.0-alpha.12','3.2.112.0'),@('3.2.0-beta.1','3.2.201.0'),@('4.2.0','4.2.0.0'))) {
+            $env:PACKAGE_VERSION=$case[0]
+            & $renderManifest
+            $manifest=[xml](Get-Content (Join-Path $env:PACKAGE_STAGE 'AppxManifest.xml') -Raw)
+            if ($manifest.Package.Identity.Version -cne $case[1] -or $manifest.Package.Identity.Publisher -cne $env:PACKAGE_PUBLISHER) { throw "MSIX identity mapping failed: $($case[0])" }
+        }
+    } finally {
+        foreach ($entry in $savedPackageEnvironment.GetEnumerator()) { [Environment]::SetEnvironmentVariable($entry.Key,$entry.Value) }
+    }
+    'Just argument, failure and MSIX version contracts passed'
 } finally {
     $env:GOMAPI_SANDBOX = $marker
     if ([IO.Path]::GetFullPath($fixture).StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $fixture -Recurse -Force }

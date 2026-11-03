@@ -11,6 +11,42 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// observeAdminSystemInstallation does not depend on a fresh service status:
+// repair must work when that service is damaged or stopped. Product registration
+// and its protected installer marker still have to agree.
+func observeAdminSystemInstallation() (adminSystemInstallation, error) {
+	channel := updateDistributionChannel()
+	if channel == "machine" {
+		return adminSystemInstallation{}, errors.New("Suite maintenance belongs to your administrator")
+	}
+	if channel != "standalone" && channel != "store" {
+		return adminSystemInstallation{}, errors.New("App installation channel could not be verified")
+	}
+	registrations, err := queryMachineProducts()
+	if err != nil {
+		return adminSystemInstallation{}, err
+	}
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\go-mapi\MachineProduct`, registry.READ|registry.WOW64_64KEY)
+	if errors.Is(err, registry.ErrNotExist) && len(registrations) == 0 {
+		return adminSystemInstallation{}, nil
+	}
+	if err != nil {
+		return adminSystemInstallation{}, err
+	}
+	defer key.Close()
+	if !trustedMachineMarkerACL(windows.Handle(key)) {
+		return adminSystemInstallation{}, errors.New("machine installation marker is untrusted")
+	}
+	values := make(map[string]string)
+	for _, name := range []string{"SKU", "PackageRelease", "ServiceVersion", "InterceptorVersion"} {
+		values[name], _, err = key.GetStringValue(name)
+		if err != nil {
+			return adminSystemInstallation{}, err
+		}
+	}
+	return corroborateAdminSystemInstallation(registrations, values)
+}
+
 var (
 	appMSIDLL                     = windows.NewLazySystemDLL("msi.dll")
 	appMSIEnumRelatedProductsProc = appMSIDLL.NewProc("MsiEnumRelatedProductsW")

@@ -91,10 +91,13 @@ runs:
       run: |
         $ErrorActionPreference = 'Stop'
         $manifest = Get-Content -LiteralPath src/app/packaging/msix/AppxManifest.xml.in -Raw
+        # Share the release sequence encoding with MSI; MSIX reserves revision 0.
+        $identity = & go run ./internal/mapi/cmd/machine-package -- system $env:PACKAGE_VERSION | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw 'Release version cannot be encoded as a Windows package version' }
         foreach ($entry in @{
           '@@IDENTITY_NAME@@'=$env:PACKAGE_IDENTITY; '@@PUBLISHER@@'=$env:PACKAGE_PUBLISHER
           '@@PUBLISHER_DISPLAY_NAME@@'=$env:PACKAGE_DISPLAY
-          '@@PACKAGE_VERSION@@'=($env:PACKAGE_VERSION.Split('-')[0].Split('+')[0] + '.0')
+          '@@PACKAGE_VERSION@@'=($identity.productVersion + '.0')
         }.GetEnumerator()) {
           $manifest = $manifest.Replace($entry.Key, [Security.SecurityElement]::Escape($entry.Value))
         }

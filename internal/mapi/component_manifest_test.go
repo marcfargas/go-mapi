@@ -116,7 +116,7 @@ func TestComponentManifestDeclaresDistinctMachinePackageFamilies(t *testing.T) {
 	if suite.UpgradeCode != "2E050A24-94A2-4FC9-B176-C5CCC1225FE6" {
 		t.Errorf("suite UpgradeCode = %q", suite.UpgradeCode)
 	}
-	if system.UpgradeCode == suite.UpgradeCode || system.TargetPath == suite.TargetPath || system.TagPrefix == suite.TagPrefix {
+	if system.UpgradeCode == suite.UpgradeCode || system.TargetPath == suite.TargetPath || system.TagPrefix != "v" || suite.TagPrefix != "v" {
 		t.Error("system and suite package namespaces must be distinct")
 	}
 	for sku, contract := range manifest.MachinePackages {

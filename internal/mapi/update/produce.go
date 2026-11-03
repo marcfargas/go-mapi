@@ -17,6 +17,7 @@ type MachineTargetSpec struct {
 	PackageRelease string               `json:"packageRelease"`
 	Contained      []ContainedComponent `json:"contained"`
 	Compatibility  []Requirement        `json:"compatibility"`
+	Requires       Requirement          `json:"requires,omitempty"`
 	IssuedAt       string               `json:"issuedAt"`
 	ExpiresAt      string               `json:"expiresAt"`
 }
@@ -49,18 +50,20 @@ func BuildMachineTargetForOrigin(spec MachineTargetSpec, artifact io.Reader, now
 	if size < 1 || size > maxMachineArtifactBytes {
 		return nil, errors.New("machine MSI outside size bound")
 	}
-	p := Payload{Schema: MachineTargetsSchema, SKU: spec.SKU, ProductCode: id.ProductCode, UpgradeCode: upgradeCode(spec.SKU), Version: id.Release, QueueProtocol: "queue-v1", Contained: spec.Contained, Compatibility: spec.Compatibility, Sequence: id.Sequence, IssuedAt: spec.IssuedAt, ExpiresAt: spec.ExpiresAt, Artifact: Artifact{URL: origin + id.Tag + "/" + id.AssetName, Size: size, SHA256: hex.EncodeToString(h.Sum(nil))}}
+	p := Payload{Schema: MachineTargetsSchema, SKU: spec.SKU, ProductCode: id.ProductCode, UpgradeCode: upgradeCode(spec.SKU), Version: id.Release, QueueProtocol: "queue-v1", Contained: spec.Contained, Compatibility: spec.Compatibility, Requires: spec.Requires, Sequence: id.Sequence, IssuedAt: spec.IssuedAt, ExpiresAt: spec.ExpiresAt, Artifact: Artifact{URL: origin + id.Tag + "/" + id.AssetName, Size: size, SHA256: hex.EncodeToString(h.Sum(nil))}}
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
-	// A value-typed zero Requirement is not omitted by encoding/json. Machine
-	// targets have no legacy-admin requirement field on the wire.
+	// A value-typed zero Requirement is not omitted by encoding/json. Keep
+	// absent counterpart requirements off the wire; System bootstrap uses one.
 	var document map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &document); err != nil {
 		return nil, err
 	}
-	delete(document, "requires")
+	if spec.Requires == (Requirement{}) {
+		delete(document, "requires")
+	}
 	raw, err = json.Marshal(document)
 	if err != nil {
 		return nil, err

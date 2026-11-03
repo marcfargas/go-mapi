@@ -9,84 +9,34 @@ import (
 	"testing"
 )
 
-// These checked-in workflow checks make the component split a release
-// authorization boundary. Only the app-v* push and explicit system/suite
-// dispatch paths publish; retired admin-v* still fails closed.
-func TestOnlySplitReleaseContractsCanPublish(t *testing.T) {
-	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	for _, release := range []struct {
-		path string
-		tag  string
-	}{
-		{"app-release.yml", "tags: ['app-v*']"},
-		{"admin-release.yml", "tags: ['admin-v*']"},
-	} {
-		workflow, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", release.path))
-		if err != nil {
-			t.Fatalf("read %s: %v", release.path, err)
-		}
-		content := string(workflow)
-		for _, want := range []string{release.tag, "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"} {
+// Release builders have signing authority but cannot publish partial releases.
+func TestUnifiedReleaseOwnsPublication(t *testing.T) {
+	for _, name := range []string{"app-release.yml", "admin-release.yml"} {
+		content := readDistributionFile(t, ".github/workflows/"+name)
+		for _, want := range []string{"workflow_call:", "environment: artifact-signing", "id-token: write", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82"} {
 			if !strings.Contains(content, want) {
-				t.Errorf("authoritative workflow %s is missing %q", release.path, want)
+				t.Errorf("%s lacks %q", name, want)
 			}
 		}
-		if release.path == "app-release.yml" {
-			jobs := strings.Split(content, "\n  publish-app-release:")
-			if len(jobs) != 2 || strings.Contains(jobs[0], "contents: write") || !strings.Contains(jobs[1], "contents: write") || !strings.Contains(jobs[1], "gh release create") {
-				t.Error("app release must isolate contents: write in its publication job")
-			}
-		} else {
-			jobs := strings.Split(content, "\n  publish-machine-release:")
-			if len(jobs) != 2 || strings.Contains(jobs[0], "contents: write") || !strings.Contains(jobs[1], "contents: write") || !strings.Contains(jobs[1], "gh release create") {
-				t.Error("machine release must isolate contents: write in its publication job")
-			}
-		}
-	}
-
-	workflowDir := filepath.Join(repoRoot, ".github", "workflows")
-	entries, err := os.ReadDir(workflowDir)
-	if err != nil {
-		t.Fatalf("read workflow directory: %v", err)
-	}
-	expectedWorkflows := map[string]bool{
-		"ci.yml":            true,
-		"app-release.yml":   true,
-		"admin-release.yml": true,
-	}
-	seenWorkflows := make(map[string]bool, len(expectedWorkflows))
-	for _, entry := range entries {
-		if entry.IsDir() || (filepath.Ext(entry.Name()) != ".yml" && filepath.Ext(entry.Name()) != ".yaml") {
-			continue
-		}
-		if !expectedWorkflows[entry.Name()] {
-			t.Errorf("unexpected workflow %s; keep the repository workflow topology to CI and the two release contracts", entry.Name())
-		}
-		seenWorkflows[entry.Name()] = true
-		if entry.Name() == "app-release.yml" || entry.Name() == "admin-release.yml" {
-			continue
-		}
-		workflow, err := os.ReadFile(filepath.Join(workflowDir, entry.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", entry.Name(), err)
-		}
-		content := string(workflow)
-		for _, forbidden := range []string{
-			"contents: write", "softprops/action-gh-release", "azure/artifact-signing-action",
-			"microsoft/microsoft-store-apppublisher", "wingetcreate.exe", "tags: ['app-v*']", "tags: ['admin-v*']",
-		} {
+		for _, forbidden := range []string{"workflow_dispatch:", "contents: write", "gh release create", "tags:"} {
 			if strings.Contains(content, forbidden) {
-				t.Errorf("non-release workflow %s must not contain %q", entry.Name(), forbidden)
+				t.Errorf("builder %s has independent publication path %q", name, forbidden)
 			}
 		}
 	}
-	for workflow := range expectedWorkflows {
-		if !seenWorkflows[workflow] {
-			t.Errorf("required workflow %s is missing", workflow)
+	release := readDistributionFile(t, ".github/workflows/release.yml")
+	for _, want := range []string{"workflow_dispatch:", "system_tag:", "system_proof_sha256:", "./.github/workflows/app-release.yml", "./.github/workflows/admin-release.yml", "contents: write", "gh release create", "--draft", "gh release download"} {
+		if !strings.Contains(release, want) {
+			t.Errorf("unified release lacks %q", want)
+		}
+	}
+	ci := readDistributionFile(t, ".github/workflows/ci.yml")
+	for _, forbidden := range []string{"contents: write", "azure/artifact-signing-action", "gh release create"} {
+		if strings.Contains(ci, forbidden) {
+			t.Errorf("ordinary CI has release authority %q", forbidden)
 		}
 	}
 }
-
 func TestAppScopedCommandsRemainIndependent(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	justfile, err := os.ReadFile(filepath.Join(repoRoot, "Justfile"))
@@ -164,9 +114,9 @@ func TestAppReleaseUsesGuardedArtifactEntrypoint(t *testing.T) {
 	}
 	content := string(workflow)
 	for _, want := range []string{
-		"workflow_dispatch:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
+		"workflow_call:", "version:", "GOMAPI_OAUTH_CLIENT_ID", "GOMAPI_OAUTH_CLIENT_SECRET",
 		"src/app/VERSION", "just build-user-release", "just verify-user-artifact", "just verify-user-distribution",
-		"github.event_name == 'push' || inputs.publish || inputs.sign",
+		"require-signature: 'true'",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("app release workflow is missing %q", want)
@@ -319,8 +269,8 @@ func TestReleasePathsCarryNoValidationTimers(t *testing.T) {
 			t.Errorf("release workflow must not pass validation timers: %q", forbidden)
 		}
 	}
-	if !strings.Contains(release, "$derivative.Contains('timers')") {
-		t.Error("public machine provenance check must require the absence of validation timers")
+	if !strings.Contains(release, "-RequireMachineReleaseTrust") || !strings.Contains(release, "$old.derivative.PSObject.Properties['timers']") {
+		t.Error("public machine build and reuse must refuse validation timers")
 	}
 	for _, derivative := range regexp.MustCompile(`(?m)^\s*\[ordered\]@\{ kind='[^']+';[^\n]*$`).FindAllString(release, -1) {
 		if strings.Contains(derivative, "timers") {

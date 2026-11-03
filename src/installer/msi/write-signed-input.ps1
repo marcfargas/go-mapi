@@ -51,6 +51,9 @@ $components = @(
 $result = [ordered]@{ schema='go-mapi-machine-signed-input-v1'; sku=$SKU; packageRelease=$PackageRelease; commit=$SourceCommit; components=$components }
 if ($SKU -eq 'suite') {
     $buildPath = [IO.Path]::GetFullPath($AppBuildManifest)
+    $buildName = [IO.Path]::GetFileName($buildPath)
+    if ($buildName -notin @('app-artifacts.json','machine-app-artifacts.json') -or
+        [IO.Path]::GetDirectoryName($buildPath) -cne $directory) { throw 'App build manifest must use an admitted filename beside the signed components' }
     if (-not (Test-Path -LiteralPath $buildPath -PathType Leaf)) { throw "Missing app build manifest: $buildPath" }
     $build = Get-Content -LiteralPath $buildPath -Raw | ConvertFrom-Json
     if ($build.schema -cne 'go-mapi-app-artifacts-v2' -or $build.component -cne 'app' -or
@@ -61,7 +64,7 @@ if ($SKU -eq 'suite') {
     }
     $result.components += [ordered]@{ component='app'; version=$AppVersion; distribution='machine'; artifacts=@(
         [ordered]@{ architecture='x64'; filename='go-mapi-machine.exe'; sha256=$hashes['go-mapi-machine.exe'] }) }
-    $result.appBuild = [ordered]@{ manifest='app-artifacts.json'; sha256=(Get-FileHash -LiteralPath $buildPath -Algorithm SHA256).Hash.ToLowerInvariant(); unsignedSha256=$UnsignedAppSha256 }
+    $result.appBuild = [ordered]@{ manifest=$buildName; sha256=(Get-FileHash -LiteralPath $buildPath -Algorithm SHA256).Hash.ToLowerInvariant(); unsignedSha256=$UnsignedAppSha256 }
 }
 $target = [IO.Path]::GetFullPath($OutputPath)
 if ((Split-Path -Parent $target) -cne $directory) { throw 'Signed input manifest must be written beside its component files' }

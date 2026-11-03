@@ -70,10 +70,10 @@ if ($SKU -eq 'suite' -and ($componentMap.Count -ne 3 -or $componentMap.app.Artif
 
 if ($SKU -eq 'suite') {
     Get-ExactProperty $manifest.appBuild @('manifest','sha256','unsignedSha256') 'suite app build evidence'
-    if ($manifest.appBuild.manifest -ne 'app-artifacts.json' -or
+    if ($manifest.appBuild.manifest -notin @('app-artifacts.json','machine-app-artifacts.json') -or
         $manifest.appBuild.sha256 -notmatch '^[0-9a-f]{64}$' -or
         $manifest.appBuild.unsignedSha256 -notmatch '^[0-9a-f]{64}$') { Fail 'suite app build evidence fields are invalid' }
-    $appManifestPath = Join-Path $manifestRoot 'app-artifacts.json'
+    $appManifestPath = Join-Path $manifestRoot $manifest.appBuild.manifest
     if (-not (Test-Path -LiteralPath $appManifestPath -PathType Leaf) -or
         (Get-FileHash -LiteralPath $appManifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.appBuild.sha256) { Fail 'suite app build manifest is missing or its hash differs' }
     $appBuild = Get-Content -LiteralPath $appManifestPath -Raw | ConvertFrom-Json

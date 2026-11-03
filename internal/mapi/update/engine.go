@@ -141,6 +141,64 @@ type AppOffer struct {
 	Compatibility              string
 	Available                  bool
 }
+
+// BootstrapRequest describes a real App on a machine with no registered
+// System or Suite product. It is separate from installed-package updates.
+type BootstrapRequest struct {
+	AppVersion          string
+	Track               string
+	RequiredInterceptor mapi.CounterpartRequirement
+	Accepted            ReplayState
+}
+
+// Bootstrap selects System for an explicit, administrator-consented first
+// installation. The caller independently establishes machine-product absence.
+func (e *Engine) Bootstrap(ctx context.Context, r BootstrapRequest) (CheckResult, error) {
+	if e == nil || e.config.SKU != System || !mapi.IsStrictReleaseVersion(r.AppVersion) ||
+		r.Track == "" || r.Track != mapi.ReleaseTrack(r.AppVersion) || r.RequiredInterceptor.Component != "interceptor" {
+		return CheckResult{}, errors.New("invalid System bootstrap request")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	raw, err := e.fetchTarget(ctx, "", r.Track)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	var payload Payload
+	if err := DecodeJSON(raw, &payload); err != nil {
+		return CheckResult{}, err
+	}
+	if err := validateBootstrapPayload(payload, r, e.config.Now().UTC(), e.config.ArtifactOrigin); err != nil {
+		return CheckResult{}, err
+	}
+	release := Release{payload: payload, digest: releaseDigest(System, payload, raw), ns: System, engine: e, bootstrap: &r}
+	accepted, err := AcceptReplay(r.Accepted, release)
+	if err != nil {
+		return CheckResult{}, err
+	}
+	expires, _ := time.Parse(time.RFC3339, payload.ExpiresAt)
+	return CheckResult{Checked: true, Available: true, Accepted: accepted, ExpiresAt: expires, Candidate: Candidate{engine: e, release: release}}, nil
+}
+
+func validateBootstrapPayload(p Payload, r BootstrapRequest, now time.Time, origin string) error {
+	if err := validatePayloadIdentity(System, p, now, origin); err != nil {
+		return err
+	}
+	if mapi.ReleaseTrack(p.Version) != r.Track || !validAppRequirement(p.Requires) {
+		return errors.New("System bootstrap track or App requirement is invalid")
+	}
+	if mapi.EvaluateCompatibility(r.AppVersion, mapi.CounterpartRequirement{Component: "app", MinInclusive: p.Requires.MinInclusive, MaxExclusive: p.Requires.MaxExclusive}, "update-app").Status != mapi.CompatibilityCompatible {
+		return errors.New("System does not support this App")
+	}
+	versions := compatibilityVersions(p)
+	if mapi.EvaluateCompatibility(versions["interceptor"], r.RequiredInterceptor, "update-interceptor").Status != mapi.CompatibilityCompatible {
+		return errors.New("App does not support this System interceptor")
+	}
+	// First installation has no previous service/interceptor inventory. Check
+	// the selected payload without inventing installed machine state.
+	return validateRequirements(p.Compatibility, versions)
+}
+
 type Candidate struct {
 	engine     *Engine
 	release    Release
@@ -240,7 +298,7 @@ func (e *Engine) Check(ctx context.Context, r CheckRequest) (CheckResult, error)
 	result.State.NextAttemptAt = now.Add(e.config.SuccessInterval)
 	result.Accepted, _ = AcceptReplay(r.Accepted, release)
 	result.ExpiresAt, _ = time.Parse(time.RFC3339, release.Payload().ExpiresAt)
-	result.Available = release.Payload().Version != r.InstalledVersion || e.config.SKU == LegacyAdmin && r.AllowSameVersion
+	result.Available = release.Payload().Version != r.InstalledVersion || r.AllowSameVersion && (e.config.SKU == System || e.config.SKU == LegacyAdmin)
 	if !result.Available {
 		result.State.Failures = 0
 	}
@@ -290,8 +348,14 @@ func (e *Engine) Prepare(ctx context.Context, c Candidate, o InstallOptions) (Pr
 	if o.Stage == nil || o.Verify == nil {
 		return Prepared{}, errors.New("updater preparation unavailable")
 	}
-	if err := validatePayload(e.config.SKU, c.release.payload, c.release.installed, e.config.Now().UTC(), e.config.ArtifactOrigin); err != nil {
-		return Prepared{}, err
+	var validationErr error
+	if c.release.bootstrap != nil {
+		validationErr = validateBootstrapPayload(c.release.payload, *c.release.bootstrap, e.config.Now().UTC(), e.config.ArtifactOrigin)
+	} else {
+		validationErr = validatePayload(e.config.SKU, c.release.payload, c.release.installed, e.config.Now().UTC(), e.config.ArtifactOrigin)
+	}
+	if validationErr != nil {
+		return Prepared{}, validationErr
 	}
 	called := false
 	write := func(w io.Writer) error {

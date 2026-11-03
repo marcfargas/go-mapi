@@ -31,3 +31,34 @@ func TestMachineStatusIdentityRequiresOneExactNativeRegistration(t *testing.T) {
 		t.Fatal("different local interceptor was trusted")
 	}
 }
+
+func TestSystemRepairRequiresCorroboratedPackageNotComponentVersion(t *testing.T) {
+	id, err := mapi.NewMachinePackageIdentity(mapi.MachineSKUSystem, "4.0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := machineProductRegistration{SKU: "system", ProductCode: id.ProductCode, ProductVersion: id.ProductVersion}
+	marker := map[string]string{"SKU": "system", "PackageRelease": "4.0.2", "ServiceVersion": "4.0.0", "InterceptorVersion": "4.0.1"}
+	installed, err := corroborateAdminSystemInstallation([]machineProductRegistration{registration}, marker)
+	if err != nil || installed.PackageRelease != "4.0.2" || installed.Versions["interceptor"] != "4.0.1" {
+		t.Fatalf("%+v %v", installed, err)
+	}
+	for name, registrations := range map[string][]machineProductRegistration{
+		"absent with marker": nil,
+		"multiple":           {registration, registration},
+		"Suite":              {{SKU: "suite", ProductCode: id.ProductCode, ProductVersion: id.ProductVersion}},
+		"wrong package":      {{SKU: "system", ProductCode: id.ProductCode, ProductVersion: "4.0.1"}},
+	} {
+		if _, err := corroborateAdminSystemInstallation(registrations, marker); err == nil {
+			t.Fatalf("accepted %s", name)
+		}
+	}
+	for _, field := range []string{"SKU", "PackageRelease", "ServiceVersion", "InterceptorVersion"} {
+		value := marker[field]
+		marker[field] = "unknown"
+		if _, err := corroborateAdminSystemInstallation([]machineProductRegistration{registration}, marker); err == nil {
+			t.Fatalf("accepted invalid %s", field)
+		}
+		marker[field] = value
+	}
+}

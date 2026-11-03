@@ -36,13 +36,12 @@ type AdminInstallState struct {
 	UpdatedAt   time.Time            `json:"updatedAt"`
 }
 
-// adminRepairAttempt is intentionally an injected seam. The production
-// signed-metadata, verified-download and elevated-MSI implementation cannot be
-// selected until the update-infrastructure contract supplies its trusted roots,
-// metadata envelope and publisher identity. A nil attempt fails closed.
+// adminRepairAttempt is the injectable System installation boundary. Production
+// uses a build-pinned HTTPS metadata origin, verified download and elevated MSI.
+// A build without that configured origin fails closed.
 type adminRepairAttempt func(context.Context, ComponentHealthState) (rebootRequired bool, err error)
 
-var errAdminReleaseContractUnavailable = errors.New("trusted admin release metadata is not configured")
+var errAdminReleaseContractUnavailable = errors.New("trusted System release metadata is not configured")
 
 type adminInstallCoordinator struct {
 	mu      sync.RWMutex

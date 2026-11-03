@@ -17,7 +17,7 @@ try {
     Set-Content (Join-Path $appRoot 'src/app/VERSION') '0.0.0-dev' -NoNewline
     $env:GOMAPI_OAUTH_CLIENT_ID = 'ci-client'
     $env:GOMAPI_OAUTH_CLIENT_SECRET = 'ci-secret'
-    $env:GOMAPI_ADMIN_RELEASE_METADATA_URL = 'https://example.test/admin-targets.json'
+    $env:GOMAPI_ADMIN_RELEASE_METADATA_URL = 'https://example.test'
     $global:StubWailsMode = ''
     function global:wails {
         if ($args[0] -eq 'version') { $global:LASTEXITCODE = 0; return 'Wails CLI v2.12.0' }
@@ -112,6 +112,9 @@ try {
         Assert ((Get-Content $info -Raw).Trim() -eq 'info-sentinel') 'info lost on failure'
     }
     $global:StubWailsMode = ''
+    foreach ($invalidOrigin in @('https://example.test/admin-targets.json','http://example.test','https://user@example.test','https://example.test?feed=system','https://example.test#system')) {
+        Reject { & $builder -UseEnvironmentCredentials -SourceCommit ('a' * 40) -OutputDirectory $standalone -AdminReleaseMetadataURL $invalidOrigin } 'invalid System metadata origin'
+    }
     Set-Content (Join-Path $appRoot 'src/app/build/appicon.png') 'resource-sentinel'
     Reject { & $builder -Release -UseEnvironmentCredentials -SourceCommit ('a' * 40) -OutputDirectory $machineA } 'release resource sentinel'
     Assert ((Get-Content (Join-Path $appRoot 'src/app/build/appicon.png') -Raw).Trim() -eq 'resource-sentinel') 'resource sentinel changed'

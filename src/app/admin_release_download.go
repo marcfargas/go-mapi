@@ -77,7 +77,7 @@ func validAdminReleaseSequence(state update.ReplayState) bool {
 	if state.Sequence == 0 && state.Digest == "" {
 		return state.Namespace == ""
 	}
-	return (state.Namespace == "" || state.Namespace == string(update.LegacyAdmin)) && state.Sequence > 0 && len(state.Digest) == sha256.Size*2 && state.Digest == strings.ToLower(state.Digest) && isHex(state.Digest)
+	return state.Namespace == string(update.System) && state.Sequence > 0 && len(state.Digest) == sha256.Size*2 && state.Digest == strings.ToLower(state.Digest) && isHex(state.Digest)
 }
 
 func isHex(value string) bool {

@@ -148,11 +148,11 @@ describe('App.svelte — smoke', () => {
     expect(await findByText(/Action: update-app/i)).toBeInTheDocument();
   });
 
-  it('requires an explicit action before starting interceptor repair', async () => {
+  it('requires an explicit action before starting System installation or repair', async () => {
     vi.mocked(GetAdminInstallState).mockResolvedValueOnce({ phase: 'offer', retryable: false });
     const { findByRole } = render(App);
     expect(StartAdminRepair).not.toHaveBeenCalled();
-    await fireEvent.click(await findByRole('button', { name: /install or repair interceptor/i }));
+    await fireEvent.click(await findByRole('button', { name: /install or repair system/i }));
     expect(StartAdminRepair).toHaveBeenCalledOnce();
   });
 
@@ -186,7 +186,7 @@ describe('App.svelte — smoke', () => {
     expect(summary.closest('details')).not.toHaveAttribute('open');
     await fireEvent.click(summary);
     expect(summary.closest('details')).toHaveAttribute('open');
-    expect(summary.closest('details')).toHaveTextContent(/system component.*running go-mapi app.*mailto links.*never sent automatically/i);
+    expect(summary.closest('details')).toHaveTextContent(/go-mapi system.*running go-mapi app.*administrator approval.*mailto links.*never sent automatically/i);
     expect(queryByRole('button', { name: /open default apps/i })).not.toBeInTheDocument();
     await fireEvent.click(summary);
     expect(summary.closest('details')).not.toHaveAttribute('open');

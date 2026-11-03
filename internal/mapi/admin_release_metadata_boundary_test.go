@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// The machine validation workflow generates plain first-party target metadata
-// from the final signed MSI without reviving obsolete admin publication.
+// The machine builder binds plain first-party target metadata to the final MSI.
 func TestMachineValidationWorkflowBindsPlainTargetToSignedMSI(t *testing.T) {
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -19,7 +18,7 @@ func TestMachineValidationWorkflowBindsPlainTargetToSignedMSI(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-machine-signed-input-v1", "go-mapi-machine-validation-provenance-v1", "signedSha256", "Plain target does not bind exact final machine MSI", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $path --out $targetPath"} {
+	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-machine-signed-input-v1", "go-mapi-machine-validation-provenance-v1", "signedSha256", "Final machine target generation failed", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $msi --out (Join-Path release/machine $targetName)"} {
 		if !strings.Contains(content, required) {
 			t.Errorf("release workflow missing %q", required)
 		}
