@@ -114,11 +114,38 @@ component versions and exact artifact/build manifests. Machine app builds use
 `.github/workflows/app-release.yml` and `.github/workflows/admin-release.yml`;
 local fixture passes do not establish release readiness.
 
-Machine publication currently allowlists selected experimental 3.2 releases and
-a TEST ONLY signing profile. Publishing a stable 4.0 machine package requires a
-reviewed publication/signing policy change and final-byte qualification; changing
-a version file or tag alone will fail those guards. This restriction does not
-remove the independent app workflow's stable release path.
+For a production-signed alpha release:
+
+1. Select component versions, merge the reviewed source and require successful
+   push CI for that exact commit. Create its `app-v<version>`,
+   `system-v<version>` and `suite-v<version>` tags as applicable.
+2. Configure the protected `artifact-signing` environment to use Azure account
+   `lachispa`, certificate profile `lachispa`, and endpoint
+   `https://weu.codesigning.azure.net/`. The existing OIDC identity needs signing
+   access to that profile. Real OAuth credentials are required for releases.
+3. The app tag triggers its release workflow. Dispatch `admin-release.yml` at
+   each machine tag with its SKU/version and `sign=true`, `publish=true`.
+   Development releases are staged as drafts; stable app Store/winget handling
+   remains separate. Do not replace assets or rebuild an accepted bundle.
+4. Download each draft and compare its bytes with the workflow's manifests and
+   signature evidence. In a clean disposable Windows guest, require normal
+   Authenticode trust and timestamps, installation/removal, and the
+   [ordinary-user installed attachment smoke](tests/installed-attachment/README.md)
+   against the exact suite payload. Import no product-signing certificate. The
+   smoke's owned HTTPS fake CA is separate test infrastructure. Retain results,
+   hashes and owned-guest cleanup; a timeout leaves acceptance incomplete.
+5. Draft assets are mutable. Record release/asset IDs and hashes; immediately
+   before promotion, recheck the tag commit and freshly downloaded bytes against
+   the accepted bundle. Promote with `gh release edit <tag> --draft=false
+   --prerelease --latest=false`. Download the public assets anonymously and
+   compare every byte again. Metadata publication and live automatic updates
+   remain separate work. If draft creation already succeeded, resume that draft;
+   the workflow refuses to replace an existing release, including a draft.
+
+Development MSIX uses the actual signing certificate's publisher subject. Its
+current numeric version drops the prerelease counter (alpha.10 and alpha.11 both
+encode `3.2.0.0`), so fresh installation does not establish alpha-to-alpha MSIX
+upgrade support. Production signing also does not establish SmartScreen reputation.
 
 The old `.planning/` tree was intentionally retired in commit `df17ab2` in favor
 of Perficio. Historical phase/ticket references may help recover decisions but
