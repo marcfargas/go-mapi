@@ -78,8 +78,8 @@ jobs:
         with:
           name: go-mapi-playwright-failure-${{ github.run_id }}
           path: |
-            playwright-report/
-            test-results/
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
           if-no-files-found: warn
           retention-days: 7
 
