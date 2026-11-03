@@ -93,6 +93,16 @@ A runner/installer liveness wait that expires also records the update
 directory, go-mapi and msiexec processes, ready records and error events
 (`handoff-stall-evidence`) so a handoff that never started is diagnosable.
 
+With validation timers, the readiness recovery scenarios request a normal stop
+of the idle Windows Installer service after bootstrap A and committed B, before
+selecting the next target. They require the exact installed unit to be healthy,
+no pending transaction, completed B's exact runner and installer to have exited,
+an available MSI execute mutex and a service that accepts stop. Refused or
+incomplete stops fail the scenario. The `readiness-fixture-installer-stopped`
+events retain these setup observations. Production recovery still requires the
+installer service to be stopped; the interruption scenario retains its natural
+idle shutdown wait and conservative reconciliation proof.
+
 Run the installed gate only on an elevated, clean, disposable Windows machine
 with Go 1.25, .NET 8, WiX restore, Windows SDK signing tools, the Release DLLs,
 and the A/C machine app EXE and manifest pairs:

@@ -612,7 +612,81 @@ function AssertRecoveryProcessHistory([string]$SuccessfulTransaction) {
     Record 'no-overlap-proof' ([ordered]@{ runnerStarts=$runners; runnerStops=@($stops | Where-Object pid -in $runnerPids); installerStarts=$clients; ready=$ready })
 }
 
+function TestFixtureInstallerMutexIdle {
+    $mutex = $null; $owned = $false
+    try {
+        try { $mutex = [Threading.Mutex]::OpenExisting('Global\_MSIExecute') }
+        catch [Threading.WaitHandleCannotBeOpenedException] { return $true }
+        try { $owned = $mutex.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { $owned = $true }
+        return $owned
+    } finally {
+        if ($owned) { $mutex.ReleaseMutex() }
+        if ($mutex) { $mutex.Dispose() }
+    }
+}
+
+function StopIdleReadinessInstaller([string]$Key, $Ready = $null) {
+    # Only precondition disposable validation stages. Never intervene in the
+    # interrupted-install scenario or change the production stopped-server gate.
+    if (-not $timers -or $Phase -ne 'ReadinessRecovery') { return }
+    $snapshot = AssertHealthy $Key
+    if ($snapshot.pending) { throw 'Cannot stop fixture installer with pending work' }
+    if ($Ready) {
+        Until 'completed fixture runner and installer exits' {
+            foreach ($identity in @($Ready.runner, $Ready.installer)) {
+                if (-not $identity -or ($identity.pid -isnot [int] -and $identity.pid -isnot [long]) -or
+                    $identity.pid -le 0 -or $identity.pid -gt [int]::MaxValue -or
+                    $identity.createdAtUnixNano -isnot [long] -or $identity.createdAtUnixNano -le 0) { throw 'Invalid completed process identity' }
+                $process = $null
+                $absent = $false
+                try { $process = Get-Process -Id $identity.pid -ErrorAction Stop }
+                catch {
+                    if ($_.FullyQualifiedErrorId -cne 'NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.GetProcessCommand' -or
+                        $_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound -or
+                        $_.TargetObject -ne $identity.pid) { throw }
+                    $absent = $true
+                }
+                if (-not $process -and -not $absent) { throw 'Missing process absence proof' }
+                if ($process) {
+                    try {
+                        if (@($process).Count -ne 1 -or $process.Id -ne $identity.pid -or
+                            $process.StartTime -isnot [DateTime] -or $process.StartTime.Kind -eq [DateTimeKind]::Unspecified) { throw 'Ambiguous completed process identity' }
+                        $created = ([decimal]$process.StartTime.ToUniversalTime().Ticks - 621355968000000000L) * 100
+                        if ($created -le 0 -or $created -gt [long]::MaxValue) { throw 'Invalid observed process identity' }
+                        if ($created -eq [decimal]$identity.createdAtUnixNano) { return $false }
+                    } finally { foreach ($observed in @($process)) { $observed.Dispose() } }
+                }
+            }
+            return $true
+        } -PollMilliseconds 100 -Seconds 30 | Out-Null
+    }
+    $server = Get-Service msiserver -ErrorAction Stop
+    try {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $before = [string]$server.Status
+        $canStop = $server.CanStop
+        if ($server.Status -ne 'Stopped') {
+            if ($server.Status -ne 'Running' -or -not $server.CanStop -or -not (TestFixtureInstallerMutexIdle)) {
+                throw 'Fixture Windows Installer is busy or cannot accept a normal stop'
+            }
+            # Recheck the installed unit immediately before service control.
+            $snapshot = AssertHealthy $Key
+            if ($snapshot.pending) { throw 'Cannot stop fixture installer with pending work' }
+            if (@($server.DependentServices | Where-Object Status -ne 'Stopped').Count) { throw 'Fixture installer has running dependent services' }
+            $server.Refresh()
+            if ($server.Status -ne 'Running' -or -not $server.CanStop) { throw 'Fixture installer changed before stop' }
+            $server.Stop()
+            $server.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+        $server.Refresh()
+        if ($server.Status -ne 'Stopped' -or -not (TestFixtureInstallerMutexIdle)) { throw 'Fixture installer did not become stopped and idle' }
+        Record 'readiness-fixture-installer-stopped' ([ordered]@{ key=$Key; before=$before; canStopBefore=$canStop; after=[string]$server.Status; mutexIdleAfter=$true; elapsedMilliseconds=$watch.Elapsed.TotalMilliseconds; ready=$Ready; snapshot=$snapshot })
+    } finally { $server.Dispose() }
+}
+
 function RunReadinessRecovery($Baseline) {
+    StopIdleReadinessInstaller $caseA
     StartReadinessProcessEvidence
     SetReadinessObstruction $caseB
     SelectTarget $caseB
@@ -635,6 +709,9 @@ function RunReadinessRecovery($Baseline) {
     } -PollMilliseconds 1000 -Seconds (ReadinessWaitLimit -Install)
     $b = AssertCommitted $caseB $Baseline.service.processId
     if ($b.recovery.consumed -ne 2 -or $b.recovery.reservation.transactionId -ceq $failure.reservation.transactionId) { throw 'B recovery did not use exactly one fresh automatic reservation' }
+    $ready = ReadJson (Join-Path $stateDir "ready-$($b.recovery.reservation.transactionId)-attempt-1-v1.json")
+    if (-not $ready -or $ready.transactionId -cne $b.recovery.reservation.transactionId) { throw 'Recovered B lacks exact process identities' }
+    StopIdleReadinessInstaller $caseB $ready
     SetReadinessObstruction $caseC
     SelectTarget $caseC
     $seen = @{}

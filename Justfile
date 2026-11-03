@@ -219,6 +219,7 @@ test-msi-tooling:
     pwsh -NoProfile -File src/installer/msi/tests/Hosted.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/DeferredInterruptionGuard.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/MachineReadinessEvidence.Tests.ps1
+    pwsh -NoProfile -File src/installer/msi/tests/ReadinessInstaller.Tests.ps1
 
 [positional-arguments]
 test-installed-attachment *args: _require-disposable
