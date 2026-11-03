@@ -122,6 +122,10 @@ verify-suite-package *args:
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/verify.ps1 -SKU suite "$@"
 
 [positional-arguments]
+build-machine-test-services *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/tests/build-services.ps1 "$@"
+
+[positional-arguments]
 build-machine-test-packages *args: _require-disposable
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/tests/build-fixtures.ps1 "$@"
 
@@ -150,17 +154,17 @@ release-track version:
 machine-package sku version:
     go run ./internal/mapi/cmd/machine-package -- {{sku}} {{version}}
 
-# The Windows act runner executes on the host. Allow only checks and unsigned packaging.
+# The Windows act runner executes on the host. Allow checks and unsigned builds/packages.
 [windows]
 [script('pwsh', '-NoProfile', '-File')]
 [extension('.ps1')]
 [positional-arguments]
 ci mode="run" job="windows-check":
-    param([ValidateSet('run','plan')][string]$Mode, [ValidateSet('windows-check','app-packages')][string]$Job)
+    param([ValidateSet('run','plan')][string]$Mode, [ValidateSet('windows-check','app-packages','admin-service-fixtures')][string]$Job)
     $ErrorActionPreference = 'Stop'
     $arguments = @('-P', 'windows-latest=-self-hosted', '-W', '.github/workflows/ci.yml', '-j', $Job)
     if ($Job -eq 'app-packages') { $arguments += @('--matrix', 'role:standalone') }
-    if ($Job -eq 'app-packages' -and $Mode -eq 'run') {
+    if ($Job -in @('app-packages','admin-service-fixtures') -and $Mode -eq 'run') {
         $artifacts = Join-Path $PWD ('release/act/' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N'))
         $arguments += @('--artifact-server-path', $artifacts)
         Write-Host "Package artifacts: $artifacts"
@@ -216,9 +220,15 @@ test-attachment-tooling:
 
 test-msi-tooling:
     pwsh -NoProfile -File src/installer/msi/tests/Build.Tests.ps1
+    pwsh -NoProfile -File src/installer/msi/tests/Identity.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/Hosted.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/DeferredInterruptionGuard.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/MachineReadinessEvidence.Tests.ps1
+    pwsh -NoProfile -File src/installer/msi/tests/ReadinessInstaller.Tests.ps1
+
+# Pure build/admission checks need the service resource compiler, but never run a PE.
+test-machine-service-inputs:
+    pwsh -NoProfile -File src/installer/msi/tests/ServiceBuilds.Tests.ps1
 
 [positional-arguments]
 test-installed-attachment *args: _require-disposable

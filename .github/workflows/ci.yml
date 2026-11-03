@@ -183,6 +183,39 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # Service fixture compilation needs source and the fixture specification only.
+  # Provision LLVM and build all three versions alongside app/native producers,
+  # before the signing/MSI job joins their immutable artifacts.
+  admin-service-fixtures:
+    if: ${{ github.event_name != 'schedule' }}
+    name: Build machine service test fixtures
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        if: ${{ !env.ACT }}
+        with: { go-version: '1.25' }
+      - uses: extractions/setup-just@v2
+        if: ${{ !env.ACT }}
+      - uses: ./.github/actions/setup-windows
+        with:
+          groups: native
+          install: ${{ !env.ACT }}
+      - name: Build unsigned service versions
+        shell: pwsh
+        run: |
+          just test-machine-service-inputs
+          if ($LASTEXITCODE -ne 0) { throw 'Service fixture admission checks failed' }
+          just build-machine-test-services -FixtureSpecification src/installer/msi/tests/fixtures/machine.json -OutputDirectory ci-input/services -MetadataOrigin https://localhost:18453 -ArtifactOrigin https://localhost:18453/releases/download/ -ValidationTimers
+          if ($LASTEXITCODE -ne 0) { throw 'Service fixture build failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-mapi-machine-service-inputs
+          path: ci-input/services/
+          if-no-files-found: error
+          retention-days: 7
+
   user-windows-shell:
     if: ${{ github.event_name != 'schedule' }}
     name: User component Windows shell
@@ -296,7 +329,7 @@ jobs:
     name: Build machine MSI test fixtures
     runs-on: windows-latest
     timeout-minutes: 45
-    needs: [build-interceptor, app-packages]
+    needs: [build-interceptor, app-packages, admin-service-fixtures]
     env:
       CGO_ENABLED: '1'
     steps:
@@ -323,15 +356,17 @@ jobs:
         with:
           name: go-mapi-machine-app-suiteC
           path: ci-input/appC
-      - uses: ./.github/actions/setup-windows
-        with: { groups: native }
+      - uses: actions/download-artifact@v4
+        with:
+          name: go-mapi-machine-service-inputs
+          path: ci-input/services
       - name: Build selected machine fixture packages
         shell: pwsh
         run: |
           $spec = Get-Content src/installer/msi/tests/fixtures/machine.json -Raw | ConvertFrom-Json
           Set-Content src/app/VERSION $spec.versions.baseline -NoNewline -Encoding ascii
           Set-Content src/interceptor/interceptor-version.txt $spec.versions.baseline -NoNewline -Encoding ascii
-          just build-machine-test-packages -FixtureSpecification src/installer/msi/tests/fixtures/machine.json -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll -MachineApp ci-input/appA/go-mapi-machine.exe -AppBuildManifest ci-input/appA/app-artifacts.json -SuiteCApp ci-input/appC/go-mapi-machine.exe -SuiteCAppBuildManifest ci-input/appC/app-artifacts.json -OutputDirectory release/machine-test -EvidenceDirectory 'test-results/245-ci/${{ github.run_id }}/build' -MetadataOrigin https://localhost:18453 -ArtifactOrigin https://localhost:18453/releases/download/ -ValidationTimers
+          just build-machine-test-packages -FixtureSpecification src/installer/msi/tests/fixtures/machine.json -ServiceBuildManifest ci-input/services/service-builds.json -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll -MachineApp ci-input/appA/go-mapi-machine.exe -AppBuildManifest ci-input/appA/app-artifacts.json -SuiteCApp ci-input/appC/go-mapi-machine.exe -SuiteCAppBuildManifest ci-input/appC/app-artifacts.json -OutputDirectory release/machine-test -EvidenceDirectory 'test-results/245-ci/${{ github.run_id }}/build' -MetadataOrigin https://localhost:18453 -ArtifactOrigin https://localhost:18453/releases/download/ -ValidationTimers
           if ($LASTEXITCODE -ne 0) { throw 'Machine fixture build failed' }
       - uses: actions/upload-artifact@v4
         if: always()
@@ -402,12 +437,12 @@ jobs:
     name: Validate machine MSI lifecycle and installed updater
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [windows-check, user-windows-shell, admin-msi-fixtures, admin-msi-scenario]
+    needs: [windows-check, user-windows-shell, admin-service-fixtures, admin-msi-fixtures, admin-msi-scenario]
     steps:
       - name: Require Windows checks, integration, fixtures and every scenario to pass
         shell: bash
         run: |
-          for result in '${{ needs.windows-check.result }}' '${{ needs.user-windows-shell.result }}' '${{ needs.admin-msi-fixtures.result }}' '${{ needs.admin-msi-scenario.result }}'; do
+          for result in '${{ needs.windows-check.result }}' '${{ needs.user-windows-shell.result }}' '${{ needs.admin-service-fixtures.result }}' '${{ needs.admin-msi-fixtures.result }}' '${{ needs.admin-msi-scenario.result }}'; do
             if [ "$result" != "success" ]; then
               echo "Windows checks, integration or machine MSI validation did not pass: $result" >&2
               exit 1

@@ -194,8 +194,8 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := string(recipes)
-	// The machine lifecycle validation is split into a fixture job that builds
-	// and signs the packages once, one scenario job per scenario (each on its own
+	// Source-only service compilation overlaps the app/native producers. The
+	// fixture job signs and packages once, one scenario job per scenario (each on its own
 	// runner: the scenarios share machine-global state), and the aggregate gate
 	// that keeps the original job name.
 	jobText := func(id, next string) string {
@@ -210,7 +210,24 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	fixtures := jobText("admin-msi-fixtures", "admin-msi-scenario")
 	scenarios := jobText("admin-msi-scenario", "admin-msi")
 	aggregate := jobText("admin-msi", "go-race")
-	apps := jobText("app-packages", "user-windows-shell")
+	apps := jobText("app-packages", "admin-service-fixtures")
+	services := jobText("admin-service-fixtures", "user-windows-shell")
+	if strings.Contains(services, "needs:") {
+		t.Error("source-only service compilation must not wait for app/native artifacts")
+	}
+	for _, want := range []string{"just build-machine-test-services", "just test-machine-service-inputs", "name: go-mapi-machine-service-inputs", "path: ci-input/services/"} {
+		if !strings.Contains(services, want) {
+			t.Errorf("service producer is missing %q", want)
+		}
+	}
+	for _, want := range []string{"needs: [build-interceptor, app-packages, admin-service-fixtures]", "name: go-mapi-machine-service-inputs", "path: ci-input/services", "-ServiceBuildManifest ci-input/services/service-builds.json"} {
+		if !strings.Contains(fixtures, want) {
+			t.Errorf("fixture job must consume the independent service build: missing %q", want)
+		}
+	}
+	if strings.Contains(fixtures, "groups: native") {
+		t.Error("the package job must reuse service inputs without provisioning LLVM again")
+	}
 	for _, role := range []struct{ name, artifact, appArg, manifestArg string }{
 		{"appA", "go-mapi-machine-app", "-MachineApp", "-AppBuildManifest"},
 		{"appC", "go-mapi-machine-app-suiteC", "-SuiteCApp", "-SuiteCAppBuildManifest"},
@@ -259,9 +276,9 @@ func TestCIWorkflowRetainsValidationContracts(t *testing.T) {
 	// independent Windows checks, fixture build and every scenario passed.
 	for _, want := range []string{
 		"name: Validate machine MSI lifecycle and installed updater",
-		"needs: [windows-check, user-windows-shell, admin-msi-fixtures, admin-msi-scenario]",
+		"needs: [windows-check, user-windows-shell, admin-service-fixtures, admin-msi-fixtures, admin-msi-scenario]",
 		"always()", "needs.windows-check.result", "needs.user-windows-shell.result",
-		"needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
+		"needs.admin-service-fixtures.result", "needs.admin-msi-fixtures.result", "needs.admin-msi-scenario.result", `!= "success"`, "exit 1",
 	} {
 		if !strings.Contains(aggregate, want) {
 			t.Errorf("machine MSI aggregate job is missing %q", want)

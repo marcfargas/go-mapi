@@ -22,18 +22,20 @@ type ReadyAwaiter interface {
 }
 
 type PollReadyAwaiter struct {
-	Interval time.Duration
-	Timeout  time.Duration
+	Interval  time.Duration
+	Timeout   time.Duration
+	Processes ProcessProbe
 }
 
 func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStore, transactionID string, attempt uint, runner ProcessIdentity) (RunnerReadyV1, error) {
-	if awaiter.Interval <= 0 || awaiter.Timeout <= 0 || store == nil {
+	if awaiter.Interval <= 0 || awaiter.Timeout <= 0 || store == nil || awaiter.Processes == nil {
 		return RunnerReadyV1{}, errors.New("invalid ready awaiter")
 	}
 	ctx, cancel := context.WithTimeout(ctx, awaiter.Timeout)
 	defer cancel()
 	ticker := time.NewTicker(awaiter.Interval)
 	defer ticker.Stop()
+	exited := false
 	for {
 		ready, err := store.Load(ctx, transactionID, attempt)
 		if err != nil {
@@ -45,6 +47,17 @@ func (awaiter PollReadyAwaiter) Await(ctx context.Context, store RunnerReadyStor
 			}
 			return *ready, nil
 		}
+		if exited {
+			return RunnerReadyV1{}, errors.New("runner exited before publishing readiness")
+		}
+		alive, probeErr := awaiter.Processes.Alive(ctx, runner)
+		if probeErr == nil && !alive {
+			// The exact process cannot publish again. Re-read durable readiness
+			// in case it was published between the first read and process exit.
+			exited = true
+			continue
+		}
+		// An unknown process state retains the full readiness allowance.
 		select {
 		case <-ctx.Done():
 			return RunnerReadyV1{}, ctx.Err()
