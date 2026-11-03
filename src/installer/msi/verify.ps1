@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 function Fail([string]$Message) { throw "Admin MSI verification failed: $Message" }
 if (-not (Test-Path $MsiPath)) { Fail "missing MSI $MsiPath" }
 if ($RequireSignature -and (Get-AuthenticodeSignature $MsiPath).Status -ne 'Valid') { Fail 'release MSI signature is not valid' }
-$identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU $PackageRelease 2>&1
+$identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU $PackageRelease
 if ($LASTEXITCODE -ne 0) { Fail "production package identity rejected the release: $identityJSON" }
 $identity = $identityJSON | ConvertFrom-Json
 if ([IO.Path]::GetFileName($MsiPath) -ne $identity.assetName) { Fail "MSI filename is not the immutable $SKU asset name $($identity.assetName)" }

@@ -38,7 +38,7 @@ Get-ExactProperty $manifest $expectedManifestFields 'manifest'
 if ($manifest.schema -ne 'go-mapi-machine-signed-input-v1' -or $manifest.sku -ne $SKU) { Fail 'manifest schema or SKU does not match the explicit build' }
 if ($manifest.commit -notmatch '^[0-9a-f]{40}$') { Fail 'manifest commit must be a full lowercase Git commit SHA' }
 
-$identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU ([string]$manifest.packageRelease) 2>&1
+$identityJSON = & go run ./internal/mapi/cmd/machine-package -- $SKU ([string]$manifest.packageRelease)
 if ($LASTEXITCODE -ne 0) { Fail "production package identity rejected the release: $identityJSON" }
 $identity = $identityJSON | ConvertFrom-Json
 $componentMap = @{}

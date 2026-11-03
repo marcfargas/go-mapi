@@ -220,6 +220,7 @@ test-attachment-tooling:
 
 test-msi-tooling:
     pwsh -NoProfile -File src/installer/msi/tests/Build.Tests.ps1
+    pwsh -NoProfile -File src/installer/msi/tests/Identity.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/Hosted.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/DeferredInterruptionGuard.Tests.ps1
     pwsh -NoProfile -File src/installer/msi/tests/MachineReadinessEvidence.Tests.ps1
