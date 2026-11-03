@@ -29,10 +29,12 @@ check-portable: test-user check-user test-service check-service e2e-user test-re
 [unix]
 test-release:
     python3 tests/release/Bundle.Tests.py
+    python3 tests/release/ReusedRelease.Tests.py
 
 [windows]
 test-release:
     uv run --script tests/release/Bundle.Tests.py
+    uv run --script tests/release/ReusedRelease.Tests.py
 
 test-windows: _require-disposable build-frontend
     go test ./internal/mapi/... ./src/app/... ./src/service/...
@@ -50,6 +52,7 @@ prepare-native-inputs *args:
 
 test-windows-tooling:
     pwsh -NoProfile -File tests/Entrypoints.Tests.ps1
+    pwsh -NoProfile -File tests/release/Prepare.Tests.ps1
     pwsh -NoProfile -File src/app/tests/Build.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/Runner.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/native/Build.Tests.ps1
