@@ -11,6 +11,7 @@ param(
     [string]$SuiteCApp,
     [string]$SuiteCAppBuildManifest,
     [string]$PreSignedPackagesManifest,
+    [string]$ServiceBuildManifest,
     [string]$FixtureSpecification,
     [string]$MetadataOrigin = 'https://localhost:18453',
     [string]$ArtifactOrigin = 'https://localhost:18453/releases/download/',
@@ -24,43 +25,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-function ReadFixtureSpecification([string]$Path) {
-    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Self-signed fixtures require -FixtureSpecification' }
-    $path = [IO.Path]::GetFullPath($Path)
-    $spec = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-    if ($spec.schema -cne 'go-mapi-machine-fixture-spec-v1') { throw 'Unknown machine fixture specification schema' }
-    $order = @{}
-    foreach ($role in @('baseline','serviceUpgrade','packageNext','appUpgrade')) {
-        $value = [string]$spec.versions.$role
-        # This fixed development fixture uses alpha releases. General release
-        # validation and MSI identity derivation remain owned by machine-package.
-        if ($value -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.([1-9][0-9]?)$' -or
-            [int]$Matches[1] -gt 255 -or [int]$Matches[1]%2 -ne 1 -or [int]$Matches[2] -gt 255 -or [int]$Matches[3] -gt 65) {
-            throw "Invalid alpha fixture version for $role`: $value"
-        }
-        $order[$role] = [version]::new([int]$Matches[1],[int]$Matches[2],[int]$Matches[3],[int]$Matches[4])
-    }
-    if ($order.baseline -ge $order.serviceUpgrade -or $order.serviceUpgrade -ge $order.packageNext -or
-        $order.baseline -ge $order.appUpgrade) { throw 'Fixture versions must advance baseline -> serviceUpgrade -> packageNext and baseline -> appUpgrade' }
-    foreach ($bound in @(@('startupDelaySeconds',120),@('heartbeatSeconds',60),@('checkIntervalSeconds',86400),@('failureDelayBaseSeconds',900))) {
-        $value = $spec.timers.($bound[0])
-        if (($value -isnot [int] -and $value -isnot [long]) -or $value -lt 1 -or $value -gt $bound[1]) { throw "Fixture timer $($bound[0]) must shorten the production values" }
-    }
-    $v = $spec.versions
-    [pscustomobject]@{
-        path=$path; sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); versions=$v; timers=$spec.timers
-        cases=@(
-            @{ key='systemA'; sku='system'; release=$v.baseline; service=$v.baseline },
-            @{ key='systemB'; sku='system'; release=$v.serviceUpgrade; service=$v.serviceUpgrade },
-            @{ key='systemC'; sku='system'; release=$v.packageNext; service=$v.packageNext },
-            @{ key='suiteA'; sku='suite'; release=$v.baseline; service=$v.baseline },
-            @{ key='suiteB'; sku='suite'; release=$v.serviceUpgrade; service=$v.serviceUpgrade },
-            @{ key='suiteC'; sku='suite'; release=$v.packageNext; service=$v.serviceUpgrade }
-        )
-    }
-}
+. (Join-Path $PSScriptRoot 'ServiceBuilds.ps1')
 # Tests import the actual plan reader without building, signing or changing trust.
 if ($MyInvocation.InvocationName -eq '.') { return }
+$resultManifest = Join-Path ([IO.Path]::GetFullPath($EvidenceDirectory)) 'machine-test-packages.json'
+if (Test-Path -LiteralPath $resultManifest) { Remove-Item -LiteralPath $resultManifest -Force -ErrorAction Stop }
+if ($ServiceBuildManifest -and $PreSignedPackagesManifest) { throw 'Service build inventories apply only to self-signed fixtures' }
 if ($ValidationTimers -and $PreSignedPackagesManifest) { throw 'Validation timers apply only to the self-signed CI build, not to pre-signed fixtures' }
 $fixtureSpec = if (-not $PreSignedPackagesManifest) { ReadFixtureSpecification $FixtureSpecification } else { $null }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
@@ -350,6 +320,24 @@ if ($PreSignedPackagesManifest) {
     return
 }
 
+$serviceSettings=Get-ServiceBuildSettings $fixtureSpec $MetadataOrigin $ArtifactOrigin $CheckIntervalSeconds ([bool]$ValidationTimers)
+$unsignedDirectory=Join-Path $output 'unsigned-services'
+$serviceBuilds=if ($ServiceBuildManifest) {
+    Read-ServiceBuildManifest $ServiceBuildManifest $fixtureSpec $commit $serviceSettings
+} else { New-ServiceBuilds $repo $unsignedDirectory $fixtureSpec $commit $serviceSettings }
+# Pin the admitted inventory and bytes in fixture output before any signing.
+New-Item -ItemType Directory -Force $unsignedDirectory | Out-Null
+foreach ($version in $serviceBuilds.services.Keys) {
+    $entry=$serviceBuilds.services[$version]
+    $destination=Join-Path $unsignedDirectory "go-mapi-service-$version.exe"
+    if ($entry.path -ine [IO.Path]::GetFullPath($destination)) { Copy-Item -LiteralPath $entry.path -Destination $destination }
+    if ((Hash $destination) -cne $entry.sha256) { throw 'Admitted unsigned service changed during copy' }
+}
+$inventoryPath=Join-Path $unsignedDirectory 'service-builds.json'
+if ($serviceBuilds.path -ine [IO.Path]::GetFullPath($inventoryPath)) { Copy-Item -LiteralPath $serviceBuilds.path -Destination $inventoryPath }
+if ((Hash $inventoryPath) -cne $serviceBuilds.sha256) { throw 'Admitted service inventory changed during copy' }
+$serviceBuilds=Read-ServiceBuildManifest $inventoryPath $fixtureSpec $commit $serviceSettings
+
 $signToolCommand = Get-Command signtool.exe -ErrorAction SilentlyContinue
 if (-not $signToolCommand) {
     $signToolCommand = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
@@ -358,8 +346,6 @@ if (-not $signToolCommand) {
 if (-not $signToolCommand) { throw 'Windows SDK signtool.exe is required' }
 $signtool = if ($signToolCommand -is [IO.FileInfo]) { $signToolCommand.FullName } else { $signToolCommand.Source }
 $signer = $null
-$source = $null
-$archive = $null
 try {
 $signer = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=go-mapi CI $([guid]::NewGuid().ToString('N'))" -CertStoreLocation Cert:\LocalMachine\My -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddDays(2)
 $publicCert = Join-Path $output 'test-code-signing.cer'
@@ -369,15 +355,6 @@ Import-Certificate -FilePath $publicCert -CertStoreLocation Cert:\LocalMachine\T
 $certRecord = [ordered]@{ thumbprint = $signer.Thumbprint; subject = $signer.Subject; scope = 'disposable-runner-only'; publicCertificate = $publicCert }
 WriteJson (Join-Path $evidence 'test-signer.json') $certRecord
 
-# A clean Git archive keeps versioned service derivatives away from tracked
-# source and makes source provenance explicit. It is deleted after the builds.
-$source = Join-Path $output 'source-derivative'
-$archive = Join-Path $output 'source.zip'
-New-Item -ItemType Directory -Force $source | Out-Null
-& git -C $repo archive --format=zip -o $archive HEAD
-if ($LASTEXITCODE -ne 0) { throw 'Could not archive source commit' }
-Expand-Archive -LiteralPath $archive -DestinationPath $source
-$originalOrigin = $env:MACHINE_RELEASE_METADATA_ORIGIN
 $packages = [ordered]@{}
 $serviceHashes = @{}
 $appBuild = Get-Content -LiteralPath $AppBuildManifest -Raw | ConvertFrom-Json
@@ -393,8 +370,6 @@ if ($SuiteCApp) {
         throw 'Suite C machine app provenance/version mismatch'
     }
 }
-try {
-    $env:MACHINE_RELEASE_METADATA_ORIGIN = $MetadataOrigin
     $x64 = Join-Path $output 'go-mapi-x64.dll'
     $x86 = Join-Path $output 'go-mapi-x86.dll'
     $app = Join-Path $output 'go-mapi-machine.exe'
@@ -415,18 +390,10 @@ try {
     $appBuildHash = Hash (Join-Path $output 'app-artifacts.json')
     foreach ($case in $fixtureSpec.cases) {
         $serviceVersion = $case.service
-        Set-Content -LiteralPath (Join-Path $source 'src\service\VERSION') -Value $serviceVersion -NoNewline -Encoding ascii
         $servicePath = Join-Path $output "go-mapi-service-$serviceVersion.exe"
         if (-not $serviceHashes.ContainsKey($serviceVersion)) {
-            $serviceBuildArgs = @{ OutputPath=$servicePath; ArtifactOrigin=$ArtifactOrigin; CheckIntervalSeconds=$effectiveCheckIntervalSeconds }
-            if ($ValidationTimers) {
-                $serviceBuildArgs.ValidationStartupDelaySeconds = $fixtureSpec.timers.startupDelaySeconds
-                $serviceBuildArgs.ValidationHeartbeatSeconds = $fixtureSpec.timers.heartbeatSeconds
-                $serviceBuildArgs.ValidationFailureBaseSeconds = $fixtureSpec.timers.failureDelayBaseSeconds
-                $serviceBuildArgs.ValidationReadinessFault = $true
-            }
-            & (Join-Path $source 'src\service\build.ps1') @serviceBuildArgs
-            if (-not (Test-Path $servicePath)) { throw "Service build failed: $serviceVersion" }
+            Copy-Item -LiteralPath $serviceBuilds.services[$serviceVersion].path -Destination $servicePath
+            if ((Hash $servicePath) -cne $serviceBuilds.services[$serviceVersion].sha256) { throw 'Unsigned service changed before signing' }
             Sign $servicePath
             $serviceHashes[$serviceVersion] = Hash $servicePath
         }
@@ -487,19 +454,14 @@ try {
     WriteJson (Join-Path $evidence 'machine-test-packages.json') ([ordered]@{
         schema='go-mapi-machine-test-packages-v1'; sourceCommit=$commit; generatedAtUtc=[DateTime]::UtcNow.ToString('o');
         fixture=$fixtureRecord;
-        sourceSubstitutions=[ordered]@{ appVersion=$appVersion; suiteCAppVersion=if ($suiteCBuild) { [string]$suiteCBuild.version } else { $null }; interceptorVersion=$interceptorVersion; canonicalServiceVersion=(Get-Content (Join-Path $repo 'src\service\VERSION') -Raw).Trim(); canonicalAppVersion=(Get-Content (Join-Path $source 'src\app\VERSION') -Raw).Trim(); canonicalInterceptorVersion=(Get-Content (Join-Path $source 'src\interceptor\interceptor-version.txt') -Raw).Trim() };
+        sourceSubstitutions=[ordered]@{ appVersion=$appVersion; suiteCAppVersion=if ($suiteCBuild) { [string]$suiteCBuild.version } else { $null }; interceptorVersion=$interceptorVersion; canonicalServiceVersion=(Get-Content (Join-Path $repo 'src\service\VERSION') -Raw).Trim(); canonicalAppVersion=(& git -C $repo show "${commit}:src/app/VERSION").Trim(); canonicalInterceptorVersion=(& git -C $repo show "${commit}:src/interceptor/interceptor-version.txt").Trim() };
         inputs=[ordered]@{ x64DllSha256=Hash $X64Dll; x86DllSha256=Hash $X86Dll; unsignedMachineAppSha256=Hash $MachineApp; appBuildManifestSha256=Hash $AppBuildManifest;
-            suiteCUnsignedAppSha256=if ($SuiteCApp) { Hash $SuiteCApp } else { $null }; suiteCAppBuildManifestSha256=if ($SuiteCAppBuildManifest) { Hash $SuiteCAppBuildManifest } else { $null } };
+            suiteCUnsignedAppSha256=if ($SuiteCApp) { Hash $SuiteCApp } else { $null }; suiteCAppBuildManifestSha256=if ($SuiteCAppBuildManifest) { Hash $SuiteCAppBuildManifest } else { $null };
+            serviceBuildManifest=$serviceBuilds.path; serviceBuildManifestSha256=$serviceBuilds.sha256;
+            unsignedServices=@($serviceBuilds.services.Keys | Sort-Object | ForEach-Object { [ordered]@{version=$_;sha256=$serviceBuilds.services[$_].sha256} }) };
         packages=$packages
     })
-} finally {
-    $env:MACHINE_RELEASE_METADATA_ORIGIN = $originalOrigin
-    if (Test-Path -LiteralPath $source) { Remove-Item -LiteralPath $source -Recurse -Force }
-    if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-}
 } catch {
-    if ($source -and (Test-Path -LiteralPath $source)) { Remove-Item -LiteralPath $source -Recurse -Force }
-    if ($archive -and (Test-Path -LiteralPath $archive)) { Remove-Item -LiteralPath $archive -Force }
     if ($signer) {
         foreach ($store in @('Root','TrustedPublisher','My')) {
             $path = "Cert:\LocalMachine\$store\$($signer.Thumbprint)"

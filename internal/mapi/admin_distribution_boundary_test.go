@@ -600,7 +600,7 @@ func TestMachineValidationRetiresLegacyPublicationAndFailsClosed(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"inputs.sku != 'admin'", "inputs.publish", "Public machine release requires the exact signed 3.2 development tag",
+		"inputs.sku != 'admin'", "inputs.publish", "Public machine release requires the exact signed development tag",
 		"go run ./internal/mapi/cmd/machine-package", "go-mapi-machine-signed-input-v1",
 		"src/service/VERSION", "src/interceptor/interceptor-version.txt",
 		"src/app/VERSION", "inputs.sku == 'suite'", "just build-user-machine",

@@ -64,12 +64,39 @@ MSIX and NSIS from its exact EXE; each leg verifies its EXE/manifest pair before
 its uploaded artifacts. Packaging consumes the resolved artifact version instead
 of rewriting source to match a downloaded EXE.
 
-The `admin-msi-fixtures` job reuses the Release DLLs and distinct A/C machine
-apps. It prepares disposable signed system A/B/C and suite A/B/C packages with `just
-build-machine-test-packages`. Suite C keeps B's exact service and interceptor
+The `admin-msi-fixtures` job reuses the Release DLLs, distinct A/C machine
+apps and unsigned service versions. It prepares disposable signed system A/B/C
+and suite A/B/C packages with `just build-machine-test-packages`. Suite C keeps B's exact service and interceptor
 bytes and source identities while changing the app. The signed-input writer is
 shared with machine release validation, but these fixture certificates are
 local to a disposable runner and have no Azure timestamp or release authority.
+`just build-machine-test-services` builds
+the three unsigned service versions from an isolated source archive while the
+app and interceptor jobs run. `just build-machine-test-packages` accepts
+`-ServiceBuildManifest <inventory.json>`, validates the source, specification,
+build settings and unsigned executable identities, then signs each service once.
+Without that option, the package command builds the services itself through
+the same helper. Signing, MSI construction and the six isolated scenarios retain
+their current order and checks. The inventory is specific to the current source,
+fixture specification and workflow run attempt; it has no publication authority.
+
+To build only the unsigned service inputs on a developer machine with Go 1.25,
+Git and the qualified LLVM resource compiler installed:
+
+```powershell
+just build-machine-test-services `
+  -FixtureSpecification src/installer/msi/tests/fixtures/machine.json `
+  -OutputDirectory release/service-inputs -ValidationTimers
+```
+
+The output contains `service-builds.json` and three unsigned executables. The
+command compiles them without executing them or changing machine trust. Pass the
+inventory to the package command on a disposable machine using the same settings,
+including `-ValidationTimers` when selected. `just ci run admin-service-fixtures`
+exercises this source-only workflow job locally through act and retains its
+uploaded artifact. `just test-machine-service-inputs` checks inventory admission
+after native tool setup; it compiles harmless PE fixtures without running them.
+
 The manifest binds the source commit, explicit version substitutions, signed
 PE and MSI hashes, and deterministic MSI identities. The service uses a
 localhost HTTPS origin. The CI fixture build passes `-ValidationTimers`, which
@@ -105,7 +132,9 @@ idle shutdown wait and conservative reconciliation proof.
 
 Run the installed gate only on an elevated, clean, disposable Windows machine
 with Go 1.25, .NET 8, WiX restore, Windows SDK signing tools, the Release DLLs,
-and the A/C machine app EXE and manifest pairs:
+and the A/C machine app EXE and manifest pairs. The default local path also needs
+the LLVM resource compiler; an admitted service inventory removes that dependency
+from the packaging machine:
 
 ```powershell
 $root = 'test-results/245-ci/local-run'
@@ -136,10 +165,15 @@ The workflow splits the validation across runners because the scenarios share
 the machine-global service, MSI product, certificate stores and fixture port
 18453 and so cannot share one machine:
 
+- `admin-service-fixtures` builds unsigned services independently of the app and
+  native matrices and uploads `go-mapi-machine-service-inputs`. It provisions
+  LLVM and runs the service-input admission checks. The package job admits the
+  three versions against its own source, specification, settings and run attempt,
+  including unsigned hashes, x64 PE headers and resource versions, before signing.
 - `admin-msi-fixtures` builds and signs the packages once and uploads
   `go-mapi-machine-fixtures-<run id>` (the package manifest, MSIs, inputs and
   the signer's public certificate).
-  It starts as soon as native and app artifacts are available, in parallel
+  It starts as soon as native, app and service artifacts are available, in parallel
   with the Windows shell integration checks.
 - `admin-msi-scenario` runs one matrix leg per scenario on its own runner. Each
   leg downloads the fixtures to the same workspace paths, imports the fixture
@@ -149,10 +183,11 @@ the machine-global service, MSI product, certificate stores and fixture port
   scenario's evidence as
   `go-mapi-machine-native-validation-<scenario>-<run id>`. The legs do not
   cancel each other. These runners need Go, Just and PowerShell to execute the
-  prebuilt fixtures; .NET and native compilers are needed only when building them.
+  prebuilt fixtures; .NET is needed for MSI construction, and LLVM for service
+  compilation in the separate producer.
 - `admin-msi`, named "Validate machine MSI lifecycle and installed updater",
   is the aggregate gate. It requires the Windows development checks, Windows
-  shell integration, fixture build and every scenario leg to succeed. A skipped,
+  shell integration, both fixture producers and every scenario leg to succeed. A skipped,
   cancelled or failed dependency fails the gate.
 
 The `update-interruption` phase keeps the interrupted installer's `msiexec.log`
