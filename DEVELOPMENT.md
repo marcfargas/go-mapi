@@ -175,10 +175,42 @@ families and update ownership.
    An existing draft must be resumed from its recorded assets, never rebuilt
    or replaced by rerunning release staging.
 
-The production-signed unified `v3.2.0-beta.1` release passed disposable-Windows
-package and attachment acceptance. Its published assets retain the earlier
-metadata layout. The next release must qualify the consolidated bundle through
-hosted signing and Windows acceptance; published releases remain unchanged.
+The production-signed unified `v3.2.0-beta.2` release qualified the compact
+metadata layout, hosted signing and disposable-Windows package/attachment
+acceptance. Published assets remain immutable. Reused-System acceptance uses an
+unpublished draft from the same release workflow; it does not require another
+public release.
+
+Proposed reused-System acceptance commands (runtime qualification pending):
+after exact-source push CI passes, tag the App-only candidate and dispatch
+`release.yml` with the published System tag and independently downloaded
+`release.json` SHA-256. Download the complete draft to `candidate`, the original
+published bundle to `prior`, and the run's `release-app` / `release-machine`
+artifacts to `receipts/app` / `receipts/machine`. Save the actual draft notes as
+`notes.txt`. Check the packages against the actual assembler and CI receipts:
+
+```powershell
+uv run --script tests/release/Verify-ReusedRelease.py `
+  --prior-release prior/release.json --bundle candidate --receipts receipts `
+  --notes notes.txt --source <candidate-commit> --run-id <release-run> `
+  --run-attempt 1 --output reused-release.json
+pwsh -NoProfile -File tests/release/Prepare-ReusedSuite.ps1 `
+  -PriorBundleDirectory prior -BundleDirectory candidate `
+  -PriorMachineReceiptsDirectory prior-receipts/machine `
+  -MachineReceiptsDirectory receipts/machine -OutputDirectory selected-suite
+just sandbox-test -InputDirectory <absolute-selected-suite> `
+  -ScriptPath Test-ReusedSuite.ps1 -RunAs System -TimeoutSeconds 900
+```
+
+The preparer selects only the two Suite MSIs and their existing compact release
+and signing receipts. The guest uses default Windows signature trust, disables
+its network adapters before installation, installs the old Suite and upgrades
+it to the candidate. It checks MSI registration and Suite ownership, new App
+bytes/version, unchanged service and both interceptor payloads, service health
+and final removal. The existing Sandbox runner exports evidence and disposes
+only its owned guest. Receipt checks alone do not prove Windows trust or an
+installed upgrade; contract tests use inert files. This journey does not qualify
+the standalone App's live metadata or UAC consent path.
 
 Standalone App's installation/repair action now selects System with administrator
 consent through the existing verified-download and UAC helper. It refuses Suite,
