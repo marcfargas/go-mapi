@@ -117,13 +117,6 @@ jobs:
           $proof = [ordered]@{ schema='go-mapi-app-release-signatures-v1'; repository='${{ github.repository }}'; commit='${{ github.sha }}'; sourceRef='${{ github.ref }}'; runId='${{ github.run_id }}'; runAttempt='${{ github.run_attempt }}'; version=$env:VERSION; signatures=@($signatures); validationTrust='windows-default'; testTrust=$null; azure=[ordered]@{ endpoint='https://weu.codesigning.azure.net/'; account='lachispa'; certificateProfile='lachispa' } }
           [IO.File]::WriteAllText('release/app/signatures.json', ($proof | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
           Copy-Item src/app/build/bin/app-artifacts.json release/app/standalone-app-artifacts.json
-          $installer = "release/app/go-mapi-user-$env:VERSION-x64.exe"
-          $url = "https://github.com/${{ github.repository }}/releases/download/v$env:VERSION/go-mapi-user-$env:VERSION-x64.exe"
-          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
-          foreach ($template in Get-ChildItem distribution/winget/*.yaml.in) {
-            $text = (Get-Content $template.FullName -Raw).Replace('@@VERSION@@',$env:VERSION).Replace('@@INSTALLER_URL@@',$url).Replace('@@INSTALLER_SHA256@@',$hash)
-            [IO.File]::WriteAllText((Join-Path release/app ([IO.Path]::GetFileNameWithoutExtension($template.Name))), $text, [Text.UTF8Encoding]::new($false))
-          }
       - uses: actions/upload-artifact@v4
         with:
           name: release-app

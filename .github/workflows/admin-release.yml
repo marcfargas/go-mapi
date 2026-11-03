@@ -5,7 +5,7 @@ on:
     inputs:
       version: { type: string, required: true }
       system_tag: { type: string, default: '' }
-      system_proof_sha256: { type: string, default: '' }
+      system_manifest_sha256: { type: string, default: '' }
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ inputs.version }}
       SYSTEM_TAG: ${{ inputs.system_tag }}
-      SYSTEM_PROOF_SHA256: ${{ inputs.system_proof_sha256 }}
+      SYSTEM_MANIFEST_SHA256: ${{ inputs.system_manifest_sha256 }}
       GOMAPI_OAUTH_CLIENT_ID: ${{ secrets.GOMAPI_OAUTH_CLIENT_ID }}
       GOMAPI_OAUTH_CLIENT_SECRET: ${{ secrets.GOMAPI_OAUTH_CLIENT_SECRET }}
       GOMAPI_ADMIN_RELEASE_METADATA_URL: ${{ vars.ADMIN_RELEASE_METADATA_URL }}
@@ -60,31 +60,29 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Invalid reused System release track' }
           $newTrack = go run ./internal/mapi/cmd/release-track -- $env:VERSION
           if ($LASTEXITCODE -ne 0 -or ($oldTrack | Where-Object { $_ -like 'track=*' }) -cne ($newTrack | Where-Object { $_ -like 'track=*' })) { throw 'Reused System must share the release track; build a new System when crossing tracks' }
-          $proofName = "system-$oldRelease.validation.json"
           $msiName = "go-mapi-system-$oldRelease-x64.msi"
-          $manifestName = "go-mapi-system-$oldRelease.manifest.json"
           $published = gh api "repos/${{ github.repository }}/releases/tags/$env:SYSTEM_TAG" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $published.draft -or $published.tag_name -cne $env:SYSTEM_TAG) { throw 'Selected System is not a published release' }
           New-Item -ItemType Directory -Force reuse-input | Out-Null
-          gh release download $env:SYSTEM_TAG --repo '${{ github.repository }}' --dir reuse-input --pattern $proofName --pattern $msiName --pattern $manifestName
+          gh release download $env:SYSTEM_TAG --repo '${{ github.repository }}' --dir reuse-input --pattern release.json --pattern $msiName
           if ($LASTEXITCODE -ne 0) { throw 'Published System bundle is incomplete' }
-          $proofPath = Join-Path reuse-input $proofName
-          if ((Get-FileHash $proofPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:SYSTEM_PROOF_SHA256) { throw 'Pinned System proof hash differs' }
-          $old = Get-Content $proofPath -Raw | ConvertFrom-Json
-          $manifestPath = Join-Path reuse-input $manifestName
+          $manifestPath = Join-Path reuse-input release.json
+          if ((Get-FileHash $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:SYSTEM_MANIFEST_SHA256) { throw 'Pinned release manifest hash differs' }
+          $release = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          $old = $release.system
           $msiPath = Join-Path reuse-input $msiName
-          $input = Get-Content $manifestPath -Raw | ConvertFrom-Json
-          if ($old.schema -cne 'go-mapi-machine-validation-provenance-v1' -or $old.publishable -ne $true -or
-              $old.repository -cne '${{ github.repository }}' -or $old.sku -cne 'system' -or $old.tag -cne $env:SYSTEM_TAG -or
-              $old.packageRelease -cne $oldRelease -or $old.assetName -cne $msiName -or $old.commit -cnotmatch '^[a-f0-9]{40}$' -or
-              $old.sourceRef -cne "refs/tags/$env:SYSTEM_TAG" -or $old.testTrust -or $old.validationTrust -cne 'windows-default' -or
+          if ($release.schema -cne 'go-mapi-release-v1' -or $release.repository -cne '${{ github.repository }}' -or
+              $release.version -cne $oldRelease -or $release.tag -cne $env:SYSTEM_TAG -or $release.tag -cne "v$oldRelease" -or $release.commit -cnotmatch '^[a-f0-9]{40}$' -or
+              $release.runId -cnotmatch '^[1-9][0-9]*$' -or $release.runAttempt -cnotmatch '^[1-9][0-9]*$' -or
+              $old.reused -isnot [bool] -or $old.reused -or $null -ne $old.manifestSha256 -or $old.version -cne $release.version -or $old.tag -cne $release.tag -or
+              $old.commit -cne $release.commit -or $old.runId -cne $release.runId -or $old.runAttempt -cne $release.runAttempt -or
+              $release.signing.validationTrust -cne 'windows-default' -or
               $old.derivative.kind -cne 'production' -or $old.derivative.metadataOrigin -cne 'https://go-mapi.app' -or
               $old.derivative.artifactOrigin -cne 'https://github.com/marcfargas/go-mapi/releases/download/' -or
               $old.derivative.checkIntervalSeconds -ne 21600 -or $old.derivative.PSObject.Properties['timers'] -or
-              $old.azure.certificateProfile -cne 'lachispa' -or $old.azure.account -cne 'lachispa' -or $old.azure.endpoint -cne 'https://weu.codesigning.azure.net/' -or
-              $old.signedInputManifest.file -cne $manifestName -or $old.signedInputManifest.sha256 -cne (Get-FileHash $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -or
-              $old.msi.signed -ne $true -or $old.msi.sha256 -cne (Get-FileHash $msiPath -Algorithm SHA256).Hash.ToLowerInvariant() -or $old.msi.size -ne (Get-Item $msiPath).Length -or
-              $input.schema -cne 'go-mapi-machine-signed-input-v1' -or $input.sku -cne 'system' -or $input.commit -cne $old.commit -or $input.packageRelease -cne $oldRelease) { throw 'Published System provenance mismatch' }
+              $release.signing.azure.certificateProfile -cne 'lachispa' -or $release.signing.azure.account -cne 'lachispa' -or $release.signing.azure.endpoint -cne 'https://weu.codesigning.azure.net/' -or
+              $old.artifact.file -cne $msiName -or $old.artifact.sha256 -cne (Get-FileHash $msiPath -Algorithm SHA256).Hash.ToLowerInvariant() -or
+              $old.artifact.size -ne (Get-Item $msiPath).Length) { throw 'Published System provenance mismatch' }
           git fetch --no-tags origin "refs/tags/$env:SYSTEM_TAG"
           if ($LASTEXITCODE -ne 0 -or (git rev-parse 'FETCH_HEAD^{commit}').Trim() -cne $old.commit) { throw 'Published System tag/source mismatch' }
           git merge-base --is-ancestor $old.commit HEAD
@@ -94,40 +92,36 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'System source, machine installation or build inputs changed; build a new System' }
           $identity = go run ./internal/mapi/cmd/machine-package -- system $oldRelease | ConvertFrom-Json
           $systemContract = (Get-Content components.json -Raw | ConvertFrom-Json).machinePackages.system
-          if ($LASTEXITCODE -ne 0 -or $identity.productCode -cne $old.productCode -or $systemContract.upgradeCode -cne $old.upgradeCode) { throw 'Published System package identity mismatch' }
+          if ($LASTEXITCODE -ne 0 -or $identity.productCode -cne $old.productCode -or $identity.productVersion -cne $old.productVersion -or $identity.sequence -ne $old.sequence -or $systemContract.upgradeCode -cne $old.upgradeCode) { throw 'Published System package identity mismatch' }
           $newIdentity = go run ./internal/mapi/cmd/machine-package -- suite $env:VERSION | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $newIdentity.sequence -le $identity.sequence) { throw 'Release must follow the reused System version' }
           ./src/installer/msi/verify.ps1 -MsiPath $msiPath -SKU system -PackageRelease $oldRelease -RequireSignature
           if ($LASTEXITCODE -ne 0) { throw 'Published System MSI verification failed' }
           $sig = Get-AuthenticodeSignature $msiPath
-          if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw 'Published System signature is not trusted and timestamped' }
+          if ($sig.Status -ne 'Valid' -or $sig.SignatureType -ne 'Authenticode' -or -not $sig.TimeStamperCertificate) { throw 'Published System signature is not trusted and timestamped' }
           $extract = Join-Path $env:RUNNER_TEMP ('system-import-' + [guid]::NewGuid().ToString('N'))
           New-Item -ItemType Directory $extract | Out-Null
           try {
             $process = Start-Process msiexec.exe -ArgumentList @('/a',('"' + [IO.Path]::GetFullPath($msiPath) + '"'),'/qn',('TARGETDIR="' + $extract + '"')) -Wait -PassThru
             if ($process.ExitCode -ne 0) { throw 'Published System extraction failed' }
-            if (@($input.components).Count -ne 2 -or (@($input.components.component | Sort-Object) -join ',') -cne 'interceptor,service') { throw 'Published System component set differs' }
-            foreach ($part in $input.components) {
+            if (@($old.components).Count -ne 2 -or (@($old.components.component | Sort-Object) -join ',') -cne 'interceptor,service') { throw 'Published System component set differs' }
+            foreach ($part in $old.components) {
               $expectedArchitectures = if ($part.component -eq 'service') { 'x64' } else { 'x64,x86' }
-              if ((@($part.artifacts.architecture | Sort-Object) -join ',') -cne $expectedArchitectures) { throw 'Published System architecture set differs' }
+              if ((@($part.artifacts.architecture | Sort-Object) -join ',') -cne $expectedArchitectures -or $part.version -cne $oldRelease) { throw 'Published System architecture/version differs' }
+              if ($part.source.commit -cne $old.commit -or $part.source.buildId -cne "$($old.runId).$($old.runAttempt):$($part.component)") { throw 'Published System component source missing' }
               foreach ($artifact in $part.artifacts) {
                 $name = if ($part.component -eq 'service') { 'go-mapi-service.exe' } else { "go-mapi-$($artifact.architecture).dll" }
                 $suffix = if ($part.component -eq 'service') { 'go-mapi\service\go-mapi-service.exe' } else { "go-mapi\interceptor\$(if ($artifact.architecture -eq 'x64') { 'AMD64' } else { 'x86' })\go-mapi.dll" }
                 $files = @(Get-ChildItem $extract -Recurse -File | Where-Object { $_.FullName.EndsWith($suffix,[StringComparison]::OrdinalIgnoreCase) })
-                $record = @($old.peHashes | Where-Object filename -CEQ $name)
-                if ($artifact.filename -cne $name -or $files.Count -ne 1 -or $record.Count -ne 1 -or $record[0].signedSha256 -cne $artifact.sha256 -or (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.sha256) { throw "Published System payload differs: $name" }
+                if ($artifact.filename -cne $name -or $files.Count -ne 1 -or $artifact.sha256 -cnotmatch '^[a-f0-9]{64}$' -or $artifact.unsignedSha256 -cnotmatch '^[a-f0-9]{64}$' -or (Get-FileHash $files[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $artifact.sha256) { throw "Published System payload differs: $name" }
                 $sig = Get-AuthenticodeSignature $files[0].FullName
-                if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or (Get-Item $files[0].FullName).VersionInfo.ProductVersion -cne $part.version) { throw "Published System PE trust/version mismatch: $name" }
+                if ($sig.Status -ne 'Valid' -or $sig.SignatureType -ne 'Authenticode' -or -not $sig.TimeStamperCertificate -or (Get-Item $files[0].FullName).VersionInfo.ProductVersion -cne $part.version) { throw "Published System PE trust/version mismatch: $name" }
                 Copy-Item $files[0].FullName (Join-Path release/machine-input $name)
               }
-              if ($old.componentSources.($part.component).commit -cne $old.commit -or -not $old.componentSources.($part.component).buildId) { throw 'Published System component source missing' }
             }
-            $service = @($input.components | Where-Object component -eq 'service')[0]
-            $interceptor = @($input.components | Where-Object component -eq 'interceptor')[0]
-            if ($old.componentSources.service.signedSha256 -cne $service.artifacts[0].sha256 -or
-                $old.componentSources.interceptor.x86SignedSha256 -cne @($interceptor.artifacts | Where-Object architecture -eq 'x86')[0].sha256 -or
-                $old.componentSources.interceptor.x64SignedSha256 -cne @($interceptor.artifacts | Where-Object architecture -eq 'x64')[0].sha256) { throw 'Published System component sources do not bind exact bytes' }
-            Copy-Item $proofPath release/machine-input/prior-system.json
+            $service = @($old.components | Where-Object component -eq 'service')[0]
+            $interceptor = @($old.components | Where-Object component -eq 'interceptor')[0]
+            [IO.File]::WriteAllText('release/machine-input/prior-system.json', ($old | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
             "SERVICE_VERSION=$($service.version)" | Add-Content $env:GITHUB_ENV
             "INTERCEPTOR_VERSION=$($interceptor.version)" | Add-Content $env:GITHUB_ENV
           } finally { Remove-Item -LiteralPath $extract -Recurse -Force }
@@ -161,7 +155,7 @@ jobs:
           $hashes = [ordered]@{}
           if ($env:SYSTEM_TAG) {
             $prior = Get-Content release/machine-input/prior-system.json -Raw | ConvertFrom-Json
-            foreach ($record in $prior.peHashes) { $hashes[$record.filename] = $record.unsignedSha256 }
+            foreach ($record in $prior.components.artifacts) { $hashes[$record.filename] = $record.unsignedSha256 }
           }
           foreach ($file in Get-ChildItem release/machine-input -File | Where-Object Extension -in @('.exe','.dll')) {
             if (-not $hashes.Contains($file.Name)) { $hashes[$file.Name] = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -221,13 +215,14 @@ jobs:
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
-      - name: Verify exact payloads and write public provenance
+      - name: Verify exact payloads and retain build evidence
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $unsigned = Get-Content release/machine-input/unsigned-hashes.json -Raw | ConvertFrom-Json
           $prior = if ($env:SYSTEM_TAG) { Get-Content release/machine-input/prior-system.json -Raw | ConvertFrom-Json } else { $null }
-          $selection = [ordered]@{ version=if ($prior) { $prior.packageRelease } else { $env:VERSION }; tag=if ($prior) { $env:SYSTEM_TAG } else { "v$env:VERSION" }; commit=if ($prior) { $prior.commit } else { '${{ github.sha }}' }; reused=[bool]$prior; proofSha256=if ($prior) { $env:SYSTEM_PROOF_SHA256 } else { $null } }
+          $selection = [ordered]@{ version=if ($prior) { $prior.version } else { $env:VERSION }; tag=if ($prior) { $env:SYSTEM_TAG } else { "v$env:VERSION" }; commit=if ($prior) { $prior.commit } else { '${{ github.sha }}' }; reused=[bool]$prior; manifestSha256=if ($prior) { $env:SYSTEM_MANIFEST_SHA256 } else { $null } }
+          if ($prior) { [IO.File]::WriteAllText('release/machine/reused-system.json', ($prior | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false)) }
           Copy-Item release/machine-input/machine-app-artifacts.json release/machine/machine-app-artifacts.json
           $skus = if ($prior) { @('suite') } else { @('system','suite') }
           foreach ($sku in $skus) {
@@ -261,7 +256,11 @@ jobs:
             }
             $service = @($manifest.components | Where-Object component -eq 'service')[0]
             $interceptor = @($manifest.components | Where-Object component -eq 'interceptor')[0]
-            $sources = if ($prior) { [ordered]@{ service=$prior.componentSources.service; interceptor=$prior.componentSources.interceptor } } else {
+            $sources = if ($prior) {
+              $priorService = @($prior.components | Where-Object component -eq 'service')[0]
+              $priorInterceptor = @($prior.components | Where-Object component -eq 'interceptor')[0]
+              [ordered]@{ service=[ordered]@{ commit=$priorService.source.commit; buildId=$priorService.source.buildId; signedSha256=$priorService.artifacts[0].sha256 }; interceptor=[ordered]@{ commit=$priorInterceptor.source.commit; buildId=$priorInterceptor.source.buildId; x86SignedSha256=@($priorInterceptor.artifacts | Where-Object architecture -eq 'x86')[0].sha256; x64SignedSha256=@($priorInterceptor.artifacts | Where-Object architecture -eq 'x64')[0].sha256 } }
+            } else {
               [ordered]@{ service=[ordered]@{ commit='${{ github.sha }}'; buildId='${{ github.run_id }}.${{ github.run_attempt }}:service'; signedSha256=$service.artifacts[0].sha256 }; interceptor=[ordered]@{ commit='${{ github.sha }}'; buildId='${{ github.run_id }}.${{ github.run_attempt }}:interceptor'; x86SignedSha256=@($interceptor.artifacts | Where-Object architecture -eq 'x86')[0].sha256; x64SignedSha256=@($interceptor.artifacts | Where-Object architecture -eq 'x64')[0].sha256 } }
             }
             if ($sku -eq 'suite') { $sources.app = [ordered]@{ commit='${{ github.sha }}'; buildId=(Get-FileHash release/machine/machine-app-artifacts.json -Algorithm SHA256).Hash.ToLowerInvariant(); signedSha256=@($manifest.components | Where-Object component -eq 'app')[0].artifacts[0].sha256 } }
@@ -298,4 +297,5 @@ jobs:
             release/machine/*.validation.json
             release/machine/machine-app-artifacts.json
             release/machine/system-selection.json
+            release/machine/reused-system.json
           if-no-files-found: error

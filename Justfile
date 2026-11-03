@@ -24,7 +24,15 @@ test-service:
 check-service:
     go vet ./src/service/...
 
-check-portable: test-user check-user test-service check-service e2e-user
+check-portable: test-user check-user test-service check-service e2e-user test-release
+
+[unix]
+test-release:
+    python3 tests/release/Bundle.Tests.py
+
+[windows]
+test-release:
+    uv run --script tests/release/Bundle.Tests.py
 
 test-windows: _require-disposable build-frontend
     go test ./internal/mapi/... ./src/app/... ./src/service/...

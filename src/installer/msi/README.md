@@ -19,11 +19,13 @@ administrator supplies `GOMAPI_AUTO_UPDATE=0` or `1`.
 `build.ps1` accepts a `go-mapi-machine-signed-input-v1` manifest containing
 the exact component binaries, versions, architectures, and hashes. Suite
 inputs also require `appBuild` evidence linked to the machine app's
-`app-artifacts.json` (or public `machine-app-artifacts.json`): source commit,
+`app-artifacts.json` (or CI's `machine-app-artifacts.json`): source commit,
 controlled build invocation, tool versions, unsigned hash, and signed binary
 metadata. The package release version is separate from the contained component
 versions. Use `-RequireSignedInputs` for trusted release inputs. The nonpublishing
 CI fixture job may build unsigned artifacts for native test only.
+These are internal packaging inputs. Public releases expose one `release.json`
+with package hashes and System provenance; signing/build receipts stay in CI.
 Build from a Git checkout or a source archive whose commit and archive hash
 were verified before extraction. Pass that commit through `-SourceCommit` when
 the archive has no `.git`. The App's `build.ps1` records the commit and finished app
