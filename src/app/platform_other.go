@@ -52,5 +52,8 @@ func runBoundedDrain(done context.Context, drain func()) {
 
 func updateDistributionChannel() string         { return "unknown" }
 func installedInterceptorUpdateVersion() string { return "unknown" }
+func observeAdminSystemInstallation() (adminSystemInstallation, error) {
+	return adminSystemInstallation{}, errors.New("System installation is only available on Windows")
+}
 
 func (a *App) wireUpdateNotifications() {}

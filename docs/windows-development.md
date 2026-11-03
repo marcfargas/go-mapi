@@ -91,13 +91,15 @@ existing `.env.local` or environment mechanism and run `just build-user`.
 Without real credentials, explicit non-secret fixture values can prove
 compilation; that binary cannot authenticate and is not shippable. Never publish
 fixture credentials or infer real OAuth acceptance from a compile.
-Release-mode builds also require `GOMAPI_ADMIN_RELEASE_METADATA_URL` to be an
-HTTPS URL. For disposable package fixtures use the fixture origin selected by
-the machine test scripts; do not embed that origin in a distributable release.
+Release-mode builds also require `GOMAPI_ADMIN_RELEASE_METADATA_URL` to be a
+bare HTTPS origin without a path, credentials, query or fragment. The App
+queries its `/machine/system/targets.json` endpoint. For disposable package
+fixtures use the origin selected by the machine test scripts; do not embed that
+origin in a distributable release.
 
 `just package-user` runs CI's unsigned MSIX/NSIS validation with explicit fixture
 credentials and the source version; these packages are not release artifacts. Real user
-releases use the app release workflow's tag/version, signing and publication gates.
+releases use the unified release workflow's tag/version, signing and publication gates.
 The shared `package-user` action packages the selected EXE and build manifest;
 its identity and version inputs do not depend on a mutable checkout version.
 `just package-system` and `just package-suite` build machine packages from explicit

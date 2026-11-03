@@ -78,8 +78,8 @@ jobs:
         with:
           name: go-mapi-playwright-failure-${{ github.run_id }}
           path: |
-            playwright-report/
-            test-results/
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
           if-no-files-found: warn
           retention-days: 7
 
@@ -116,7 +116,7 @@ jobs:
       CGO_ENABLED: '1'
       GOMAPI_OAUTH_CLIENT_ID: ci-client
       GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
-      GOMAPI_ADMIN_RELEASE_METADATA_URL: https://github.com/marcfargas/go-mapi/releases/latest/download/admin-targets.json
+      GOMAPI_ADMIN_RELEASE_METADATA_URL: https://go-mapi.app
     defaults:
       run:
         shell: pwsh
@@ -225,7 +225,7 @@ jobs:
       CGO_ENABLED: '1'
       GOMAPI_OAUTH_CLIENT_ID: ci-client
       GOMAPI_OAUTH_CLIENT_SECRET: ci-secret
-      GOMAPI_ADMIN_RELEASE_METADATA_URL: https://github.com/marcfargas/go-mapi/releases/latest/download/admin-targets.json
+      GOMAPI_ADMIN_RELEASE_METADATA_URL: https://go-mapi.app
     steps:
       - name: Require a disposable runner for machine changes
         shell: pwsh

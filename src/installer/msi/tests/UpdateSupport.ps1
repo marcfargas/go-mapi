@@ -148,6 +148,7 @@ function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU
     if (-not $package) { throw "Missing target fixture $Key" }
     $specPath = Join-Path $fixture "$Key-spec.json"
     $targetPath = Join-Path $fixture "$Key-targets.json"
+    $digestPath = Join-Path $fixture "$Key-replay-digest.txt"
     $spec = [ordered]@{
         sku=$TargetSKU; packageRelease=$package.release
         contained=@(@{component='service';version=$package.serviceVersion},@{component='interceptor';version=$package.interceptorVersion})
@@ -163,14 +164,20 @@ function Target([string]$Key, [string]$MinimumService, [string]$TargetSKU = $SKU
     Push-Location $repo
     try {
         if ($MachineTargetsExecutable) {
-            & $MachineTargetsExecutable --spec $specPath --msi $package.msi --out $targetPath --artifact-origin $manifest.fixture.artifactOrigin
+            & $MachineTargetsExecutable --spec $specPath --msi $package.msi --out $targetPath --replay-digest-out $digestPath --artifact-origin $manifest.fixture.artifactOrigin
         } else {
-            & go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $package.msi --out $targetPath --artifact-origin $manifest.fixture.artifactOrigin
+            & go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $package.msi --out $targetPath --replay-digest-out $digestPath --artifact-origin $manifest.fixture.artifactOrigin
         }
     }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $targetPath)) { throw "Target generation failed: $Key" }
-    Record 'target' ([ordered]@{ key=$Key; sha256=Hash $targetPath; msiSha256=$package.sha256 })
+    Record 'target' ([ordered]@{ key=$Key; sha256=Hash $targetPath; replayDigest=TargetReplayDigest $Key; msiSha256=$package.sha256 })
+}
+
+function TargetReplayDigest([string]$Key) {
+    $digest = [IO.File]::ReadAllText((Join-Path $fixture "$Key-replay-digest.txt"))
+    if ($digest -cnotmatch '\A[a-f0-9]{64}\z') { throw "Missing or invalid target replay digest: $Key" }
+    return $digest
 }
 
 function SelectTarget([string]$Key) {
@@ -550,16 +557,15 @@ function ReadinessWaitLimit([switch]$Persistent, [switch]$Install) {
 function SetReadinessObstruction([string]$Key) {
     if (-not $manifest.fixture.PSObject.Properties['readinessObstruction'] -or
         $manifest.fixture.readinessObstruction -cne 'target-bound-pre-run-v1') { throw 'Packages lack the explicit readiness validation build provenance' }
-    $target = Join-Path $fixture "$Key-targets.json"
     $next = "$obstructionPath.next"
-    WriteJson $next ([ordered]@{ schema='go-mapi-readiness-obstruction-v1'; sku=$SKU; digest=Hash $target; artifactSha256=$manifest.packages.$Key.sha256 })
+    WriteJson $next ([ordered]@{ schema='go-mapi-readiness-obstruction-v1'; sku=$SKU; digest=TargetReplayDigest $Key; artifactSha256=$manifest.packages.$Key.sha256 })
     Move-Item -LiteralPath $next -Destination $obstructionPath -Force
     Record 'obstruction-set' (ReadJson $obstructionPath)
 }
 
 function AssertReadinessFailure($Recovery, [string]$Key) {
     if (-not $Recovery -or $Recovery.reservation.sku -cne $SKU -or
-        $Recovery.reservation.replay.digest -cne (Hash (Join-Path $fixture "$Key-targets.json")) -or
+        $Recovery.reservation.replay.digest -cne (TargetReplayDigest $Key) -or
         $Recovery.reservation.artifactSha256 -cne $manifest.packages.$Key.sha256) { throw 'Readiness failure target identity differs' }
     $hitPath = Join-Path $stateDir "readiness-hit-$($Recovery.reservation.transactionId).json"
     $hit = ReadJson $hitPath

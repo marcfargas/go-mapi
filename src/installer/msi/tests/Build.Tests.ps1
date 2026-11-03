@@ -21,6 +21,16 @@ try {
     & $writer @common
     $signed = Get-Content $out -Raw | ConvertFrom-Json
     Assert ($signed.schema -eq 'go-mapi-machine-signed-input-v1' -and @($signed.components).Count -eq 3 -and $signed.appBuild.unsignedSha256 -eq $unsigned) 'signed input inventory mismatch'
+    $publicBuildPath = Join-Path $input 'machine-app-artifacts.json'
+    Copy-Item -LiteralPath $buildPath -Destination $publicBuildPath
+    $public = $common.Clone(); $public.AppBuildManifest = $publicBuildPath
+    & $writer @public
+    $publicInput = Get-Content $out -Raw | ConvertFrom-Json
+    Assert ($publicInput.appBuild.manifest -ceq 'machine-app-artifacts.json' -and
+        $publicInput.appBuild.sha256 -ceq (Get-FileHash $publicBuildPath -Algorithm SHA256).Hash.ToLowerInvariant()) 'public machine app provenance link does not resolve'
+    $bad = $common.Clone(); $bad.AppBuildManifest = Join-Path $temp 'app-artifacts.json'
+    Copy-Item -LiteralPath $buildPath -Destination $bad.AppBuildManifest
+    Reject { & $writer @bad } 'app provenance outside component bundle'
     & $writer -SKU system -PackageRelease '5.0.1-alpha.4' -SourceCommit ('a' * 40) -InputDirectory $input `
         -ServiceVersion '5.0.1-alpha.4' -InterceptorVersion '5.0.1-alpha.4' -OutputPath $out
     $systemInput = Get-Content $out -Raw | ConvertFrom-Json

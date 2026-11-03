@@ -167,7 +167,15 @@ if ($Release -and (-not (Test-CanonicalSemVer $AppVersion) -or $AppVersion -eq '
     exit 1
 }
 if ([string]::IsNullOrWhiteSpace($AdminReleaseMetadataURL)) { $AdminReleaseMetadataURL = [Environment]::GetEnvironmentVariable('GOMAPI_ADMIN_RELEASE_METADATA_URL') }
-if ($Release -and $AdminReleaseMetadataURL -notmatch '^https://') { throw 'Release builds require HTTPS admin metadata URL' }
+if ($Release -or -not [string]::IsNullOrWhiteSpace($AdminReleaseMetadataURL)) {
+    $metadataOrigin = $null
+    if (-not [Uri]::TryCreate($AdminReleaseMetadataURL, [UriKind]::Absolute, [ref]$metadataOrigin) -or
+        $metadataOrigin.Scheme -cne 'https' -or -not $metadataOrigin.Host -or
+        $metadataOrigin.AbsolutePath -cne '/' -or $metadataOrigin.UserInfo -or
+        $metadataOrigin.Query -or $metadataOrigin.Fragment -or $AdminReleaseMetadataURL -cne $AdminReleaseMetadataURL.Trim()) {
+        throw 'Release builds require a bare HTTPS System metadata origin, without path, credentials, query or fragment'
+    }
+}
 if (-not (Test-CanonicalSemVer ([string]$app.requires.minInclusive)) -or
     (-not [string]::IsNullOrWhiteSpace($RequiredInterceptorMax) -and -not (Test-CanonicalSemVer $RequiredInterceptorMax))) {
     throw 'components.json app counterpart bounds must be canonical SemVer'

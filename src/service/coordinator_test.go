@@ -656,7 +656,7 @@ func authorizedRelease(t *testing.T, sku update.SKU, version string) update.Rele
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := update.Payload{Schema: update.MachineTargetsSchema, SKU: sku, ProductCode: identity.ProductCode, UpgradeCode: upgrade, Version: version, QueueProtocol: "queue-v1", Sequence: identity.Sequence, IssuedAt: coordinatorNow.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: coordinatorNow.Add(time.Hour).Format(time.RFC3339), Contained: contained, Compatibility: compatibility, Artifact: update.Artifact{URL: "https://github.com/marcfargas/go-mapi/releases/download/" + string(sku) + "-v" + version + "/go-mapi-" + string(sku) + "-" + version + "-x64.msi", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}}
+	payload := update.Payload{Schema: update.MachineTargetsSchema, SKU: sku, ProductCode: identity.ProductCode, UpgradeCode: upgrade, Version: version, QueueProtocol: "queue-v1", Sequence: identity.Sequence, IssuedAt: coordinatorNow.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: coordinatorNow.Add(time.Hour).Format(time.RFC3339), Contained: contained, Compatibility: compatibility, Artifact: update.Artifact{URL: "https://github.com/marcfargas/go-mapi/releases/download/" + identity.Tag + "/" + identity.AssetName, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}}
 	raw, _ := json.Marshal(payload)
 	installed := map[string]string{"service": "4.0.0", "interceptor": "4.0.0", "app": "4.0.0"}
 	release, err := update.ParseTarget(sku, raw, installed, coordinatorNow, update.MachineArtifactOrigin)

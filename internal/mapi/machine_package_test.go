@@ -21,7 +21,7 @@ func TestMachinePackageIdentity(t *testing.T) {
 			release:        "4.0.1",
 			productVersion: "4.0.1",
 			productCode:    "84780A03-2506-5D8F-80CA-C7DCE5B9A350",
-			tag:            "system-v4.0.1",
+			tag:            "v4.0.1",
 			asset:          "go-mapi-system-4.0.1-x64.msi",
 			manifest:       "go-mapi-system-4.0.1.manifest.json",
 			targetPath:     "/machine/system/targets.json",
@@ -33,7 +33,7 @@ func TestMachinePackageIdentity(t *testing.T) {
 			release:        "3.1.2-beta.7",
 			productVersion: "3.1.2207",
 			productCode:    "B765DBC6-0BB3-5628-B994-CBE5AE8EA761",
-			tag:            "suite-v3.1.2-beta.7",
+			tag:            "v3.1.2-beta.7",
 			asset:          "go-mapi-suite-3.1.2-beta.7-x64.msi",
 			manifest:       "go-mapi-suite-3.1.2-beta.7.manifest.json",
 			targetPath:     "/machine/suite/targets.json",
@@ -94,7 +94,7 @@ func TestMachinePackageFamiliesCannotCollide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if system.ProductCode == suite.ProductCode || system.Tag == suite.Tag || system.AssetName == suite.AssetName || system.TargetPath == suite.TargetPath {
+	if system.ProductCode == suite.ProductCode || system.Tag != suite.Tag || system.AssetName == suite.AssetName || system.TargetPath == suite.TargetPath {
 		t.Fatalf("machine package namespaces collide: system=%#v suite=%#v", system, suite)
 	}
 }

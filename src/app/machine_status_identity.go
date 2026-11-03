@@ -1,10 +1,23 @@
 package main
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/marcfargas/go-mapi/internal/mapi"
 )
+
+func corroborateAdminSystemInstallation(registrations []machineProductRegistration, marker map[string]string) (adminSystemInstallation, error) {
+	if len(registrations) != 1 || registrations[0].SKU != "system" || marker["SKU"] != "system" {
+		return adminSystemInstallation{}, errors.New("System repair requires one registered System product; Suite is maintained by its administrator")
+	}
+	id, err := mapi.NewMachinePackageIdentity(mapi.MachineSKUSystem, marker["PackageRelease"])
+	if err != nil || !strings.EqualFold(strings.Trim(registrations[0].ProductCode, "{}"), id.ProductCode) || registrations[0].ProductVersion != id.ProductVersion ||
+		!mapi.IsStrictReleaseVersion(marker["ServiceVersion"]) || !mapi.IsStrictReleaseVersion(marker["InterceptorVersion"]) {
+		return adminSystemInstallation{}, errors.New("System registration and protected package identity disagree")
+	}
+	return adminSystemInstallation{PackageRelease: id.Release, Versions: map[string]string{"service": marker["ServiceVersion"], "interceptor": marker["InterceptorVersion"]}}, nil
+}
 
 type machineProductRegistration struct {
 	SKU, ProductCode, ProductVersion string

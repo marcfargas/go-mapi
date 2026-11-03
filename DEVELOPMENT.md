@@ -110,42 +110,94 @@ also has its own identity. A repository tag alone does not establish compatibili
 `just build-user-release` and `just build-system-release` enforce release-version
 guards; native `-Config Release` alone only selects optimization. Use the selected
 component versions and exact artifact/build manifests. Machine app builds use
-`just build-user-machine`. Public signing and publication remain controlled by
-`.github/workflows/app-release.yml` and `.github/workflows/admin-release.yml`;
+`just build-user-machine`. Public signing and publication are coordinated by
+`.github/workflows/release.yml` and its reusable App/machine builders;
 local fixture passes do not establish release readiness.
 
-For a production-signed alpha release:
+For a production-signed release, use one `v<version>` tag and the
+`release.yml` workflow. App and Suite ship at that version every time. System
+ships only when its interceptor, service, registration, privileged installer,
+compatibility or relevant build inputs change. Otherwise Suite embeds the exact
+signed payload from a selected published System release and the release notes
+link its original download. System skips numbers in the shared sequence.
+Suite remains a complete offline MSI; its package version can advance while its
+contained System version stays unchanged. System and Suite retain distinct MSI
+families and update ownership.
 
-1. Select component versions, merge the reviewed source and require successful
-   push CI for that exact commit. Create its `app-v<version>`,
-   `system-v<version>` and `suite-v<version>` tags as applicable.
-2. Configure the protected `artifact-signing` environment to use Azure account
-   `lachispa`, certificate profile `lachispa`, and endpoint
-   `https://weu.codesigning.azure.net/`. The existing OIDC identity needs signing
-   access to that profile. Real OAuth credentials are required for releases.
-3. The app tag triggers its release workflow. Dispatch `admin-release.yml` at
-   each machine tag with its SKU/version and `sign=true`, `publish=true`.
-   Development releases are staged as drafts; stable app Store/winget handling
-   remains separate. Do not replace assets or rebuild an accepted bundle.
-4. Download each draft and compare its bytes with the workflow's manifests and
-   signature evidence. In a clean disposable Windows guest, require normal
-   Authenticode trust and timestamps, installation/removal, and the
-   [ordinary-user installed attachment smoke](tests/installed-attachment/README.md)
-   against the exact suite payload. Import no product-signing certificate. The
-   smoke's owned HTTPS fake CA is separate test infrastructure. Retain results,
-   hashes and owned-guest cleanup; a timeout leaves acceptance incomplete.
-5. Draft assets are mutable. Record release/asset IDs and hashes; immediately
-   before promotion, recheck the tag commit and freshly downloaded bytes against
-   the accepted bundle. Promote with `gh release edit <tag> --draft=false
-   --prerelease --latest=false`. Download the public assets anonymously and
-   compare every byte again. Metadata publication and live automatic updates
-   remain separate work. If draft creation already succeeded, resume that draft;
-   the workflow refuses to replace an existing release, including a draft.
+1. Set App's source version. For a new System, set service and interceptor to
+   the same release version. Merge reviewed source and require successful full
+   push CI for that exact commit, then create `v<version>` there.
+2. Configure the protected `artifact-signing` environment with Azure account
+   `lachispa`, profile `lachispa`, endpoint `https://weu.codesigning.azure.net/`
+   and the existing signing OIDC identity. Supply real OAuth credentials and
+   `ADMIN_RELEASE_METADATA_URL` as a **bare HTTPS origin**, such as
+   `https://go-mapi.app`, without a metadata path, query or fragment. The old
+   legacy-admin full metadata URL is no longer accepted.
+3. Dispatch from the exact tag to build a new System:
 
-Development MSIX uses the actual signing certificate's publisher subject. Its
-current numeric version drops the prerelease counter (alpha.10 and alpha.11 both
-encode `3.2.0.0`), so fresh installation does not establish alpha-to-alpha MSIX
-upgrade support. Production signing also does not establish SmartScreen reputation.
+   ```powershell
+   gh workflow run release.yml --ref v<version>
+   ```
+
+   To reuse System, select its published tag and independently verify the SHA256
+   of its `system-<system-version>.validation.json` before dispatch:
+
+   ```powershell
+   gh workflow run release.yml --ref v<version> -f system_tag=v<system-version> -f system_proof_sha256=<sha256>
+   ```
+
+   Reuse requires the same release track and unchanged machine source, installer,
+   compatibility and build inputs. A track transition requires a new System.
+   The workflow verifies the old MSI, provenance, default Windows trust and
+   extracted PE hashes; it never rebuilds or resigns reused files. The first
+   unified release needs a new System because these machine contracts changed.
+4. The workflow builds distinct standalone and machine App binaries, signs new
+   System files once, packages Suite and optional System, then stages **one
+   complete draft**. Public build manifests are named
+   `standalone-app-artifacts.json` and `machine-app-artifacts.json`.
+   Download the draft and compare all bytes with its manifests and signing
+   evidence. In clean disposable Windows, verify default Authenticode trust,
+   installation/removal and the [ordinary-user attachment smoke](tests/installed-attachment/README.md).
+   For reused System, verify an App-only Suite upgrade preserves those exact
+   machine payload hashes. Import no product-signing certificate. A timeout
+   leaves acceptance incomplete.
+5. Immediately before promotion, recheck tag commit, release/asset IDs and
+   freshly downloaded hashes against the accepted bundle. Promote those same
+   bytes using `gh release edit v<version> --draft=false`, selecting
+   `--prerelease --latest=false` for development. Download public assets
+   anonymously and compare every byte again. Stable `release.published` handling
+   submits the accepted standalone installer and MSIX to winget/Store without
+   rebuilding; external certification/catalog availability remains separate.
+   An existing draft must be resumed from its recorded assets, never rebuilt
+   or replaced by rerunning release staging.
+
+The workflows and updater interfaces have local source checks; a successful
+unified production-signing run and candidate-bound Windows release acceptance
+remain required before the first unified release is delivered. Published
+alpha.11 component tags/assets remain unchanged.
+
+Standalone App's installation/repair action now selects System with administrator
+consent through the existing verified-download and UAC helper. It refuses Suite,
+ambiguous machine identity and untrusted installation state. Missing-System
+bootstrap validates the real App and target interceptor compatibility; existing
+System repair uses the MSI package version and preserves installer policy.
+Suite maintenance remains administrator controlled.
+
+Live update metadata is a separate deployment. Its configured origin must serve
+`/machine/system/targets.json` and `/machine/suite/targets.json`; requests include
+`X-Go-Mapi-Release-Track` (`stable` or `development`), and ordinary updates include
+`X-Go-Mapi-Installed-Version`. Bootstrap has no invented installed version.
+Targets expire within 31 days. Refreshing authorization dates for the same
+immutable payload is supported; changing its bytes or compatibility at an
+accepted package sequence is refused. Plain target assets on a GitHub release
+are provenance, not a live metadata service. Live discovery, UAC installation
+and metadata refresh still need deployment and guest acceptance.
+
+MSIX uses the shared Windows package sequence plus a zero fourth component, so
+successive alphas have distinct numeric identities. Older alpha.11 packages used
+`3.2.0.0`; their fresh-install evidence does not establish upgrades to this new
+encoding. Development MSIX publisher identity comes from the actual signing
+certificate. Production signing does not establish SmartScreen reputation.
 
 The old `.planning/` tree was intentionally retired in commit `df17ab2` in favor
 of Perficio. Historical phase/ticket references may help recover decisions but

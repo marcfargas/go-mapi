@@ -61,37 +61,6 @@ func TestStandaloneInstallerIsCurrentUserAppOnly(t *testing.T) {
 	}
 }
 
-func TestUserReleaseFailsClosedAndPublishesVerifiedArtifacts(t *testing.T) {
-	workflow := readDistributionFile(t, ".github/workflows/app-release.yml")
-	for _, want := range []string{
-		"unsigned publication is forbidden", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43",
-		"environment: artifact-signing", "id-token: write", "AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE",
-		"just verify-user-distribution", "-RequireSignature", "app-distribution.json",
-		"microsoft/microsoft-store-apppublisher@v1.1", "winget-create/releases/download/v1.10.3.0/wingetcreate.exe",
-		"WINGET_CREATE_GITHUB_TOKEN", "environment: user-component-release",
-		"github.event_name == 'push' || inputs.publish || inputs.sign",
-		"$publishingStable = '${{ steps.version.outputs.track }}' -eq 'stable'",
-		"$production = '${{ steps.version.outputs.track }}' -eq 'stable'",
-		"--prerelease --latest=false",
-		"publish-app-release:", "contents: write", "gh release create",
-		"needs.build-sign-verify.outputs.track == 'stable'",
-		"Public app release requires the real Google OAuth credential",
-		"if: github.event_name == 'workflow_dispatch' && !inputs.publish",
-	} {
-		if !strings.Contains(workflow, want) {
-			t.Errorf("app release contract missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{
-		"build:interceptor", "build:admin:msi", "src/installer/msi", "unsigned fallback",
-		"if: steps.version.outputs.track == 'development' || (github.event_name == 'workflow_dispatch' && !inputs.publish)",
-	} {
-		if strings.Contains(workflow, forbidden) {
-			t.Errorf("app release couples to forbidden graph/path %q", forbidden)
-		}
-	}
-}
-
 func TestCurrentPackagesDoNotRegisterMailtoOrChangeUserChoice(t *testing.T) {
 	for _, relative := range []string{
 		"src/app/packaging/msix/AppxManifest.xml.in",

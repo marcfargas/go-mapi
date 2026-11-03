@@ -70,6 +70,7 @@ type Release struct {
 	ns        SKU
 	engine    *Engine
 	installed map[string]string
+	bootstrap *BootstrapRequest
 }
 
 func (r Release) Namespace() string { return string(r.ns) }
@@ -146,14 +147,35 @@ func ParseTarget(sku SKU, raw []byte, installed map[string]string, now time.Time
 	if err := validatePayload(sku, payload, installed, now, artifactOrigin); err != nil {
 		return Release{}, err
 	}
-	sum := sha256.Sum256(raw)
 	copyInstalled := make(map[string]string, len(installed))
 	for key, value := range installed {
 		copyInstalled[key] = value
 	}
-	return Release{payload: payload, digest: hex.EncodeToString(sum[:]), ns: sku, installed: copyInstalled}, nil
+	return Release{payload: payload, digest: releaseDigest(sku, payload, raw), ns: sku, installed: copyInstalled}, nil
+}
+
+// A metadata refresh may extend authorization for the same immutable machine
+// release. It must never substitute different bytes or compatibility at the
+// accepted sequence. Lifetime remains independently checked on every use.
+func releaseDigest(sku SKU, payload Payload, raw []byte) string {
+	if sku == System || sku == Suite {
+		payload.IssuedAt, payload.ExpiresAt = "", ""
+		raw, _ = json.Marshal(payload)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 func validatePayload(sku SKU, p Payload, installed map[string]string, now time.Time, origin string) error {
+	if err := validatePayloadIdentity(sku, p, now, origin); err != nil {
+		return err
+	}
+	if sku == LegacyAdmin {
+		return validateRequirements([]Requirement{p.Requires}, installed)
+	}
+	return validateRequirements(p.Compatibility, installed)
+}
+
+func validatePayloadIdentity(sku SKU, p Payload, now time.Time, origin string) error {
 	if p.QueueProtocol != "queue-v1" || p.Sequence == 0 || !mapi.IsStrictReleaseVersion(p.Version) {
 		return errors.New("invalid release identity")
 	}
@@ -168,15 +190,15 @@ func validatePayload(sku SKU, p Payload, installed map[string]string, now time.T
 		if p.Schema != LegacyTargetsSchema || p.SKU != "" || p.ProductCode != "" || p.UpgradeCode != "" || p.Component != "interceptor" || len(p.Contained) != 0 || len(p.Compatibility) != 0 {
 			return errors.New("invalid legacy admin target")
 		}
-		if err := validateRequirements([]Requirement{p.Requires}, installed); err != nil {
-			return err
-		}
 		if !immutableURL(p.Artifact.URL, origin, "admin-v"+p.Version, "go-mapi-interceptor.msi") {
 			return errors.New("unauthorized admin artifact URL")
 		}
 	case System, Suite:
-		if p.Schema != MachineTargetsSchema || p.SKU != sku || p.Component != "" || p.Requires != (Requirement{}) {
+		if p.Schema != MachineTargetsSchema || p.SKU != sku || p.Component != "" {
 			return errors.New("wrong machine release SKU")
+		}
+		if p.Requires != (Requirement{}) && (sku != System || !validAppRequirement(p.Requires)) {
+			return errors.New("invalid machine App requirement")
 		}
 		id, err := mapi.NewMachinePackageIdentity(mapi.MachineSKU(sku), p.Version)
 		if err != nil || p.Sequence != id.Sequence || p.ProductCode != id.ProductCode || p.UpgradeCode != upgradeCode(sku) {
@@ -191,13 +213,16 @@ func validatePayload(sku SKU, p Payload, installed map[string]string, now time.T
 		if err := validateCompatibilitySet(p.Contained, p.Compatibility); err != nil {
 			return err
 		}
-		if err := validateRequirements(p.Compatibility, installed); err != nil {
-			return err
-		}
 	default:
 		return errors.New("invalid target SKU")
 	}
 	return nil
+}
+
+func validAppRequirement(r Requirement) bool {
+	return r.Component == "app" && mapi.IsValidCounterpartRequirement(mapi.CounterpartRequirement{
+		Component: "app", MinInclusive: r.MinInclusive, MaxExclusive: r.MaxExclusive,
+	})
 }
 func validateLifetime(p Payload, now time.Time) error {
 	issued, e := time.Parse(time.RFC3339, p.IssuedAt)

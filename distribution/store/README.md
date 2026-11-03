@@ -1,7 +1,7 @@
 # Microsoft Store release input
 
-The app release workflow gets the reserved Partner Center identity from the
-protected `app-release` GitHub environment. No placeholder identity may be
+The App builder gets the reserved Partner Center identity from the
+protected `artifact-signing` GitHub environment. No placeholder identity may be
 used for a public package.
 
 Required environment variables/secrets:
@@ -17,5 +17,6 @@ for certification, not certified or live. The workflow retains submission
 output so those states can be reported separately.
 
 The initial free listing and reserved product are external onboarding steps.
-Subsequent updates submit the exact signed MSIX already verified and attached
-to the GitHub Release; they do not rebuild it.
+Stable publication of a unified `v<version>` release triggers submission in the
+protected `user-component-release` environment. Updates submit the exact signed
+MSIX already verified and attached to that release; they do not rebuild it.

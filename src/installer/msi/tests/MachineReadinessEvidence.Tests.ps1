@@ -75,6 +75,26 @@ $callback=GetReadinessProcessEventAction
 $temp=Join-Path ([IO.Path]::GetTempPath()) ('readiness-evidence-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
+    # Obstruction identity comes from the Go producer's replay digest, which
+    # excludes authorization dates; a wire-file hash is a different identity.
+    $fixture=$temp; $obstructionPath=Join-Path $temp 'obstruction.json'
+    $manifest | Add-Member fixture ([pscustomobject]@{readinessObstruction='target-bound-pre-run-v1'})
+    $manifest.packages.systemB | Add-Member sha256 ('b'*64)
+    $digestPath=Join-Path $fixture 'systemB-replay-digest.txt'
+    [IO.File]::WriteAllText($digestPath, ('a'*64))
+    SetReadinessObstruction 'systemB'
+    $marker=Get-Content -LiteralPath $obstructionPath -Raw | ConvertFrom-Json
+    if ($marker.digest -cne ('a'*64) -or $marker.artifactSha256 -cne ('b'*64)) { throw 'Obstruction lost replay/package identity' }
+    foreach ($invalid in @('', ('a'*63), ('A'*64), (('a'*64)+"`n"))) {
+        [IO.File]::WriteAllText($digestPath, $invalid)
+        $refused=$false
+        try { SetReadinessObstruction 'systemB' } catch { $refused=$true }
+        if (-not $refused) { throw 'Malformed producer digest accepted' }
+    }
+    Remove-Item -LiteralPath $digestPath
+    $refused=$false
+    try { TargetReplayDigest 'systemB' } catch { $refused=$true }
+    if (-not $refused) { throw 'Missing producer digest accepted' }
     # The phase finalizer is the only operational cleanup owner. A failed step
     # must preserve all failures and still attempt product and fixture cleanup.
     $script:actions=[Collections.Generic.List[string]]::new()

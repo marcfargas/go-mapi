@@ -19,8 +19,10 @@ function Resolve-PackagePath([string]$Path) {
     if ([IO.Path]::IsPathRooted($Path)) { return [IO.Path]::GetFullPath($Path) }
     return [IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
 }
-if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') { throw "Distribution version must be canonical SemVer" }
-$packageVersion = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+# The shared release sequence preserves prerelease counters in Windows versions.
+$identity = & go -C $repoRoot run ./internal/mapi/cmd/machine-package -- system $Version | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Distribution version cannot be encoded as a Windows package version' }
+$packageVersion = $identity.productVersion + '.0'
 $msix = Resolve-PackagePath $MsixPath
 $installer = Resolve-PackagePath $InstallerPath
 foreach ($artifact in @($msix, $installer)) {

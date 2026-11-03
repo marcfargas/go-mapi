@@ -2,12 +2,17 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/marcfargas/go-mapi/internal/mapi"
+	"github.com/marcfargas/go-mapi/internal/mapi/update"
 )
 
 func TestMachineHTTPRequestBoundaryRejectsUserAndInteractiveInputs(t *testing.T) {
@@ -36,21 +41,43 @@ func TestMachineHTTPRequestBoundaryRejectsUserAndInteractiveInputs(t *testing.T)
 	}
 }
 
-func TestMachineHTTPForwardsOnlyCanonicalInstalledVersionHint(t *testing.T) {
+func TestMachineHTTPForwardsOnlyCanonicalRoutingHints(t *testing.T) {
 	const origin = "https://updates.example.test"
-	for _, version := range []string{"4.0.1", "5.0.1-alpha.2"} {
-		request, _ := http.NewRequest(http.MethodGet, origin+"/machine/system/targets.json", nil)
-		request.Header.Set("X-Go-Mapi-Installed-Version", version)
-		header, err := machineHTTPForwardHeader(request, origin)
-		if err != nil || header != "X-Go-Mapi-Installed-Version: "+version+"\r\n" {
-			t.Fatalf("version %q: header=%q error=%v", version, header, err)
+	for _, sku := range []string{"system", "suite"} {
+		for _, version := range []string{"", "4.0.1", "5.0.1-alpha.2"} {
+			request, _ := http.NewRequest(http.MethodGet, origin+"/machine/"+sku+"/targets.json", nil)
+			track := "stable"
+			if version != "" {
+				track = mapi.ReleaseTrack(version)
+				request.Header.Set("X-Go-Mapi-Installed-Version", version)
+			}
+			request.Header.Set("X-Go-Mapi-Release-Track", track)
+			want := "X-Go-Mapi-Release-Track: " + track + "\r\n"
+			if version != "" {
+				want += "X-Go-Mapi-Installed-Version: " + version + "\r\n"
+			}
+			header, err := machineHTTPForwardHeader(request, origin)
+			if err != nil || header != want {
+				t.Fatalf("%s version %q: header=%q error=%v", sku, version, header, err)
+			}
 		}
 	}
 	for _, values := range []http.Header{
-		{"X-Go-Mapi-Installed-Version": []string{"4.0.0\r\nAuthorization: secret"}},
-		{"X-Go-Mapi-Installed-Version": []string{"5.0.1-alpha.0"}},
-		{"X-Go-Mapi-Installed-Version": []string{"4.0.0", "5.0.1-alpha.1"}},
-		{"X-Go-Mapi-Installed-Version": []string{"4.0.0"}, "Cookie": []string{"secret=value"}},
+		{"X-Go-Mapi-Installed-Version": {"4.0.0"}},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "X-Go-Mapi-Installed-Version": {"4.0.0\r\nAuthorization: secret"}},
+		{"X-Go-Mapi-Release-Track": {"development"}, "X-Go-Mapi-Installed-Version": {"5.0.1-alpha.0"}},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "X-Go-Mapi-Installed-Version": {"4.0.0", "5.0.1-alpha.1"}},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "X-Go-Mapi-Installed-Version": {"4.0.0"}, "Cookie": {"secret=value"}},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "Cookie": {"secret=value"}},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "X-Go-Mapi-Installed-Version": {"5.0.1-alpha.2"}},
+		{"X-Go-Mapi-Release-Track": {"alpha"}},
+		{"X-Go-Mapi-Release-Track": {"Stable"}},
+		{"X-Go-Mapi-Release-Track": {"stable\r\nCookie: secret"}},
+		{"X-Go-Mapi-Release-Track": {"stable\x00"}},
+		{"X-Go-Mapi-Release-Track": {"stable", "development"}},
+		{"X-Go-Mapi-Release-Track": nil},
+		{"X-Go-Mapi-Release-Track": {"stable"}, "x-go-mapi-release-track": {"stable"}},
+		{"X-Go-Mapi-Installed-Version": {"4.0.0"}, "x-go-mapi-installed-version": {"4.0.0"}},
 		{"Authorization": []string{"Bearer secret"}},
 	} {
 		request, _ := http.NewRequest(http.MethodGet, origin+"/machine/system/targets.json", nil)
@@ -60,21 +87,76 @@ func TestMachineHTTPForwardsOnlyCanonicalInstalledVersionHint(t *testing.T) {
 		}
 	}
 	for _, raw := range []string{
-		"https://github.com/marcfargas/go-mapi/releases/download/system-v4.0.1/go-mapi-system-4.0.1-x64.msi",
+		"https://github.com/marcfargas/go-mapi/releases/download/v4.0.1/go-mapi-system-4.0.1-x64.msi",
 		origin + "/machine/system/targets.json?track=stable",
 		origin + "/machine/system/targets.json/extra",
+		origin + "/machine/%73ystem/targets.json",
+		origin + "/machine/system/targets.json?",
 		"https://other.example.test/machine/system/targets.json",
 	} {
 		request, _ := http.NewRequest(http.MethodGet, raw, nil)
-		request.Header.Set("X-Go-Mapi-Installed-Version", "4.0.0")
+		request.Header.Set("X-Go-Mapi-Release-Track", "stable")
 		if _, err := machineHTTPForwardHeader(request, origin); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
 			t.Fatalf("forwarded installed release to %s: %v", raw, err)
 		}
 	}
 	request, _ := http.NewRequest(http.MethodHead, origin+"/machine/system/targets.json", nil)
-	request.Header.Set("X-Go-Mapi-Installed-Version", "4.0.0")
+	request.Header.Set("X-Go-Mapi-Release-Track", "stable")
 	if _, err := machineHTTPForwardHeader(request, origin); !errors.Is(err, ErrMachineHTTPInvalidRequest) {
 		t.Fatalf("forwarded installed release on HEAD: %v", err)
+	}
+}
+
+type machineRoutingTransport func(*http.Request) (*http.Response, error)
+
+func (f machineRoutingTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestUpdaterRequestsPassMachineHTTPBoundary(t *testing.T) {
+	previousOrigin := MachineReleaseMetadataOrigin
+	MachineReleaseMetadataOrigin = "https://updates.example.test"
+	t.Cleanup(func() { MachineReleaseMetadataOrigin = previousOrigin })
+	for _, version := range []string{"4.0.1", "5.0.1-alpha.2"} {
+		for _, mode := range []string{"system", "suite", "bootstrap"} {
+			t.Run(mode+"/"+version, func(t *testing.T) {
+				sku := update.System
+				if mode == "suite" {
+					sku = update.Suite
+				}
+				// Stop after boundary admission: this checks the real producer's
+				// request without requiring network or machine trust changes.
+				reached := errors.New("routing boundary admitted updater request")
+				calls := 0
+				client := &http.Client{Transport: machineRoutingTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.URL.Path != "/machine/"+string(sku)+"/targets.json" || r.Header.Get("X-Go-Mapi-Release-Track") != mapi.ReleaseTrack(version) {
+						t.Fatalf("unexpected updater routing: %s %#v", r.URL, r.Header)
+					}
+					wantVersion := version
+					if mode == "bootstrap" {
+						wantVersion = ""
+					}
+					if r.Header.Get("X-Go-Mapi-Installed-Version") != wantVersion {
+						t.Fatalf("installed version hint = %q; want %q", r.Header.Get("X-Go-Mapi-Installed-Version"), wantVersion)
+					}
+					if err := validateMachineHTTPRequest(r); err != nil {
+						return nil, err
+					}
+					return nil, reached
+				})}
+				engine, err := update.NewEngine(update.Config{SKU: sku, MetadataOrigin: MachineReleaseMetadataOrigin, Client: client, Now: time.Now})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "bootstrap" {
+					_, err = engine.Bootstrap(context.Background(), update.BootstrapRequest{AppVersion: version, Track: mapi.ReleaseTrack(version), RequiredInterceptor: mapi.CounterpartRequirement{Component: "interceptor"}})
+				} else {
+					_, err = engine.Check(context.Background(), update.CheckRequest{Enabled: true, InstalledVersion: version})
+				}
+				if !errors.Is(err, reached) || calls != 1 {
+					t.Fatalf("updater boundary: calls=%d error=%v", calls, err)
+				}
+			})
+		}
 	}
 }
 

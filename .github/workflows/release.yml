@@ -1,0 +1,271 @@
+name: Stage unified release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      system_tag:
+        description: 'Published System tag to reuse; blank builds a new System at this release version'
+        type: string
+        default: ''
+      system_proof_sha256:
+        description: 'SHA256 of that published System validation JSON; required with system_tag'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      track: ${{ steps.plan.outputs.track }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - name: Require exact-source push CI and select System
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYSTEM_TAG: ${{ inputs.system_tag }}
+          SYSTEM_PROOF_SHA256: ${{ inputs.system_proof_sha256 }}
+        run: |
+          set -euo pipefail
+          test -z "${ACT:-}"
+          test '${{ github.repository }}' = marcfargas/go-mapi
+          test '${{ github.ref_type }}' = tag
+          tag='${{ github.ref_name }}'
+          version="${tag#v}"
+          test "$tag" = "v$version"
+          go run ./internal/mapi/cmd/release-track --github-output "$GITHUB_OUTPUT" -- "$version"
+          test "$(cat src/app/VERSION)" = "$version"
+          test "$(git rev-parse HEAD)" = '${{ github.sha }}'
+          git fetch --no-tags origin "refs/tags/$tag"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '${{ github.sha }}'
+          if [ -n "$SYSTEM_TAG" ]; then
+            [[ "$SYSTEM_TAG" =~ ^(system-)?v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|nightly)\.[1-9][0-9]*)?$ ]]
+            [[ "$SYSTEM_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          else
+            test -z "$SYSTEM_PROOF_SHA256"
+            test "$(cat src/service/VERSION)" = "$version"
+            test "$(cat src/interceptor/interceptor-version.txt)" = "$version"
+          fi
+          gh api 'repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=100' \
+            --jq '.workflow_runs[] | select(.head_sha == "${{ github.sha }}" and .event == "push" and .conclusion == "success") | .id' > "$RUNNER_TEMP/ci-runs"
+          test -s "$RUNNER_TEMP/ci-runs"
+          if gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1; then
+            echo 'Release already exists; do not replace an accepted bundle or resume by rebuilding' >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  app:
+    needs: plan
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/app-release.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      track: ${{ needs.plan.outputs.track }}
+    secrets: inherit
+
+  machine:
+    needs: plan
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/admin-release.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      system_tag: ${{ inputs.system_tag }}
+      system_proof_sha256: ${{ inputs.system_proof_sha256 }}
+    secrets: inherit
+
+  stage:
+    needs: [plan, app, machine]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      TRACK: ${{ needs.plan.outputs.track }}
+      SYSTEM_TAG: ${{ inputs.system_tag }}
+      SYSTEM_PROOF_SHA256: ${{ inputs.system_proof_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@v4
+        with: { name: release-app, path: release/app }
+      - uses: actions/download-artifact@v4
+        with: { name: release-machine, path: release/machine }
+      - name: Validate complete bundle and bind release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/v$VERSION"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '${{ github.sha }}'
+          python3 - <<'PY'
+          import hashlib, json, os, shutil
+          from pathlib import Path
+          version, tag = os.environ['VERSION'], 'v' + os.environ['VERSION']
+          source, repository = '${{ github.sha }}', '${{ github.repository }}'
+          app, machine, bundle = Path('release/app'), Path('release/machine'), Path('release/bundle')
+          def digest(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+          def load(path): return json.loads(path.read_text())
+          selection = load(machine/'system-selection.json')
+          reuse = bool(os.environ['SYSTEM_TAG'])
+          assert selection['reused'] is reuse
+          assert selection['tag'] == (os.environ['SYSTEM_TAG'] if reuse else tag)
+          assert selection['proofSha256'] == (os.environ['SYSTEM_PROOF_SHA256'] if reuse else None)
+          if not reuse: assert selection['version'] == version and selection['commit'] == source
+          app_names = {f'go-mapi-{version}-x64.msix', f'go-mapi-user-{version}-x64.exe', 'app-distribution.json', 'standalone-app-artifacts.json', 'signatures.json'}
+          winget = {p.name for p in app.glob('*.yaml')}
+          assert len(winget) == 3
+          app_names |= winget
+          assert {p.name for p in app.iterdir()} == app_names
+          distribution, signatures, build = (load(app/n) for n in ('app-distribution.json','signatures.json','standalone-app-artifacts.json'))
+          assert distribution['version'] == version and distribution['provenance']['commit'] == source
+          for key in ('msix','standalone'):
+              assert distribution[key]['sha256'] == digest(app/distribution[key]['file'])
+          assert build['source']['commit'] == source and build['version'] == version and build.get('distribution','standalone') == 'standalone'
+          assert signatures['commit'] == source and signatures['sourceRef'] == 'refs/tags/' + tag
+          assert str(signatures['runId']) == '${{ github.run_id }}' and str(signatures['runAttempt']) == '${{ github.run_attempt }}'
+          azure = {'endpoint':'https://weu.codesigning.azure.net/','account':'lachispa','certificateProfile':'lachispa'}
+          assert signatures['azure'] == azure and signatures['validationTrust'] == 'windows-default' and signatures['testTrust'] is None
+          signed = {s['file']:s for s in signatures['signatures']}
+          assert len(signed) == 3 and all(s['status'] == 'Valid' and s['signerSubject'] and s['signerThumbprint'] and s['timestampThumbprint'] for s in signed.values())
+          for name in (f'go-mapi-{version}-x64.msix',f'go-mapi-user-{version}-x64.exe'): assert signed[name]['sha256'] == digest(app/name)
+          assert f'https://github.com/{repository}/releases/download/{tag}/go-mapi-user-{version}-x64.exe' in (app/'MarcFargas.go-mapi.installer.yaml').read_text()
+          skus = ['suite'] if reuse else ['system','suite']
+          machine_names = {'machine-app-artifacts.json','system-selection.json'}
+          for sku in skus:
+              asset, manifest_name = f'go-mapi-{sku}-{version}-x64.msi', f'go-mapi-{sku}-{version}.manifest.json'
+              proof_name, target_name = f'{sku}-{version}.validation.json', f'{sku}-targets.json'
+              machine_names |= {asset,manifest_name,proof_name,target_name}
+              proof, inputs, target = (load(machine/n) for n in (proof_name,manifest_name,target_name))
+              assert proof['publishable'] is True and proof['sku'] == sku and proof['packageRelease'] == version
+              assert proof['repository'] == repository and proof['commit'] == source and proof['sourceRef'] == 'refs/tags/' + tag and proof['tag'] == tag
+              assert str(proof['runId']) == '${{ github.run_id }}' and str(proof['runAttempt']) == '${{ github.run_attempt }}'
+              assert proof['signedInputManifest'] == {'file':manifest_name,'sha256':digest(machine/manifest_name)}
+              assert inputs['sku'] == sku and inputs['commit'] == source and inputs['packageRelease'] == version
+              assert proof['msi'] == {'signed':True,'size':(machine/asset).stat().st_size,'sha256':digest(machine/asset)}
+              assert target['sku'] == sku and target['artifact'] == {'url':f'https://github.com/{repository}/releases/download/{tag}/{asset}','size':proof['msi']['size'],'sha256':proof['msi']['sha256']}
+              assert proof['targets']['sha256'] == digest(machine/target_name)
+              assert proof['azure'] == azure and proof['testTrust'] is None and proof['validationTrust'] == 'windows-default'
+              assert len(proof['signatures']) == (5 if sku == 'suite' else 4)
+              assert all(s['status'] == 'Valid' and s['signerSubject'] and s['signerThumbprint'] and s['timestampThumbprint'] for s in proof['signatures'])
+              assert proof['systemPackage'] == selection
+              for component in ('service','interceptor'): assert proof['componentSources'][component]['commit'] == selection['commit']
+              if sku == 'suite':
+                  assert proof['appBuildManifest'] == {'file':'machine-app-artifacts.json','sha256':digest(machine/'machine-app-artifacts.json')}
+                  assert inputs['appBuild']['sha256'] == digest(machine/'machine-app-artifacts.json')
+                  machine_build = load(machine/'machine-app-artifacts.json')
+                  assert machine_build['source']['commit'] == source and machine_build['version'] == version and machine_build['distribution'] == 'machine'
+          assert {p.name for p in machine.iterdir()} == machine_names
+          bundle.mkdir()
+          for root in (app,machine):
+              for path in root.iterdir():
+                  destination = bundle/path.name
+                  assert not destination.exists(), 'Duplicate release asset name'
+                  shutil.copyfile(path,destination)
+          system_asset = f"go-mapi-system-{selection['version']}-x64.msi"
+          notes = f"App {version} (per user) and Suite {version} (machine controlled). Suite contains System {selection['version']}.\n\nSystem: https://github.com/{repository}/releases/download/{selection['tag']}/{system_asset}\n\n"
+          notes += 'Draft for acceptance of these exact bytes before publication. Plain targets are provenance only; live automatic-update metadata remains unpublished.\n'
+          Path(os.environ['RUNNER_TEMP'],'release-notes.txt').write_text(notes)
+          PY
+      - name: Stage one complete draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=(--draft --latest=false)
+          if [ "$TRACK" = development ]; then flags+=(--prerelease); fi
+          gh release create "v$VERSION" release/bundle/* --repo '${{ github.repository }}' --verify-tag "${flags[@]}" --title "go-mapi $VERSION" --notes-file "$RUNNER_TEMP/release-notes.txt"
+      - name: Verify downloaded draft bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download "v$VERSION" --repo '${{ github.repository }}' --dir "$RUNNER_TEMP/downloaded"
+          test "$(find release/bundle -type f | wc -l)" = "$(find "$RUNNER_TEMP/downloaded" -type f | wc -l)"
+          for path in release/bundle/*; do cmp "$path" "$RUNNER_TEMP/downloaded/${path##*/}"; done
+
+  submit-stable-channels:
+    if: github.event_name == 'release' && !github.event.release.prerelease && startsWith(github.event.release.tag_name, 'v')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    environment: user-component-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - name: Verify accepted public stable bytes
+        id: accepted
+        shell: pwsh
+        run: |
+          if ($env:ACT) { throw 'Channel publication requires hosted infrastructure' }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $track = go run ./internal/mapi/cmd/release-track -- $version
+          if ($LASTEXITCODE -ne 0 -or $track -cnotcontains 'track=stable') { throw 'Only canonical stable versions enter external channels' }
+          $published = gh api "repos/${{ github.repository }}/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $published.draft -or $published.prerelease -or $published.tag_name -cne $env:RELEASE_TAG) { throw 'Release is not public stable' }
+          gh release download $env:RELEASE_TAG --repo '${{ github.repository }}' --dir release/accepted
+          if ($LASTEXITCODE -ne 0) { throw 'Published assets unavailable' }
+          $root = 'release/accepted'
+          $proof = Get-Content "$root/signatures.json" -Raw | ConvertFrom-Json
+          $distribution = Get-Content "$root/app-distribution.json" -Raw | ConvertFrom-Json
+          $suite = Get-Content "$root/suite-$version.validation.json" -Raw | ConvertFrom-Json
+          $build = Get-Content "$root/standalone-app-artifacts.json" -Raw | ConvertFrom-Json
+          if ($proof.version -cne $version -or $proof.commit -cne '${{ github.sha }}' -or $proof.sourceRef -cne "refs/tags/$env:RELEASE_TAG" -or
+              $proof.azure.endpoint -cne 'https://weu.codesigning.azure.net/' -or $proof.azure.account -cne 'lachispa' -or $proof.azure.certificateProfile -cne 'lachispa' -or
+              $proof.testTrust -or $proof.validationTrust -cne 'windows-default' -or $distribution.version -cne $version -or $distribution.provenance.commit -cne $proof.commit -or
+              $suite.commit -cne $proof.commit -or $suite.tag -cne $env:RELEASE_TAG -or $suite.publishable -ne $true -or
+              $suite.msi.sha256 -cne (Get-FileHash "$root/go-mapi-suite-$version-x64.msi" -Algorithm SHA256).Hash.ToLowerInvariant() -or
+              $build.source.commit -cne $proof.commit -or $build.version -cne $version -or ($build.PSObject.Properties['distribution'] -and $build.distribution -cne 'standalone')) { throw 'Public stable source/signing provenance mismatch' }
+          foreach ($entry in @($distribution.msix,$distribution.standalone)) {
+            $path = Join-Path $root $entry.file
+            $signature = Get-AuthenticodeSignature $path
+            $record = @($proof.signatures | Where-Object file -CEQ $entry.file)
+            if ($entry.file -cne [IO.Path]::GetFileName($entry.file) -or $record.Count -ne 1 -or $record[0].sha256 -cne $entry.sha256 -or
+                (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256 -or $signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Public stable package bytes/signature mismatch' }
+          }
+          "version=$version" | Add-Content $env:GITHUB_OUTPUT
+      - name: Submit the public standalone installer to winget
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
+          VERSION: ${{ steps.accepted.outputs.version }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINGET_CREATE_GITHUB_TOKEN)) { throw 'Missing classic public_repo WingetCreate token' }
+          Invoke-WebRequest https://github.com/microsoft/winget-create/releases/download/v1.10.3.0/wingetcreate.exe -OutFile wingetcreate.exe
+          ./wingetcreate.exe update MarcFargas.go-mapi --urls "https://github.com/${{ github.repository }}/releases/download/$env:RELEASE_TAG/go-mapi-user-$env:VERSION-x64.exe" --version $env:VERSION --submit --no-open
+          if ($LASTEXITCODE -ne 0) { throw 'Winget submission failed' }
+      - name: Submit the exact accepted MSIX to Store
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+        with:
+          command: publish
+          productId: ${{ vars.STORE_PRODUCT_ID }}
+          tenantId: ${{ secrets.STORE_TENANT_ID }}
+          sellerId: ${{ secrets.STORE_SELLER_ID }}
+          clientId: ${{ secrets.STORE_CLIENT_ID }}
+          clientSecret: ${{ secrets.STORE_CLIENT_SECRET }}
+          packagePath: release/accepted/go-mapi-${{ steps.accepted.outputs.version }}-x64.msix

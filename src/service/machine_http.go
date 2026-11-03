@@ -26,8 +26,8 @@ const (
 
 // validateMachineHTTPRequest closes the privileged adapter over the one
 // operation needed by authenticated release discovery and download. It does
-// not accept embedded credentials or request bodies. The sole forwarded
-// header is a public installed-version routing hint, never authorization.
+// not accept embedded credentials or request bodies. Forwarded headers are
+// public release-track and installed-version routing hints, never authorization.
 func validateMachineHTTPRequest(request *http.Request) error {
 	if request == nil || request.URL == nil || request.URL.Scheme != "https" || request.URL.Host == "" || request.URL.User != nil || request.URL.Opaque != "" || request.URL.Fragment != "" {
 		return ErrMachineHTTPInvalidRequest
@@ -49,7 +49,7 @@ func machineHTTPForwardHeader(request *http.Request, metadataOrigin string) (str
 	if len(request.Header) == 0 {
 		return "", nil
 	}
-	if len(request.Header) != 1 || request.Method != http.MethodGet || request.URL.RawQuery != "" || request.URL.ForceQuery ||
+	if len(request.Header) > 2 || request.Method != http.MethodGet || request.URL.RawQuery != "" || request.URL.ForceQuery ||
 		request.URL.EscapedPath() != request.URL.Path ||
 		request.URL.Path != "/machine/system/targets.json" && request.URL.Path != "/machine/suite/targets.json" {
 		return "", ErrMachineHTTPInvalidRequest
@@ -59,15 +59,32 @@ func machineHTTPForwardHeader(request *http.Request, metadataOrigin string) (str
 		origin.Path != "" && origin.Path != "/" || !strings.EqualFold(request.URL.Host, origin.Host) || request.URL.Scheme != origin.Scheme {
 		return "", ErrMachineHTTPInvalidRequest
 	}
+	var track, version string
 	for name, values := range request.Header {
-		if !strings.EqualFold(name, "X-Go-Mapi-Installed-Version") || len(values) != 1 {
+		if len(values) != 1 || strings.ContainsAny(values[0], "\r\n\x00") {
 			return "", ErrMachineHTTPInvalidRequest
 		}
-		version := values[0]
-		if _, err := mapi.NewMachinePackageIdentity(mapi.MachineSKUSystem, version); err != nil || strings.ContainsAny(version, "\r\n\x00") {
+		switch {
+		case strings.EqualFold(name, "X-Go-Mapi-Release-Track"):
+			if track != "" || values[0] != "stable" && values[0] != "development" {
+				return "", ErrMachineHTTPInvalidRequest
+			}
+			track = values[0]
+		case strings.EqualFold(name, "X-Go-Mapi-Installed-Version"):
+			if _, err := mapi.NewMachinePackageIdentity(mapi.MachineSKUSystem, values[0]); err != nil || version != "" {
+				return "", ErrMachineHTTPInvalidRequest
+			}
+			version = values[0]
+		default:
 			return "", ErrMachineHTTPInvalidRequest
 		}
-		return "X-Go-Mapi-Installed-Version: " + version + "\r\n", nil
 	}
-	return "", ErrMachineHTTPInvalidRequest
+	if track == "" || version != "" && mapi.ReleaseTrack(version) != track {
+		return "", ErrMachineHTTPInvalidRequest
+	}
+	forwarded := "X-Go-Mapi-Release-Track: " + track + "\r\n"
+	if version != "" {
+		forwarded += "X-Go-Mapi-Installed-Version: " + version + "\r\n"
+	}
+	return forwarded, nil
 }

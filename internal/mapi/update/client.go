@@ -71,19 +71,30 @@ func (e *Engine) fetch(ctx context.Context, method, urlString string, body io.Re
 	return data, res.Header.Clone(), nil
 }
 func (e *Engine) checkTarget(ctx context.Context, r CheckRequest) (Release, error) {
+	data, err := e.fetchTarget(ctx, r.InstalledVersion, mapi.ReleaseTrack(r.InstalledVersion))
+	if err != nil {
+		return Release{}, err
+	}
+	return ParseTarget(e.config.SKU, data, r.Installed, e.config.Now().UTC(), e.config.ArtifactOrigin)
+}
+
+func (e *Engine) fetchTarget(ctx context.Context, installedVersion, track string) ([]byte, error) {
 	endpoint := strings.TrimRight(e.config.MetadataOrigin, "/")
 	if e.config.SKU == System || e.config.SKU == Suite {
 		endpoint += "/machine/" + string(e.config.SKU) + "/targets.json"
 	}
 	header := make(http.Header)
 	if e.config.SKU == System || e.config.SKU == Suite {
-		header.Set("X-Go-Mapi-Installed-Version", r.InstalledVersion)
+		header.Set("X-Go-Mapi-Release-Track", track)
+		if installedVersion != "" {
+			header.Set("X-Go-Mapi-Installed-Version", installedVersion)
+		}
 	}
 	data, _, err := e.fetch(ctx, http.MethodGet, endpoint, nil, header)
 	if err != nil {
-		return Release{}, err
+		return nil, err
 	}
-	return ParseTarget(e.config.SKU, data, r.Installed, e.config.Now().UTC(), e.config.ArtifactOrigin)
+	return data, nil
 }
 func (e *Engine) checkApp(ctx context.Context, r CheckRequest) (AppOffer, error) {
 	request := appRequest{Schema: appCheckSchema, AppVersion: r.InstalledVersion, InterceptorVersion: r.Installed["interceptor"], DistributionChannel: r.Channel, ReleaseTrack: r.Track, OS: "windows", Architecture: "x64"}

@@ -19,16 +19,25 @@ administrator supplies `GOMAPI_AUTO_UPDATE=0` or `1`.
 `build.ps1` accepts a `go-mapi-machine-signed-input-v1` manifest containing
 the exact component binaries, versions, architectures, and hashes. Suite
 inputs also require `appBuild` evidence linked to the machine app's
-`app-artifacts.json`: source commit, controlled build invocation, tool
-versions, unsigned hash, and signed binary metadata. The package release
-version is separate from the contained component versions. Use
-`-RequireSignedInputs` for trusted release inputs. The nonpublishing validation
-workflow may build unsigned artifacts for native test only.
+`app-artifacts.json` (or public `machine-app-artifacts.json`): source commit,
+controlled build invocation, tool versions, unsigned hash, and signed binary
+metadata. The package release version is separate from the contained component
+versions. Use `-RequireSignedInputs` for trusted release inputs. The nonpublishing
+CI fixture job may build unsigned artifacts for native test only.
 Build from a Git checkout or a source archive whose commit and archive hash
 were verified before extraction. Pass that commit through `-SourceCommit` when
-the archive has no `.git`. `build-wails.ps1` records the commit and finished app
+the archive has no `.git`. The App's `build.ps1` records the commit and finished app
 artifact digest; `build.ps1` checks the app commit against the machine input
 manifest before packaging.
+
+Public releases use one `v<package-release>` tag. App and Suite advance together;
+System can skip release numbers. Suite may contain exact signed service and DLL
+bytes from an earlier published System while retaining its own new package
+identity. The signed-input manifest describes assembly source and component
+hashes; release validation provenance records each component's original source
+and the selected System tag/proof. Reuse requires unchanged machine installer and
+build inputs as well as matching binary hashes. See the
+[release procedure](../../../DEVELOPMENT.md#package-and-release).
 
 On disposable elevated Windows, run the compiled table verifier for each MSI:
 
