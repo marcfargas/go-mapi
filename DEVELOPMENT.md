@@ -140,10 +140,10 @@ families and update ownership.
    ```
 
    To reuse System, select its published tag and independently verify the SHA256
-   of its `system-<system-version>.validation.json` before dispatch:
+   of its `release.json` before dispatch:
 
    ```powershell
-   gh workflow run release.yml --ref v<version> -f system_tag=v<system-version> -f system_proof_sha256=<sha256>
+   gh workflow run release.yml --ref v<version> -f system_tag=v<system-version> -f system_manifest_sha256=<sha256>
    ```
 
    Reuse requires the same release track and unchanged machine source, installer,
@@ -153,10 +153,14 @@ families and update ownership.
    unified release needs a new System because these machine contracts changed.
 4. The workflow builds distinct standalone and machine App binaries, signs new
    System files once, packages Suite and optional System, then stages **one
-   complete draft**. Public build manifests are named
-   `standalone-app-artifacts.json` and `machine-app-artifacts.json`.
-   Download the draft and compare all bytes with its manifests and signing
-   evidence. In clean disposable Windows, verify default Authenticode trust,
+   complete draft**. The public bundle contains the per-user EXE,
+   MSIX, Suite MSI, optional new System MSI, and one `release.json` recording
+   package hashes, source and contained System identity. Detailed build/signing
+   receipts and update targets remain CI artifacts; WinGet generates its own
+   submission from the accepted installer. The first consolidated-format release
+   builds a new System; later reuse reads only that format.
+   Download the draft and compare its packages with `release.json` and the CI
+   signing evidence. In clean disposable Windows, verify default Authenticode trust,
    installation/removal and the [ordinary-user attachment smoke](tests/installed-attachment/README.md).
    For reused System, verify an App-only Suite upgrade preserves those exact
    machine payload hashes. Import no product-signing certificate. A timeout
@@ -171,10 +175,10 @@ families and update ownership.
    An existing draft must be resumed from its recorded assets, never rebuilt
    or replaced by rerunning release staging.
 
-The workflows and updater interfaces have local source checks; a successful
-unified production-signing run and candidate-bound Windows release acceptance
-remain required before the first unified release is delivered. Published
-alpha.11 component tags/assets remain unchanged.
+The production-signed unified `v3.2.0-beta.1` release passed disposable-Windows
+package and attachment acceptance. Its published assets retain the earlier
+metadata layout. The next release must qualify the consolidated bundle through
+hosted signing and Windows acceptance; published releases remain unchanged.
 
 Standalone App's installation/repair action now selects System with administrator
 consent through the existing verified-download and UAC helper. It refuses Suite,
@@ -189,14 +193,14 @@ Live update metadata is a separate deployment. Its configured origin must serve
 `X-Go-Mapi-Installed-Version`. Bootstrap has no invented installed version.
 Targets expire within 31 days. Refreshing authorization dates for the same
 immutable payload is supported; changing its bytes or compatibility at an
-accepted package sequence is refused. Plain target assets on a GitHub release
-are provenance, not a live metadata service. Live discovery, UAC installation
+accepted package sequence is refused. CI retains generated target documents;
+publishing `release.json` does not deploy that metadata service. Live discovery, UAC installation
 and metadata refresh still need deployment and guest acceptance.
 
 MSIX uses the shared Windows package sequence plus a zero fourth component, so
 successive alphas have distinct numeric identities. Older alpha.11 packages used
-`3.2.0.0`; their fresh-install evidence does not establish upgrades to this new
-encoding. Development MSIX publisher identity comes from the actual signing
+`3.2.0.0`; the alpha.11 to beta.1 upgrade to `3.2.201.0` passed disposable-Windows
+acceptance. Development MSIX publisher identity comes from the actual signing
 certificate. Production signing does not establish SmartScreen reputation.
 
 The old `.planning/` tree was intentionally retired in commit `df17ab2` in favor

@@ -18,7 +18,7 @@ func TestMachineValidationWorkflowBindsPlainTargetToSignedMSI(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-machine-signed-input-v1", "go-mapi-machine-validation-provenance-v1", "signedSha256", "Final machine target generation failed", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $msi --out (Join-Path release/machine $targetName)"} {
+	for _, required := range []string{"environment: artifact-signing", "azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82", "go-mapi-release-v1", "-RequireSignedInputs", "go-mapi-machine-validation-provenance-v1", "signedSha256", "Final machine target generation failed", "go run ./internal/mapi/cmd/machine-targets --spec $specPath --msi $msi --out (Join-Path release/machine $targetName)"} {
 		if !strings.Contains(content, required) {
 			t.Errorf("release workflow missing %q", required)
 		}

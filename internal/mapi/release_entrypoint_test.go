@@ -25,7 +25,7 @@ func TestUnifiedReleaseOwnsPublication(t *testing.T) {
 		}
 	}
 	release := readDistributionFile(t, ".github/workflows/release.yml")
-	for _, want := range []string{"workflow_dispatch:", "system_tag:", "system_proof_sha256:", "./.github/workflows/app-release.yml", "./.github/workflows/admin-release.yml", "contents: write", "gh release create", "--draft", "gh release download"} {
+	for _, want := range []string{"workflow_dispatch:", "system_tag:", "system_manifest_sha256:", "./.github/workflows/app-release.yml", "./.github/workflows/admin-release.yml", "contents: write", "gh release create", "--draft", "gh release download"} {
 		if !strings.Contains(release, want) {
 			t.Errorf("unified release lacks %q", want)
 		}

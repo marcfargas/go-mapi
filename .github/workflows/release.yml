@@ -9,8 +9,8 @@ on:
         description: 'Published System tag to reuse; blank builds a new System at this release version'
         type: string
         default: ''
-      system_proof_sha256:
-        description: 'SHA256 of that published System validation JSON; required with system_tag'
+      system_manifest_sha256:
+        description: 'SHA256 of that published release.json; required with system_tag'
         type: string
         default: ''
 
@@ -41,7 +41,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SYSTEM_TAG: ${{ inputs.system_tag }}
-          SYSTEM_PROOF_SHA256: ${{ inputs.system_proof_sha256 }}
+          SYSTEM_MANIFEST_SHA256: ${{ inputs.system_manifest_sha256 }}
         run: |
           set -euo pipefail
           test -z "${ACT:-}"
@@ -57,9 +57,9 @@ jobs:
           test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '${{ github.sha }}'
           if [ -n "$SYSTEM_TAG" ]; then
             [[ "$SYSTEM_TAG" =~ ^(system-)?v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|nightly)\.[1-9][0-9]*)?$ ]]
-            [[ "$SYSTEM_PROOF_SHA256" =~ ^[a-f0-9]{64}$ ]]
+            [[ "$SYSTEM_MANIFEST_SHA256" =~ ^[a-f0-9]{64}$ ]]
           else
-            test -z "$SYSTEM_PROOF_SHA256"
+            test -z "$SYSTEM_MANIFEST_SHA256"
             test "$(cat src/service/VERSION)" = "$version"
             test "$(cat src/interceptor/interceptor-version.txt)" = "$version"
           fi
@@ -92,7 +92,7 @@ jobs:
     with:
       version: ${{ needs.plan.outputs.version }}
       system_tag: ${{ inputs.system_tag }}
-      system_proof_sha256: ${{ inputs.system_proof_sha256 }}
+      system_manifest_sha256: ${{ inputs.system_manifest_sha256 }}
     secrets: inherit
 
   stage:
@@ -107,7 +107,7 @@ jobs:
       VERSION: ${{ needs.plan.outputs.version }}
       TRACK: ${{ needs.plan.outputs.track }}
       SYSTEM_TAG: ${{ inputs.system_tag }}
-      SYSTEM_PROOF_SHA256: ${{ inputs.system_proof_sha256 }}
+      SYSTEM_MANIFEST_SHA256: ${{ inputs.system_manifest_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -133,16 +133,15 @@ jobs:
           reuse = bool(os.environ['SYSTEM_TAG'])
           assert selection['reused'] is reuse
           assert selection['tag'] == (os.environ['SYSTEM_TAG'] if reuse else tag)
-          assert selection['proofSha256'] == (os.environ['SYSTEM_PROOF_SHA256'] if reuse else None)
+          assert selection['manifestSha256'] == (os.environ['SYSTEM_MANIFEST_SHA256'] if reuse else None)
           if not reuse: assert selection['version'] == version and selection['commit'] == source
           app_names = {f'go-mapi-{version}-x64.msix', f'go-mapi-user-{version}-x64.exe', 'app-distribution.json', 'standalone-app-artifacts.json', 'signatures.json'}
-          winget = {p.name for p in app.glob('*.yaml')}
-          assert len(winget) == 3
-          app_names |= winget
           assert {p.name for p in app.iterdir()} == app_names
           distribution, signatures, build = (load(app/n) for n in ('app-distribution.json','signatures.json','standalone-app-artifacts.json'))
           assert distribution['version'] == version and distribution['provenance']['commit'] == source
-          for key in ('msix','standalone'):
+          expected_app = {'msix':f'go-mapi-{version}-x64.msix','standalone':f'go-mapi-user-{version}-x64.exe'}
+          for key,filename in expected_app.items():
+              assert distribution[key]['file'] == filename
               assert distribution[key]['sha256'] == digest(app/distribution[key]['file'])
           assert build['source']['commit'] == source and build['version'] == version and build.get('distribution','standalone') == 'standalone'
           assert signatures['commit'] == source and signatures['sourceRef'] == 'refs/tags/' + tag
@@ -152,9 +151,10 @@ jobs:
           signed = {s['file']:s for s in signatures['signatures']}
           assert len(signed) == 3 and all(s['status'] == 'Valid' and s['signerSubject'] and s['signerThumbprint'] and s['timestampThumbprint'] for s in signed.values())
           for name in (f'go-mapi-{version}-x64.msix',f'go-mapi-user-{version}-x64.exe'): assert signed[name]['sha256'] == digest(app/name)
-          assert f'https://github.com/{repository}/releases/download/{tag}/go-mapi-user-{version}-x64.exe' in (app/'MarcFargas.go-mapi.installer.yaml').read_text()
           skus = ['suite'] if reuse else ['system','suite']
           machine_names = {'machine-app-artifacts.json','system-selection.json'}
+          if reuse: machine_names.add('reused-system.json')
+          records = {}
           for sku in skus:
               asset, manifest_name = f'go-mapi-{sku}-{version}-x64.msi', f'go-mapi-{sku}-{version}.manifest.json'
               proof_name, target_name = f'{sku}-{version}.validation.json', f'{sku}-targets.json'
@@ -178,16 +178,64 @@ jobs:
                   assert inputs['appBuild']['sha256'] == digest(machine/'machine-app-artifacts.json')
                   machine_build = load(machine/'machine-app-artifacts.json')
                   assert machine_build['source']['commit'] == source and machine_build['version'] == version and machine_build['distribution'] == 'machine'
+              records[sku] = (proof,inputs)
           assert {p.name for p in machine.iterdir()} == machine_names
+          def artifact(root,name):
+              return {'file':name,'size':(root/name).stat().st_size,'sha256':digest(root/name)}
+          def package(proof):
+              return {**{key:proof[key] for key in ('productCode','productVersion','upgradeCode','sequence')},'artifact':artifact(machine,proof['assetName'])}
+          if reuse:
+              system = load(machine/'reused-system.json')
+              assert system['reused'] is False and system['manifestSha256'] is None
+              assert all(system[key] == selection[key] for key in ('version','tag','commit'))
+              system.update(reused=True,manifestSha256=selection['manifestSha256'])
+          else:
+              proof,inputs = records['system']
+              components = []
+              for component in inputs['components']:
+                  hashes = {entry['filename']:entry for entry in proof['peHashes'] if entry['component'] == component['component']}
+                  artifacts = []
+                  for entry in component['artifacts']:
+                      assert hashes[entry['filename']]['signedSha256'] == entry['sha256']
+                      artifacts.append({**entry,'unsignedSha256':hashes[entry['filename']]['unsignedSha256']})
+                  component_source = proof['componentSources'][component['component']]
+                  components.append({'component':component['component'],'version':component['version'],'source':{key:component_source[key] for key in ('commit','buildId')},'artifacts':artifacts})
+              system = {**selection,**package(proof),'runId':proof['runId'],'runAttempt':proof['runAttempt'],'derivative':proof['derivative'],'components':components}
+          assert system['artifact']['file'] == f"go-mapi-system-{system['version']}-x64.msi"
+          assert system['derivative'] == {'kind':'production','metadataOrigin':'https://go-mapi.app','artifactOrigin':f'https://github.com/{repository}/releases/download/','checkIntervalSeconds':21600}
+          suite_proof,suite_inputs = records['suite']
+          suite_components = {entry['component']:entry for entry in suite_inputs['components']}
+          assert set(suite_components) == {'service','interceptor','app'}
+          assert {entry['component'] for entry in system['components']} == {'service','interceptor'}
+          assert len(system['components']) == 2
+          for component in system['components']:
+              assert component['version'] == system['version']
+              expected = [('x64','go-mapi-service.exe')] if component['component'] == 'service' else [('x86','go-mapi-x86.dll'),('x64','go-mapi-x64.dll')]
+              assert sorted((entry['architecture'],entry['filename']) for entry in component['artifacts']) == sorted(expected)
+              assert component['source']['buildId'] == f"{system['runId']}.{system['runAttempt']}:{component['component']}"
+              actual = suite_components[component['component']]
+              assert actual['version'] == component['version']
+              assert actual['artifacts'] == [{key:value for key,value in entry.items() if key != 'unsignedSha256'} for entry in component['artifacts']]
+              assert component['source']['commit'] == system['commit']
+              assert component['source'] == {key:suite_proof['componentSources'][component['component']][key] for key in ('commit','buildId')}
+          suite_app = suite_components['app']
+          assert suite_app['version'] == version and suite_app['distribution'] == 'machine' and len(suite_app['artifacts']) == 1
+          assert suite_app['artifacts'][0]['sha256'] == suite_proof['componentSources']['app']['signedSha256']
+          release = {'schema':'go-mapi-release-v1','repository':repository,'version':version,'tag':tag,'commit':source,'runId':'${{ github.run_id }}','runAttempt':'${{ github.run_attempt }}',
+              'signing':{'azure':azure,'validationTrust':'windows-default'},
+              'app':{'artifacts':{key:artifact(app,distribution[key]['file']) for key in ('msix','standalone')},'exeSha256':signed['go-mapi.exe']['sha256']},
+              'system':system,'suite':{**package(suite_proof),'app':{'version':version,'sha256':suite_app['artifacts'][0]['sha256']}}}
           bundle.mkdir()
           for root in (app,machine):
               for path in root.iterdir():
+                  if path.suffix not in ('.msi','.msix','.exe'): continue
                   destination = bundle/path.name
                   assert not destination.exists(), 'Duplicate release asset name'
                   shutil.copyfile(path,destination)
+          (bundle/'release.json').write_text(json.dumps(release,indent=2)+'\n')
           system_asset = f"go-mapi-system-{selection['version']}-x64.msi"
           notes = f"App {version} (per user) and Suite {version} (machine controlled). Suite contains System {selection['version']}.\n\nSystem: https://github.com/{repository}/releases/download/{selection['tag']}/{system_asset}\n\n"
-          notes += 'Draft for acceptance of these exact bytes before publication. Plain targets are provenance only; live automatic-update metadata remains unpublished.\n'
+          notes += 'Draft for acceptance of these exact bytes before publication. release.json records package hashes and provenance; live automatic-update metadata remains unpublished.\n'
           Path(os.environ['RUNNER_TEMP'],'release-notes.txt').write_text(notes)
           PY
       - name: Stage one complete draft
@@ -231,22 +279,20 @@ jobs:
           gh release download $env:RELEASE_TAG --repo '${{ github.repository }}' --dir release/accepted
           if ($LASTEXITCODE -ne 0) { throw 'Published assets unavailable' }
           $root = 'release/accepted'
-          $proof = Get-Content "$root/signatures.json" -Raw | ConvertFrom-Json
-          $distribution = Get-Content "$root/app-distribution.json" -Raw | ConvertFrom-Json
-          $suite = Get-Content "$root/suite-$version.validation.json" -Raw | ConvertFrom-Json
-          $build = Get-Content "$root/standalone-app-artifacts.json" -Raw | ConvertFrom-Json
-          if ($proof.version -cne $version -or $proof.commit -cne '${{ github.sha }}' -or $proof.sourceRef -cne "refs/tags/$env:RELEASE_TAG" -or
-              $proof.azure.endpoint -cne 'https://weu.codesigning.azure.net/' -or $proof.azure.account -cne 'lachispa' -or $proof.azure.certificateProfile -cne 'lachispa' -or
-              $proof.testTrust -or $proof.validationTrust -cne 'windows-default' -or $distribution.version -cne $version -or $distribution.provenance.commit -cne $proof.commit -or
-              $suite.commit -cne $proof.commit -or $suite.tag -cne $env:RELEASE_TAG -or $suite.publishable -ne $true -or
-              $suite.msi.sha256 -cne (Get-FileHash "$root/go-mapi-suite-$version-x64.msi" -Algorithm SHA256).Hash.ToLowerInvariant() -or
-              $build.source.commit -cne $proof.commit -or $build.version -cne $version -or ($build.PSObject.Properties['distribution'] -and $build.distribution -cne 'standalone')) { throw 'Public stable source/signing provenance mismatch' }
-          foreach ($entry in @($distribution.msix,$distribution.standalone)) {
+          $manifest = Get-Content "$root/release.json" -Raw | ConvertFrom-Json
+          if ($manifest.schema -cne 'go-mapi-release-v1' -or $manifest.repository -cne '${{ github.repository }}' -or
+              $manifest.version -cne $version -or $manifest.commit -cne '${{ github.sha }}' -or $manifest.tag -cne $env:RELEASE_TAG -or
+              $manifest.signing.azure.endpoint -cne 'https://weu.codesigning.azure.net/' -or $manifest.signing.azure.account -cne 'lachispa' -or $manifest.signing.azure.certificateProfile -cne 'lachispa' -or
+              $manifest.signing.validationTrust -cne 'windows-default') { throw 'Public stable source/signing provenance mismatch' }
+          $expectedNames = @("go-mapi-$version-x64.msix","go-mapi-user-$version-x64.exe","go-mapi-suite-$version-x64.msi")
+          $entries = @($manifest.app.artifacts.msix,$manifest.app.artifacts.standalone,$manifest.suite.artifact)
+          if ((@($entries.file | Sort-Object) -join ',') -cne (@($expectedNames | Sort-Object) -join ',')) { throw 'Public stable package names differ' }
+          foreach ($entry in $entries) {
+            if ($entry.file -cne [IO.Path]::GetFileName($entry.file)) { throw 'Expected flat package filename' }
             $path = Join-Path $root $entry.file
             $signature = Get-AuthenticodeSignature $path
-            $record = @($proof.signatures | Where-Object file -CEQ $entry.file)
-            if ($entry.file -cne [IO.Path]::GetFileName($entry.file) -or $record.Count -ne 1 -or $record[0].sha256 -cne $entry.sha256 -or
-                (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256 -or $signature.Status -ne 'Valid' -or -not $signature.TimeStamperCertificate) { throw 'Public stable package bytes/signature mismatch' }
+            if ((Get-Item $path).Length -ne $entry.size -or (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256 -or
+                $signature.Status -ne 'Valid' -or $signature.SignatureType -ne 'Authenticode' -or -not $signature.SignerCertificate -or -not $signature.TimeStamperCertificate) { throw 'Public stable package bytes/signature mismatch' }
           }
           "version=$version" | Add-Content $env:GITHUB_OUTPUT
       - name: Submit the public standalone installer to winget
