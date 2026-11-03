@@ -22,6 +22,7 @@ func run(args []string, now time.Time) error {
 	specPath := flags.String("spec", "", "machine target spec JSON")
 	msiPath := flags.String("msi", "", "final signed MSI")
 	outPath := flags.String("out", "", "new plain target path")
+	digestPath := flags.String("replay-digest-out", "", "optional new immutable replay digest path")
 	artifactOrigin := flags.String("artifact-origin", update.MachineArtifactOrigin, "fixed HTTPS artifact release prefix")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -46,11 +47,33 @@ func run(args []string, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(*outPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	var digest string
+	if *digestPath != "" {
+		installed := make(map[string]string)
+		for _, component := range spec.Contained {
+			installed[component.Component] = component.Version
+		}
+		release, err := update.ParseTarget(spec.SKU, target, installed, now, *artifactOrigin)
+		if err != nil {
+			return err
+		}
+		digest = release.Digest()
+	}
+	if err := writeNew(*outPath, target); err != nil {
+		return err
+	}
+	if *digestPath != "" {
+		return writeNew(*digestPath, []byte(digest))
+	}
+	return nil
+}
+
+func writeNew(path string, content []byte) error {
+	out, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
-	if _, err := out.Write(target); err != nil {
+	if _, err := out.Write(content); err != nil {
 		out.Close()
 		return err
 	}
