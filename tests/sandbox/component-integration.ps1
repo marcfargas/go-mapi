@@ -11,7 +11,8 @@ param(
     [Parameter(Mandatory)][string]$InterceptorVersion,
     [Parameter(Mandatory)][string]$AppVersion,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
-    [string]$QueueDirectory = (Join-Path $env:LOCALAPPDATA 'go-mapi\queue')
+    [string]$QueueDirectory = (Join-Path $env:LOCALAPPDATA 'go-mapi\queue'),
+    [string]$AppProbeBinary
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +63,7 @@ function Get-QueuePaths {
 
 if ([string]::IsNullOrWhiteSpace($InterceptorVersion) -or $InterceptorVersion -eq '0.0.0-dev') { Fail 'InterceptorVersion must be an explicit non-development version' }
 if ([string]::IsNullOrWhiteSpace($AppVersion) -or $AppVersion -eq '0.0.0-dev') { Fail 'AppVersion must be an explicit non-development version' }
-if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'src\app\go.mod'))) { Fail 'must run from a go-mapi worktree containing src/app' }
+if (-not $AppProbeBinary -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'src\app\go.mod'))) { Fail 'must run from a go-mapi worktree containing src/app or supply AppProbeBinary' }
 
 $inputs = [ordered]@{
     x64Dll = Get-FileRecord $X64Dll 'x64'; x64Harness = Get-FileRecord $X64Harness 'x64'
@@ -70,6 +71,7 @@ $inputs = [ordered]@{
     interceptorVersion = $InterceptorVersion; appVersion = $AppVersion
 }
 $results = @()
+if ($AppProbeBinary) { $inputs.appProbe = Get-FileRecord $AppProbeBinary 'x64' }
 Log "run=$runId activation=test-harness-explicit-load queue=$QueueDirectory"
 
 foreach ($case in @(
@@ -98,8 +100,20 @@ foreach ($case in @(
     $env:GO_MAPI_INTEGRATION_DESCRIPTOR = $descriptor
     $env:GO_MAPI_INTEGRATION_ACK_PATH = $ackPath
     Push-Location $repoRoot
-    try { $probeOutput = & go test ./src/app -run '^TestIntegrationQueueConsumerProbe$' -count=1 2>&1 | Out-String; $probeExitCode = $LASTEXITCODE }
-    finally { Pop-Location; Remove-Item Env:GO_MAPI_INTEGRATION_QUEUE,Env:GO_MAPI_INTEGRATION_DESCRIPTOR,Env:GO_MAPI_INTEGRATION_ACK_PATH -ErrorAction SilentlyContinue }
+    $savedErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        if ($AppProbeBinary) {
+            # PS5.1 splits bare dotted native switches; array arguments preserve
+            # the Go test binary's exact flag names.
+            $probeArguments = @('-test.run=^TestIntegrationQueueConsumerProbe$', '-test.count=1')
+            $probeOutput = & $inputs.appProbe.path @probeArguments 2>&1 | Out-String
+        } else {
+            $probeOutput = & go test ./src/app -run '^TestIntegrationQueueConsumerProbe$' -count=1 2>&1 | Out-String
+        }
+        $probeExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $savedErrorActionPreference; Pop-Location; Remove-Item Env:GO_MAPI_INTEGRATION_QUEUE,Env:GO_MAPI_INTEGRATION_DESCRIPTOR,Env:GO_MAPI_INTEGRATION_ACK_PATH -ErrorAction SilentlyContinue }
     Set-Content -LiteralPath (Join-Path $evidence "$($case.architecture)-app-probe.log") -Value $probeOutput
     if ($probeExitCode -ne 0 -or -not (Test-Path -LiteralPath $ackPath)) { Fail "$($case.architecture) Wails queue-consumer acknowledgement missing" }
     $ack = Get-Content -LiteralPath $ackPath -Raw | ConvertFrom-Json

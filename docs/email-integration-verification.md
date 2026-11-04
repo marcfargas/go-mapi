@@ -16,8 +16,9 @@ and is currently unsupported; use **Send to > Mail recipient** instead.
 ## Automated Explorer regression
 
 The [installed attachment regression](../tests/installed-attachment/README.md)
-provides `just test-explorer-sendto` for a selected production-signed Suite in a
-clean Windows Sandbox. It opens real Explorer, selects two files beneath a path
+is part of the default `just e2e-system-windows` suite for a selected
+production-signed Suite in a clean Windows Sandbox. It opens real Explorer,
+selects two files beneath a path
 containing spaces, and invokes the classic **Send to > Mail recipient** menu
 under the existing non-elevated desktop account. The isolated Gmail fixture
 requires exactly one draft with exact filenames/bytes and empty recipients;

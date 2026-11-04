@@ -6,8 +6,8 @@ The app starts without arguments, authenticates against an isolated Gmail fake,
 and creates exactly one draft containing each expected filename and byte sequence.
 The queue descriptor must appear and disappear while the app remains alive.
 
-`test-explorer-sendto` starts a fresh Sandbox and owns Suite installation,
-generated fixture trust and cleanup inside that guest. It uses the existing
+The default `e2e-system-windows` suite starts a fresh Sandbox and owns Suite
+installation, generated fixture trust and cleanup inside that guest. It uses the existing
 desktop account without creating accounts, loading profiles or provisioning disks.
 
 The lower-level `test-installed-attachment` command requires an already-installed
@@ -18,10 +18,18 @@ certificate trust.
 
 ## Commands
 
-Explorer regression entrypoint:
+Explorer is a required journey in the Windows e2e suite. Build the native test
+artifacts first with `just build-native-tests x64` and `just build-native-tests x86`:
 
 ```powershell
-just test-explorer-sendto -Manifest C:\selected\release.json -SuiteMsi C:\selected\go-mapi-suite-3.2.0-beta.2-x64.msi -FakeBinary C:\selected\fake-gmail.exe
+just e2e-system-windows `
+  -X64Dll src/interceptor/build-x64/bin/go-mapi.dll `
+  -X64Harness src/interceptor/build-x64/bin/go-mapi-test-harness.exe `
+  -X86Dll src/interceptor/build-x86/bin/go-mapi.dll `
+  -X86Harness src/interceptor/build-x86/bin/go-mapi-test-harness.exe `
+  -InterceptorVersion <interceptor-version> -AppVersion <app-version> `
+  -Manifest C:\selected\release.json -SuiteMsi C:\selected\suite.msi `
+  -EvidenceDirectory test-results/windows-e2e
 ```
 
 This installs the selected production-signed Suite only in a fresh Windows
@@ -29,29 +37,32 @@ Sandbox, opens Explorer on two owned files under a path containing spaces, and
 invokes the classic **Send to > Mail recipient** menu as its ordinary desktop
 user. The existing fake checks exactly one draft and exact attachment bytes;
 the guest removes the App, product and generated test trust before owned disposal.
-The host needs an interactive desktop, `wsb` and PowerShell 7; the guest must
-use English Windows menu labels. No other Sandbox may be running. This does not
+The suite also runs x86/x64 native queue integration after installed cleanup.
+The host needs Go, frontend dependencies (`just install`), an interactive desktop,
+`wsb` and PowerShell 7; the guest must use English Windows menu labels.
+Keep sufficient free system-disk space for guest execution and evidence.
+No other Sandbox may be running. This does not
 qualify live Google consent or Explorer Share.
 
 Download the Suite and its `release.json` from the same selected public release.
 The manifest binds the MSI, machine App and x64 interceptor hashes; the guest
 also requires normal Windows signing trust. The existing
 `go-mapi-machine-test-packages-v1` adapter with a complete `suiteC` entry is
-accepted too. Build the fake before running, without installing product code:
+accepted too. The suite builds the fake and app-owned queue probe automatically;
+`-FakeBinary` and `-AppProbeBinary` can select existing binaries.
 
-```powershell
-$env:GOWORK = 'off'
-go build -C tests/installed-attachment/fake-gmail -o C:\selected\fake-gmail.exe
-```
-
-`-EvidenceRoot` selects the retained output parent and `-TimeoutSeconds` bounds
-the run (default 900). Inputs are copied into a unique selected directory; the
+`-EvidenceDirectory` selects the retained output parent and `-TimeoutSeconds` bounds
+the run (default 1200). Inputs are copied into a unique selected directory; the
 existing Sandbox runner owns locking, timeout propagation and exact disposal.
-Require runner `Status=PASS`, `Cleanup=stopped`, `GuestExitCode=0`,
+Require runner `Status=PASS`, `Cleanup=stopped`, `GuestExitCode=0`, a passing
+`e2e-result.json` covering both journeys,
 `installed-smoke-setup.json` and `attachment-result.json` with `passed=true`,
 and the smoke directory's `explorer.json`, `worker.json`, `fake-final.json`.
-Logs and partial receipts are written directly to the output share so a timeout
-retains diagnostics. Inspect failures before retrying; never reuse an unknown guest.
+Logs and partial setup/suite receipts are written directly to the output share so
+a timeout retains diagnostics. Setup failures retain bounded Application, System
+and Code Integrity event logs when available. Evidence-write failures still allow
+owned cleanup to run and prevent a passing result. Inspect failures before retrying;
+never reuse an unknown guest.
 
 Portable oracle and fake-server checks need no installed product:
 
@@ -75,7 +86,9 @@ Build the fake with `GOWORK=off go build` in `fake-gmail` before staging it.
 For direct-DLL execution, stage `Test-Attachment.ps1`, `Invoke-Attachment.ps1`,
 `Attachment.psm1`, `AttachmentNative.cs`, the fake binary and the fixture
 manifest. Explorer mode also needs `ExplorerSendTo.ps1`; its host entrypoint
-stages these inputs automatically. A fresh user context is required: the
+stages these inputs automatically. See the [suite guide](../../docs/component-integration-gate.md)
+for full-suite receipts and hosted CI's explicit component-only limit.
+A fresh user context is required: the
 worker refuses existing go-mapi credentials, queued messages, settings or logs.
 It does not replace or remove preexisting user data.
 
@@ -111,6 +124,11 @@ emptied the queue, and stopped cleanly. Suite removal, generated CA removal and
 exact owned Sandbox disposal also passed. This qualifies that selected package
 and OS journey; live Google consent and the broader OS/channel matrix remain
 separate.
+
+The integrated `e2e-system-windows` suite also passed on that date with the same
+published Suite and current locally built native artifacts/app probe: Explorer,
+both x64/x86 component acknowledgements, all cleanup and owned disposal passed
+together (guest exit 0).
 
 The earlier direct-DLL smoke passed in Windows Sandbox with the existing desktop account
 under a non-elevated token: installed x64 DLL/app hashes, one authenticated draft,

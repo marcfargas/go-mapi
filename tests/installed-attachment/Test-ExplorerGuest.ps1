@@ -9,10 +9,20 @@ $localInput=Join-Path $work 'input'
 # the guest before this script can reach its finally block.
 $localOutput=Join-Path $OutputDirectory 'smoke'
 $errors=[Collections.Generic.List[string]]::new()
-$receipt=[ordered]@{passed=$false;error=$null;user=$null;installed=$false;removed=$false;trustRemoved=$false;userStopped=$false;cleanupErrors=@()}
+$receipt=[ordered]@{passed=$false;phase='starting';pid=$PID;error=$null;user=$null;installed=$false;removed=$false;trustRemoved=$false;userStopped=$false;cleanupErrors=@()}
+$startedAt=Get-Date
 $trust=[Collections.Generic.List[string]]::new()
 $installAttempted=$false;$user=$null;$job=$null;$launcher=$null;$launchOut=$null;$launchErr=$null
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Save-SetupReceipt([string]$Phase, [switch]$BestEffort) {
+    $receipt.phase=$Phase
+    try { $receipt | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutputDirectory 'installed-smoke-setup.json') }
+    catch {
+        if (!$BestEffort) { throw }
+        $errors.Add('setup receipt '+$Phase+': '+$_.Exception.Message)
+    }
+}
+Save-SetupReceipt 'starting'
 function Assert-ProductionSignature([string]$Path) {
     $sig=Get-AuthenticodeSignature -LiteralPath $Path
     if ($sig.Status -ne 'Valid' -or !$sig.SignerCertificate -or !$sig.TimeStamperCertificate) { throw ('Default Windows signing trust failed: '+$Path) }
@@ -82,8 +92,10 @@ try {
     $job=[AttachmentJob]::new();$job.Assign($user.Handle)
     Assert-ProductionSignature $msi
     $installAttempted=$true
+    Save-SetupReceipt 'installing'
     Msi /i
     $receipt.installed=$true
+    Save-SetupReceipt 'installed'
     foreach ($relative in @('user\go-mapi.exe','interceptor\AMD64\go-mapi.dll')) {
         Assert-ProductionSignature (Join-Path 'C:\Program Files\go-mapi' $relative)
     }
@@ -117,8 +129,23 @@ try {
     $smoke=Get-Content (Join-Path $localOutput 'attachment-result.json') -Raw | ConvertFrom-Json
     if (!$userResult.passed -or !$smoke.passed) { throw 'Ordinary installed smoke did not pass' }
     $receipt.passed=$true
-} catch { $receipt.error=$_.Exception.Message }
+} catch {
+    $receipt.error=$_ | Out-String
+    Save-SetupReceipt 'failed' -BestEffort
+    # Keep loader/service failures diagnosable before cleanup or guest disposal.
+    foreach ($logName in @('Application','System','Microsoft-Windows-CodeIntegrity/Operational')) {
+        try {
+            @(Get-WinEvent -FilterHashtable @{LogName=$logName;StartTime=$startedAt} -MaxEvents 100 -ErrorAction Stop |
+                Select-Object TimeCreated,Id,ProviderName,LevelDisplayName,Message) |
+                ConvertTo-Json -Depth 4 | Set-Content (Join-Path $localOutput (($logName -replace '[\\/]','-')+'-events.json'))
+        } catch {
+            try { $_ | Out-String | Set-Content (Join-Path $localOutput (($logName -replace '[\\/]','-')+'-events-error.txt')) }
+            catch { $errors.Add('event evidence: '+$_.Exception.Message) }
+        }
+    }
+}
 finally {
+    Save-SetupReceipt 'cleanup' -BestEffort
     if ($job) { try { $job.Dispose() } catch { $errors.Add('user job: '+$_.Exception.Message) } }
     if ($user) {
         try { if (!$user.HasExited) { $user.Kill();if (!$user.WaitForExit(5000)) { throw 'Owned user child remains' } };$receipt.userStopped=$user.HasExited } catch { $errors.Add('user child: '+$_.Exception.Message) }
@@ -138,6 +165,6 @@ finally {
     $receipt.trustRemoved=$true
     $receipt.cleanupErrors=@($errors)
     $receipt.passed=$receipt.passed -and $errors.Count -eq 0 -and $receipt.removed -and $receipt.userStopped
-    $receipt | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $OutputDirectory 'installed-smoke-setup.json')
+    Save-SetupReceipt 'finished'
 }
 if (!$receipt.passed) { throw ('Installed smoke failed: '+$receipt.error) }

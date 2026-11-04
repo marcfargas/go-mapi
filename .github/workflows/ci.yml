@@ -255,10 +255,12 @@ jobs:
           pattern: go-mapi-*-Release
           path: ci-input/interceptor
           merge-multiple: false
-      - name: Run actual x86/x64 interceptor to app queue integration
+      # Hosted runners have no interactive Explorer desktop. The default local
+      # e2e suite also requires the installed Explorer journey in Windows Sandbox.
+      - name: Run Windows e2e component coverage (hosted runner)
         shell: pwsh
         run: |
-          just e2e-system-windows `
+          just e2e-system-windows -ComponentOnly `
             -X64Dll ci-input/interceptor/go-mapi-dll-x64-Release/go-mapi.dll `
             -X64Harness ci-input/interceptor/go-mapi-tests-x64-Release/go-mapi-test-harness.exe `
             -X86Dll ci-input/interceptor/go-mapi-dll-x86-Release/go-mapi.dll `

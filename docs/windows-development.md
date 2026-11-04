@@ -187,8 +187,12 @@ The removed `scripts/` directory has no replacement general-purpose script area.
 Existing immutable app manifests retain explicit compatibility with their original
 builder identifiers; new manifests identify the public Just command.
 
-The [installed attachment smoke](../tests/installed-attachment/README.md) uses
-the guest's existing non-elevated desktop user and an already-installed suite.
+The default [Windows e2e suite](component-integration-gate.md) installs the
+selected Suite in a fresh Sandbox and includes the real Explorer SendTo journey
+before x86/x64 queue integration. It builds its fake/probe locally. Hosted CI's
+explicit `-ComponentOnly` mode covers queue integration without desktop acceptance.
+The lower-level [installed attachment smoke](../tests/installed-attachment/README.md)
+uses the guest's existing non-elevated desktop user and an already-installed suite.
 It creates no accounts, migrates no profiles and provisions no virtual disks.
 Focused Go path tests retain junction handling and escape rejection; the optional
 real-volume test is separate from ordinary release acceptance. Historical alpha.7

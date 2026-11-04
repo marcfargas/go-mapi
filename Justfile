@@ -52,6 +52,7 @@ test-windows-tooling:
     pwsh -NoProfile -File tests/Entrypoints.Tests.ps1
     pwsh -NoProfile -File src/app/tests/Build.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/Runner.Tests.ps1
+    pwsh -NoProfile -File tests/sandbox/E2E.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/native/Build.Tests.ps1
 
 [positional-arguments]
@@ -146,8 +147,8 @@ machine-hosted-integration *args: _require-disposable
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/tests/hosted.ps1 "$@"
 
 [positional-arguments]
-e2e-system-windows *args: _require-disposable
-    pwsh -NoProfile -ExecutionPolicy Bypass -File tests/sandbox/component-integration.ps1 "$@"
+e2e-system-windows *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File tests/sandbox/e2e.ps1 "$@"
 
 [positional-arguments]
 register-dev-aumid *args:
@@ -241,10 +242,6 @@ test-machine-service-inputs:
 [positional-arguments]
 test-installed-attachment *args: _require-disposable
     pwsh -NoProfile -File tests/installed-attachment/Test-Attachment.ps1 "$@"
-
-[positional-arguments]
-test-explorer-sendto *args:
-    pwsh -NoProfile -File tests/installed-attachment/Test-Explorer.ps1 "$@"
 
 [positional-arguments]
 [script('pwsh', '-NoProfile', '-File')]
