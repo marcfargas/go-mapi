@@ -112,6 +112,13 @@ func trustedMachineMarkerACL(handle windows.Handle) bool {
 	if err != nil {
 		return false
 	}
+	return trustedMachineMarkerSecurityDescriptor(sd)
+}
+
+func trustedMachineMarkerSecurityDescriptor(sd *windows.SECURITY_DESCRIPTOR) bool {
+	if sd == nil {
+		return false
+	}
 	owner, _, err := sd.Owner()
 	if err != nil || owner == nil || owner.String() != "S-1-5-18" && owner.String() != "S-1-5-32-544" {
 		return false
@@ -131,6 +138,11 @@ func trustedMachineMarkerACL(handle windows.Handle) bool {
 		}
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return false
+		}
+		// Inherit-only ACEs apply to descendants, not this marker. Windows'
+		// default registry inheritance includes one for CREATOR OWNER.
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String()
 		if ace.Mask&writeMask != 0 && sid != "S-1-5-18" && sid != "S-1-5-32-544" {
