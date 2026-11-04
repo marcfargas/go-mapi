@@ -56,6 +56,7 @@ test-windows-tooling:
     pwsh -NoProfile -File tests/release/ConsumerMetadataFixture.Tests.ps1 -FixtureShell powershell.exe
     pwsh -NoProfile -File src/app/tests/Build.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/Runner.Tests.ps1
+    pwsh -NoProfile -File tests/sandbox/E2E.Tests.ps1
     pwsh -NoProfile -File tests/sandbox/native/Build.Tests.ps1
 
 [positional-arguments]
@@ -150,8 +151,8 @@ machine-hosted-integration *args: _require-disposable
     pwsh -NoProfile -ExecutionPolicy Bypass -File src/installer/msi/tests/hosted.ps1 "$@"
 
 [positional-arguments]
-e2e-system-windows *args: _require-disposable
-    pwsh -NoProfile -ExecutionPolicy Bypass -File tests/sandbox/component-integration.ps1 "$@"
+e2e-system-windows *args:
+    pwsh -NoProfile -ExecutionPolicy Bypass -File tests/sandbox/e2e.ps1 "$@"
 
 [positional-arguments]
 register-dev-aumid *args:

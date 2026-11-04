@@ -1,5 +1,13 @@
 # Component integration gate
 
+`just e2e-system-windows` runs the installed Explorer SendTo journey and x86/x64
+queue integration together in a fresh Sandbox. Supply a selected signed Suite
+manifest/MSI and native artifacts; the command builds its fake Gmail server and
+app queue probe locally. The full suite requires an interactive Windows desktop,
+PowerShell 7, `wsb`, English guest menus and WebView2. Install frontend dependencies
+with `just install` before the first run. The host only compiles and stages inputs;
+installation, trust changes and native execution stay in the owned guest.
+
 The ordinary Playwright suite exercises the user component against an isolated
 queue directory. Windows CI downloads the Release x86/x64 DLL and harness
 artifacts, then invokes the checked-in component test against the real app
@@ -7,8 +15,9 @@ queue consumer. The test retains the native descriptor, app acknowledgement,
 hashes and logs. It proves the component protocol, without claiming product
 MAPI registration or Gmail delivery.
 
-To repeat the same check on a disposable Windows machine, build or place the
-independently selected artifacts, then run:
+To run the full suite from a Windows development desktop, build both native
+architectures with `just build-native-tests x64` and `just build-native-tests x86`,
+then run:
 
 ```powershell
 just e2e-system-windows `
@@ -17,17 +26,43 @@ just e2e-system-windows `
   -X86Dll src/interceptor/build-x86/bin/go-mapi.dll `
   -X86Harness src/interceptor/build-x86/bin/go-mapi-test-harness.exe `
   -InterceptorVersion <interceptor-version> -AppVersion <app-version> `
-  -EvidenceDirectory C:\ProgramData\go-mapi\component-integration
+  -Manifest C:\selected\release.json -SuiteMsi C:\selected\suite.msi `
+  -EvidenceDirectory test-results/windows-e2e
 ```
 
-The harness explicitly loads each DLL. For each architecture it retains the
+The suite first drives the installed [Explorer journey](../tests/installed-attachment/README.md)
+and requires exact draft attachments, queue acknowledgement and product/trust
+cleanup. Then the harness explicitly loads each independently selected DLL.
+For each architecture it retains the
 native `MAPISendMail` descriptor, runs the app-owned queue-consumer probe
 against that exact file, and writes `component-integration.json`, the run log,
-harness logs, and app acknowledgements. Missing evidence fails the gate.
+harness logs, and app acknowledgements. The host compiles the app-owned probe;
+the guest needs no Go installation or source checkout. Inputs and their hashes,
+the source revision/patch, logs and separate journey receipts are retained under
+a unique `e2e-*` directory. Require `e2e-result.json` with `passed`, `explorer`
+and `component` true, plus the runner's `Status=PASS`, `GuestExitCode=0` and
+`Cleanup=stopped`. Missing evidence or either journey failure fails the suite.
+
+`-AppProbeBinary` and `-FakeBinary` can select already-built inputs. The default
+builds both from this checkout. `-TimeoutSeconds` bounds guest execution (1200
+seconds by default); the existing runner owns exclusion and exact disposal.
+
+Hosted Windows CI explicitly invokes `e2e-system-windows -ComponentOnly` with
+the native artifact/version/evidence arguments above, without Suite inputs. This
+focused mode runs directly in its disposable runner and retains the existing
+Go-based queue probe. It refuses local host/act execution. Hosted runners lack
+the interactive Explorer desktop needed for the full suite; their passing result
+does not claim installed SendTo acceptance. Full desktop e2e currently runs locally.
+
+On 2026-11-04 the full suite passed in Windows 11 Sandbox build 26100:
+published `3.2.0-beta.2` Suite Explorer acceptance, locally built beta.2-versioned
+x64/x86 native harnesses and the compiled app-owned queue probe all passed in one
+guest. Both journey receipts passed, guest exit was 0, and exact disposal succeeded.
 
 ## Installed machine update gate
 
-Pull requests and pushes to `develop` run the full integration gate. Feature
+Pull requests and pushes to `develop` run the component and installed machine
+update gates below. Desktop Explorer acceptance uses the local suite above. Feature
 branches use pull requests or manual dispatch rather than a second push run.
 New PR commits cancel the previous run for that PR; integration-branch push
 runs remain available for the exact-source release checks. Cut release tags

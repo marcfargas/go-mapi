@@ -4,6 +4,12 @@ Use the [Windows development guide](../../docs/windows-development.md) for host
 setup and compilation. The Justfile is the command entrypoint; host orchestration,
 its behavioral contracts and guest programs live here.
 `phase11/` remains a separate human-observed installed-email journey.
+The maintained [Explorer SendTo regression](../installed-attachment/README.md)
+uses this runner through the default `just e2e-system-windows` suite; it installs
+a selected Suite and drives the real menu as the guest's ordinary desktop user,
+then runs x86/x64 native queue integration. See the
+[suite guide](../../docs/component-integration-gate.md) for artifact inputs and
+hosted CI's explicit component-only coverage.
 
 ## Execution boundary
 

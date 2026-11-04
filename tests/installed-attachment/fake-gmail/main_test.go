@@ -34,6 +34,10 @@ func hashBytes(data []byte) string {
 }
 
 func rawDraft(t *testing.T, names ...string) []byte {
+	return draftWithEnvelope(t, "To: Synthetic <test@example.invalid>\r\nSubject: Ticket569 installed Windows seam\r\n", names...)
+}
+
+func draftWithEnvelope(t *testing.T, headers string, names ...string) []byte {
 	t.Helper()
 	var raw bytes.Buffer
 	w := multipart.NewWriter(&raw)
@@ -52,11 +56,27 @@ func rawDraft(t *testing.T, names ...string) []byte {
 		t.Fatal(err)
 	}
 	var envelope bytes.Buffer
-	_, _ = fmt.Fprintf(&envelope, "To: Synthetic <test@example.invalid>\r\nSubject: Ticket569 installed Windows seam\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n", w.Boundary())
+	_, _ = fmt.Fprintf(&envelope, "%sMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=%q\r\n\r\n", headers, w.Boundary())
 	envelope.Write(raw.Bytes())
 	encoded := base64.RawURLEncoding.EncodeToString(envelope.Bytes())
 	data, _ := json.Marshal(map[string]any{"message": map[string]string{"raw": encoded}})
 	return data
+}
+
+func TestExplorerEnvelopeLeavesRecipientsEmpty(t *testing.T) {
+	for _, headers := range []string{"", "Subject: Emailing report.txt, image.bin\r\n", "To: other@example.invalid\r\n", "Cc: other@example.invalid\r\n", "Bcc: other@example.invalid\r\n"} {
+		t.Run(headers, func(t *testing.T) {
+			o := testOracle(t)
+			o.expected.EntryPoint = "Explorer"
+			o.expected.Subject = ""
+			o.expected.Recipient = ""
+			_, err := o.checkDraft(bytes.NewReader(draftWithEnvelope(t, headers, "report.txt", "image.bin")))
+			valid := headers == "" || headers == "Subject: Emailing report.txt, image.bin\r\n"
+			if (err == nil) != valid {
+				t.Fatalf("Explorer envelope accepted=%v, want %v: %v", err == nil, valid, err)
+			}
+		})
+	}
 }
 
 func TestDraftOracleRequiresExactAttachmentMultisetAndBytes(t *testing.T) {

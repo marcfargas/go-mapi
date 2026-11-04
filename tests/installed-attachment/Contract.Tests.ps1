@@ -77,6 +77,38 @@ try {
     $fixtures=Get-AttachmentFixtures
     Check ([BitConverter]::ToString($fixtures['image.bin']) -ceq '00-01-02-FD-FE-FF') 'Binary fixture changed'
     Check ([Text.Encoding]::UTF8.GetString($fixtures['report.txt']) -ceq "exact attachment`r`nwith bytes`0") 'Text fixture changed'
+    $explorerCase=Clone $case
+    $explorerCase | Add-Member entryPoint Explorer
+    $explorerCase.expected.subject=''; $explorerCase.expected.recipient=''
+    $explorerWorker=Clone $worker
+    $explorerWorker.mapiReturn=$null
+    $explorerWorker | Add-Member entryPoint Explorer
+    $folder=Join-Path $case.profilePath ('attachment files '+$case.runId)
+    $explorerWorker | Add-Member explorer ([pscustomobject]@{pid=123;session=1;ownerSid=$case.sid;folder=$folder;selectedPaths=@((Join-Path $folder 'image.bin'),(Join-Path $folder 'report.txt'));menus=@('Send to','Mail recipient');invoked=$true;windowClosed=$true})
+    $explorerFake=Clone $fake
+    $explorerFake.drafts[0].subject='Emailing report.txt, image.bin'
+    $explorerFake.drafts[0].recipient=''
+    Check (Verify $explorerWorker $explorerFake $explorerCase).passed 'Valid Explorer smoke was rejected'
+    foreach ($change in @(
+        {param($w) $w.explorer=$null},
+        {param($w) $w.mapiReturn=0},
+        {param($w) $w.entryPoint='InstalledDll'},
+        {param($w) $w.explorer.selectedPaths=@('C:\other\report.txt')},
+        {param($w) $w.explorer.menus=@('Send to')},
+        {param($w) $w.explorer.invoked=$false},
+        {param($w) $w.explorer.windowClosed=$false},
+        {param($w) $w.explorer.ownerSid='other'},
+        {param($w) $w.explorer.session=2}
+    )) {
+        $w=Clone $explorerWorker
+        & $change $w
+        $rejected=$false
+        try { $null=Verify $w $explorerFake $explorerCase } catch { $rejected=$true }
+        Check $rejected 'Oracle accepted incomplete or substituted Explorer evidence'
+    }
+    $rejected=$false
+    try { $null=Verify $explorerWorker $fake $explorerCase } catch { $rejected=$true }
+    Check $rejected 'Oracle accepted an addressed Explorer draft'
     'Attachment oracle contracts passed'
 } finally {
     # The only recursive deletion is this exact, newly created temporary test directory.

@@ -6,6 +6,31 @@ it does not send them. It does not handle mailto links or register a MAILTO
 handler in Windows Default Apps. Possible mailto support is deferred to
 Ticket 484 under separate acceptance.
 
+System/Suite register the provider under `Clients\Mail`. Windows owns the
+`.MAPIMail` shell extension and its legacy CLSID; installation does not replace
+that association. An unchanged `.MAPIMail` CLSID or absence from Default Apps
+does not establish a failed Simple MAPI installation. App-only EXE/MSIX installs
+need System separately. Explorer **Share** uses a separate Windows integration
+and is currently unsupported; use **Send to > Mail recipient** instead.
+
+## Automated Explorer regression
+
+The [installed attachment regression](../tests/installed-attachment/README.md)
+is part of the default `just e2e-system-windows` suite for a selected
+production-signed Suite in a clean Windows Sandbox. It opens real Explorer,
+selects two files beneath a path
+containing spaces, and invokes the classic **Send to > Mail recipient** menu
+under the existing non-elevated desktop account. The isolated Gmail fixture
+requires exactly one draft with exact filenames/bytes and empty recipients;
+queue acknowledgement, App processing and all owned cleanup must succeed.
+
+The journey passed on 2026-11-04 with the published `3.2.0-beta.2` Suite in
+Windows 11 Sandbox build 26100, including exact draft attachments, queue
+acknowledgement, product/test-trust removal and owned guest disposal.
+This automated journey qualifies the selected installed SendTo path. It does
+not qualify live Google consent, Windows 10, other distribution channels or
+Explorer Share; those boundaries retain their separate acceptance below.
+
 ## Record for every native run
 
 Use an isolated Windows 10 or Windows 11 test machine in the supported range.

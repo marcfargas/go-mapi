@@ -38,6 +38,7 @@ import (
 const syntheticToken = "synthetic-569-not-a-real-token"
 
 type expected struct {
+	EntryPoint  string            `json:"entryPoint"`
 	RunID       string            `json:"runId"`
 	Subject     string            `json:"subject"`
 	Recipient   string            `json:"recipient"`
@@ -296,9 +297,17 @@ func (o *oracle) checkDraft(body io.Reader) (draftEntry, error) {
 		return draftEntry{}, fmt.Errorf("parse RFC822 message: %w", err)
 	}
 	entry := draftEntry{Subject: message.Header.Get("Subject"), Recipient: message.Header.Get("To"), Attachments: []attachment{}}
-	recipients, recipientErr := mail.ParseAddressList(entry.Recipient)
-	if entry.Subject != o.expected.Subject || recipientErr != nil || len(recipients) != 1 || recipients[0].Address != o.expected.Recipient {
-		return draftEntry{}, fmt.Errorf("draft envelope did not match run expectation")
+	if o.expected.EntryPoint == "Explorer" {
+		// Explorer chooses the localized subject and leaves recipients for the user.
+		// Exact filenames/bytes and the unique run directory correlate this draft.
+		if entry.Recipient != "" || message.Header.Get("Cc") != "" || message.Header.Get("Bcc") != "" {
+			return draftEntry{}, fmt.Errorf("Explorer draft unexpectedly has recipients")
+		}
+	} else {
+		recipients, recipientErr := mail.ParseAddressList(entry.Recipient)
+		if entry.Subject != o.expected.Subject || recipientErr != nil || len(recipients) != 1 || recipients[0].Address != o.expected.Recipient {
+			return draftEntry{}, fmt.Errorf("draft envelope did not match run expectation")
+		}
 	}
 	mediaType, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
 	if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "multipart/") {
@@ -398,7 +407,9 @@ func run() int {
 	if err == nil {
 		err = json.Unmarshal(data, &want)
 	}
-	if err != nil || want.RunID == "" || strings.Trim(want.RunID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" || want.Subject == "" || want.Recipient == "" || len(want.Attachments) == 0 {
+	validEnvelope := (want.EntryPoint == "" || want.EntryPoint == "InstalledDll") && want.Subject != "" && want.Recipient != ""
+	validEnvelope = validEnvelope || want.EntryPoint == "Explorer" && want.Subject == "" && want.Recipient == ""
+	if err != nil || want.RunID == "" || strings.Trim(want.RunID, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" || !validEnvelope || len(want.Attachments) == 0 {
 		fmt.Fprintln(os.Stderr, "invalid expected draft specification")
 		return 2
 	}
