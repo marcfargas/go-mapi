@@ -68,7 +68,12 @@ def assemble(receipts, destination, version, system_tag, pin, source, run_id, ru
     completed = subprocess.run([sys.executable, "-c", code], cwd=destination, env=environment,
                                capture_output=True, text=True, timeout=60)
     require(completed.returncode == 0, "Maintained assembler rejected CI receipts:\n" + completed.stderr)
-    return load(destination / "release/bundle/release.json")
+    manifest = destination / "release/bundle/release.json"
+    # The production stage job runs on Ubuntu. Preserve its exact LF output
+    # when replaying Path.write_text on Windows, which otherwise writes CRLF.
+    # Only the temporary expected file changes; downloaded bytes stay exact.
+    manifest.write_bytes(manifest.read_bytes().replace(b"\r\n", b"\n"))
+    return load(manifest)
 
 
 def validate_app_build(build, distribution, version, source):

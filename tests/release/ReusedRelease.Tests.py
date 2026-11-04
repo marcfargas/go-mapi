@@ -131,6 +131,27 @@ class ReusedReleaseTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.verify(**changes)
 
+    def test_hosted_lf_manifest_passes_on_every_host(self):
+        manifest = self.args["bundle"] / "release.json"
+        hosted = (json.dumps(verifier.load(manifest), indent=2) + "\n").encode("utf-8")
+        manifest.write_bytes(hosted)
+        self.assertNotIn(b"\r", hosted)
+        result = self.verify()
+        self.assertEqual(result["releaseSha256"], verifier.digest(manifest))
+
+    def test_downloaded_manifest_line_ending_changes_are_byte_tamper(self):
+        manifest = self.args["bundle"] / "release.json"
+        hosted = (json.dumps(verifier.load(manifest), indent=2) + "\n").encode("utf-8")
+        manifest.write_bytes(hosted.replace(b"\n", b"\r\n"))
+        with self.assertRaisesRegex(ValueError, "Downloaded draft bytes differ: release.json"):
+            self.verify()
+
+    def test_downloaded_manifest_extra_whitespace_is_byte_tamper(self):
+        manifest = self.args["bundle"] / "release.json"
+        manifest.write_bytes(manifest.read_bytes() + b"\n")
+        with self.assertRaisesRegex(ValueError, "Downloaded draft bytes differ: release.json"):
+            self.verify()
+
     def test_downloaded_assets_are_exactly_the_accepted_bytes(self):
         installer = self.args["bundle"] / f"go-mapi-user-{VERSION}-x64.exe"
         installer.write_bytes(installer.read_bytes() + b"tampered")

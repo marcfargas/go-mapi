@@ -181,8 +181,8 @@ acceptance. Published assets remain immutable. Reused-System acceptance uses an
 unpublished draft from the same release workflow; it does not require another
 public release.
 
-Proposed reused-System acceptance commands (runtime qualification pending):
-after exact-source push CI passes, tag the App-only candidate and dispatch
+For reused-System acceptance, after exact-source push CI passes, tag the
+App-only candidate and dispatch
 `release.yml` with the published System tag and independently downloaded
 `release.json` SHA-256. Download the complete draft to `candidate`, the original
 published bundle to `prior`, and the run's `release-app` / `release-machine`
@@ -209,8 +209,14 @@ it to the candidate. It checks MSI registration and Suite ownership, new App
 bytes/version, unchanged service and both interceptor payloads, service health
 and final removal. The existing Sandbox runner exports evidence and disposes
 only its owned guest. Receipt checks alone do not prove Windows trust or an
-installed upgrade; contract tests use inert files. This journey does not qualify
-the standalone App's live metadata or UAC consent path.
+installed upgrade; contract tests use inert files. The standalone App's metadata
+and UAC consent paths need separate installed-consumer acceptance.
+
+The unpublished beta.3 draft from [run 41741182211](https://github.com/marcfargas/go-mapi/actions/runs/41741182211)
+qualified hosted reuse of beta.2 System. The offline beta.2-to-beta.3 Suite
+upgrade passed in disposable Windows Sandbox, including exact retained signed
+payloads, new App bytes, healthy status, ownership and final removal. This does
+not qualify native UAC consent or publish the draft.
 
 Standalone App's installation/repair action now selects System with administrator
 consent through the existing verified-download and UAC helper. It refuses Suite,
@@ -226,8 +232,37 @@ Live update metadata is a separate deployment. Its configured origin must serve
 Targets expire within 31 days. Refreshing authorization dates for the same
 immutable payload is supported; changing its bytes or compatibility at an
 accepted package sequence is refused. CI retains generated target documents;
-publishing `release.json` does not deploy that metadata service. Live discovery, UAC installation
-and metadata refresh still need deployment and guest acceptance.
+publishing `release.json` does not deploy that metadata service. The production
+update API and metadata service are TBD after #18. Their deployment and live
+acceptance are outside that issue; controlled fixtures can qualify its consumer
+contract.
+
+`tests/release/ConsumerMetadataFixture.ps1` serves only the two machine metadata
+paths and POST `/api/updates/v1/check`; it never serves installers or redirects.
+Supply an existing fresh directory containing `system-targets.json`,
+`suite-targets.json` and `app-selection.json` with `{"releaseTrack":"development"}`.
+Optional `latestAppVersion` and boolean `appUpdateAvailable` select an advisory
+App offer. Use a version newer than the installed App to expose its update banner.
+Machine target files reload on every request; finish replacing them before
+triggering a check. Keep artifact URLs, hashes and compatibility unchanged when
+refreshing authorization dates.
+
+The default origin is `https://go-mapi.app:443/`. Only an owned disposable guest
+may supply its hosts mapping, HTTPS binding and ephemeral metadata TLS trust;
+the caller must retain and restore them exactly. Product-signing validation must
+use normal Windows trust. `ready.json` identifies the fixture process and deadline;
+`requests.ndjson` records validated request identities and response hashes. A
+response error disqualifies proof that the App consumed those bytes. Create `stop`,
+wait for the owned process to exit zero, and inspect `final.json`. Retain a parent
+process timeout as well as the fixture's bounded lifetime. The host-only HTTP
+contracts run through `just test-windows-tooling`; they do not prove installed
+App parsing, HTTPS trust or native consent.
+
+For actual consent acceptance, first record the desktop token and effective UAC
+policy. The observed Sandbox desktop is elevated with `EnableLUA=0`; a restricted
+token does not establish a genuine filtered administrator or native UAC prompt.
+Approval and elevation cancellation need a disposable desktop with UAC enabled
+and an eligible existing user. Do not weaken UAC to automate that proof.
 
 MSIX uses the shared Windows package sequence plus a zero fourth component, so
 successive alphas have distinct numeric identities. Older alpha.11 packages used
